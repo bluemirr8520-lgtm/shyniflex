@@ -244,6 +244,8 @@ class ContinueWatchingSectionTest {
         var selected: MediaItem? = null
         var resumes = 0
         render(items, onSelected = { selected = it }, onResume = { resumes++ }, busy = busy, scrollTail = true)
+        // Semantic scroll-to needs animation frames while bringing the hero back into view.
+        screen.mainClock.autoAdvance = true
         val before = screen.onNodeWithTag(CONTENT).fetchSemanticsNode()
             .config[SemanticsProperties.VerticalScrollAxisRange].value()
         screen.onNodeWithTag(HERO).performTouchInput { swipeUp(durationMillis = 300) }
