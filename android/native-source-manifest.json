@@ -1,0 +1,509 @@
+{
+  "schema_version": 1,
+  "status": "All 14 primary and 7 recursive native source archives collected and SHA-256 verified.",
+  "application_release": "1.0.11",
+  "runtime_release": "2026-09-17",
+  "evidence": [
+    "android/runtime-source/release.json: body Full set of build dependencies",
+    "mpv-android-2026-09-17/buildscripts/include/depinfo.sh",
+    "mpv-android-2026-09-17/buildscripts/include/download-deps.sh",
+    "mpv-android-2026-09-17/buildscripts/scripts/*.sh",
+    "mpv-android-2026-09-17/docs/licenses.html"
+  ],
+  "wrapper": {
+    "ref": "fdf74f6830c47dbaa8a22ac79726e8303f1db5af",
+    "url": "https://github.com/mpv-android/mpv-android/archive/refs/tags/2026-09-17.zip",
+    "cached": "android/runtime-source/mpv-android-2026-09-17-source.zip",
+    "bytes": 2217756,
+    "sha256": "53446a665ee5231cc40a2e55133fbb625fe60786bbd94fac01d4300983fd2181",
+    "extract_to": "mpv-android-2026-09-17",
+    "strip_components": 0,
+    "license": "MIT wrapper; combined native runtime GPL-3.0-or-later",
+    "archive_name": "mpv-android-2026-09-17-source.zip"
+  },
+  "native_binary_provenance": {
+    "url": "https://github.com/mpv-android/mpv-android/releases/download/2026-09-17/app-default-universal-release.apk",
+    "cached": "android/runtime-source/mpv-android-2026-09-17.apk",
+    "bytes": 135357179,
+    "sha256": "c3b505e45b919b767b9867e7f0d16fd823d77bc7c9a6e6b181b80ea60c018a70",
+    "redistributed_abis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "x86_64"
+    ],
+    "changes": "Libraries copied unmodified from the pinned APK. Do not include the upstream APK in a corresponding-source archive."
+  },
+  "dependencies": [
+    {
+      "id": "mbedtls",
+      "ref": "3.6.7",
+      "source_kind": "official_release_tarball",
+      "url": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2",
+      "archive_name": "mbedtls-3.6.7.tar.bz2",
+      "sha256": "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/mbedtls",
+      "strip_components": 1,
+      "license": "Apache-2.0 OR GPL-2.0-or-later",
+      "bytes": 5473689
+    },
+    {
+      "id": "dav1d",
+      "ref": "362bc1138228390a0a521ecf3af18b23c6afeb9e",
+      "source_kind": "git_commit_archive",
+      "url": "https://codeload.github.com/videolan/dav1d/tar.gz/362bc1138228390a0a521ecf3af18b23c6afeb9e",
+      "archive_name": "dav1d-362bc1138228390a0a521ecf3af18b23c6afeb9e.tar.gz",
+      "sha256": "0ac7c8f7a5cd1d5dbcb24ebaf8f204a44686a80f837c5dfaa5a9775d1841ed8b",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/dav1d",
+      "strip_components": 1,
+      "license": "BSD-2-Clause",
+      "bytes": 1751984
+    },
+    {
+      "id": "ffmpeg",
+      "ref": "094a2f8a2a5e7fa64736e067de224ce28fdf5979",
+      "source_kind": "git_commit_archive",
+      "url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/094a2f8a2a5e7fa64736e067de224ce28fdf5979",
+      "archive_name": "ffmpeg-094a2f8a2a5e7fa64736e067de224ce28fdf5979.tar.gz",
+      "sha256": "3633c09eb65cba9864fe4ca1eff75ca1423174869e423e5fe9d8fce028fcf66a",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/ffmpeg",
+      "strip_components": 1,
+      "license": "GPL-3.0-or-later (this configuration)",
+      "bytes": 17690975
+    },
+    {
+      "id": "libxml2",
+      "ref": "2.15.4",
+      "source_kind": "tag_archive",
+      "url": "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v2.15.4/libxml2-v2.15.4.tar.gz",
+      "archive_name": "libxml2-2.15.4.tar.gz",
+      "sha256": "a569ee9c59eabb197a0d5047046d757ee14c86fb2d4a734555b633cb5584ad25",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libxml2",
+      "strip_components": 1,
+      "license": "MIT",
+      "bytes": 2965695
+    },
+    {
+      "id": "fontconfig",
+      "ref": "2.18.3",
+      "source_kind": "tag_archive",
+      "url": "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.18.3/fontconfig-2.18.3.tar.gz",
+      "archive_name": "fontconfig-2.18.3.tar.gz",
+      "sha256": "9ae01e1d53acdef56010c5451cd34aa41d325b2faccd8606448d8fa01b2496b3",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/fontconfig",
+      "strip_components": 1,
+      "license": "HPND",
+      "bytes": 666753
+    },
+    {
+      "id": "freetype2",
+      "ref": "0a0221a1347e2f1e07c395263540026e9a0aa7c7",
+      "source_kind": "git_commit_archive",
+      "url": "https://codeload.github.com/freetype/freetype/tar.gz/0a0221a1347e2f1e07c395263540026e9a0aa7c7",
+      "archive_name": "freetype2-0a0221a1347e2f1e07c395263540026e9a0aa7c7.tar.gz",
+      "sha256": "11cd478953fc1d382f20a233b8e2aed6c31b47cbf0568c4bdb3334bcc1550698",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/freetype2",
+      "strip_components": 1,
+      "license": "FTL OR GPL-2.0-or-later",
+      "recursive_dependencies": "See native-extra-sources.json; original recipe uses git clone --recurse-submodules.",
+      "version": "2.14.3",
+      "provenance": "Official freetype/freetype mirror of upstream GitLab; VER-2-14-3 resolves to this commit in native-nested-audit metadata.",
+      "bytes": 2517889
+    },
+    {
+      "id": "fribidi",
+      "ref": "1.0.16",
+      "source_kind": "official_release_tarball",
+      "url": "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz",
+      "archive_name": "fribidi-1.0.16.tar.xz",
+      "sha256": "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/fribidi",
+      "strip_components": 1,
+      "license": "LGPL-2.1-or-later",
+      "bytes": 1098260
+    },
+    {
+      "id": "harfbuzz",
+      "ref": "14.4.0",
+      "source_kind": "official_release_tarball",
+      "url": "https://github.com/harfbuzz/harfbuzz/releases/download/14.4.0/harfbuzz-14.4.0.tar.xz",
+      "archive_name": "harfbuzz-14.4.0.tar.xz",
+      "sha256": "2357ed966c6ced7bfa720b0640c0231065af01158fbea215093ffa15aed44371",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/harfbuzz",
+      "strip_components": 1,
+      "license": "MIT",
+      "bytes": 20107692
+    },
+    {
+      "id": "unibreak",
+      "ref": "8.0",
+      "source_kind": "official_release_tarball",
+      "url": "https://github.com/adah1972/libunibreak/releases/download/libunibreak_8_0/libunibreak-8.0.tar.gz",
+      "archive_name": "unibreak-8.0.tar.gz",
+      "sha256": "9c4fad6e517338a098373acc9f35579ae2c325e6446666fb9ac2666ba15ceba4",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/unibreak",
+      "strip_components": 1,
+      "license": "Zlib",
+      "bytes": 1088508
+    },
+    {
+      "id": "libass",
+      "ref": "b2fe9d8770678a7b5271387d38c20657ebf3429a",
+      "source_kind": "git_commit_archive",
+      "url": "https://codeload.github.com/libass/libass/tar.gz/b2fe9d8770678a7b5271387d38c20657ebf3429a",
+      "archive_name": "libass-b2fe9d8770678a7b5271387d38c20657ebf3429a.tar.gz",
+      "sha256": "1f8d0547aa6a40895baee0338adaaae7d8e94406f971a4602957cdbbe6f7d495",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libass",
+      "strip_components": 1,
+      "license": "ISC",
+      "bytes": 352548
+    },
+    {
+      "id": "lua",
+      "ref": "5.2.4",
+      "source_kind": "official_release_tarball",
+      "url": "https://www.lua.org/ftp/lua-5.2.4.tar.gz",
+      "archive_name": "lua-5.2.4.tar.gz",
+      "sha256": "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/lua",
+      "strip_components": 1,
+      "license": "MIT",
+      "bytes": 252651
+    },
+    {
+      "id": "libplacebo",
+      "ref": "3330a515d62139259c26239014f286e233bd3a5c",
+      "source_kind": "git_commit_archive",
+      "url": "https://codeload.github.com/haasn/libplacebo/tar.gz/3330a515d62139259c26239014f286e233bd3a5c",
+      "archive_name": "libplacebo-3330a515d62139259c26239014f286e233bd3a5c.tar.gz",
+      "sha256": "57b8b2beaba218523cef9839af12c9d44785b6cf8e5f79ca3aa55367d7420c80",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo",
+      "strip_components": 1,
+      "license": "LGPL-2.1-or-later",
+      "recursive_dependencies": "See native-extra-sources.json; original recipe uses git clone --recursive.",
+      "bytes": 875287
+    },
+    {
+      "id": "curl",
+      "ref": "8.21.0",
+      "source_kind": "official_release_tarball",
+      "url": "https://curl.se/download/curl-8.21.0.tar.gz",
+      "archive_name": "curl-8.21.0.tar.gz",
+      "sha256": "d9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/curl",
+      "strip_components": 1,
+      "license": "curl (MIT-style)",
+      "bytes": 4298225
+    },
+    {
+      "id": "mpv",
+      "ref": "0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6",
+      "source_kind": "git_commit_archive",
+      "url": "https://codeload.github.com/mpv-player/mpv/tar.gz/0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6",
+      "archive_name": "mpv-0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6.tar.gz",
+      "sha256": "d84b3c706592558bfba8e6305d00f86406c647c3b8b317236433e25caf4d9d91",
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/mpv",
+      "strip_components": 1,
+      "license": "GPL-2.0-or-later (this configuration)",
+      "bytes": 7459676
+    },
+    {
+      "id": "libplacebo-glad",
+      "ref": "73db193f853e2ee079bf3ca8a64aa2eaf6459043",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/Dav1dde/glad/tar.gz/73db193f853e2ee079bf3ca8a64aa2eaf6459043",
+      "archive_name": "libplacebo-glad-73db193f853e2ee079bf3ca8a64aa2eaf6459043.tar.gz",
+      "sha256": "33dbeae44d8315ece57e14eba4b1b4a02ac5406d1c4f49cd20048c91522a6b9a",
+      "bytes": 645779,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo/3rdparty/glad",
+      "strip_components": 1,
+      "parent_component": "libplacebo",
+      "submodule_path": "3rdparty/glad"
+    },
+    {
+      "id": "libplacebo-jinja",
+      "ref": "15206881c006c79667fe5154fe80c01c65410679",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/pallets/jinja/tar.gz/15206881c006c79667fe5154fe80c01c65410679",
+      "archive_name": "libplacebo-jinja-15206881c006c79667fe5154fe80c01c65410679.tar.gz",
+      "sha256": "b88a20dcc2e34072fcf4159325bc6c34cd4b29a81a8b83d15d2f28ba561da296",
+      "bytes": 276954,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo/3rdparty/jinja",
+      "strip_components": 1,
+      "parent_component": "libplacebo",
+      "submodule_path": "3rdparty/jinja"
+    },
+    {
+      "id": "libplacebo-markupsafe",
+      "ref": "297fc8e356e6836a62087949245d09a28e9f1b13",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/pallets/markupsafe/tar.gz/297fc8e356e6836a62087949245d09a28e9f1b13",
+      "archive_name": "libplacebo-markupsafe-297fc8e356e6836a62087949245d09a28e9f1b13.tar.gz",
+      "sha256": "da7c010c9c81a66ac73036558c1fcb6212b50482f43211cd1254035b94f82414",
+      "bytes": 83817,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo/3rdparty/markupsafe",
+      "strip_components": 1,
+      "parent_component": "libplacebo",
+      "submodule_path": "3rdparty/markupsafe"
+    },
+    {
+      "id": "libplacebo-fast-float",
+      "ref": "97b54ca9e75f5303507699d27c6b4f4efe4641a1",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/fastfloat/fast_float/tar.gz/97b54ca9e75f5303507699d27c6b4f4efe4641a1",
+      "archive_name": "libplacebo-fast-float-97b54ca9e75f5303507699d27c6b4f4efe4641a1.tar.gz",
+      "sha256": "2b132274539286e41f37857cac22aa8441d21bd86d55de825a3342b149f66801",
+      "bytes": 120200,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo/3rdparty/fast_float",
+      "strip_components": 1,
+      "parent_component": "libplacebo",
+      "submodule_path": "3rdparty/fast_float"
+    },
+    {
+      "id": "libplacebo-vulkan-headers",
+      "ref": "74d8a6cb930c68ef617b202c3ff3c59d919e086b",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/74d8a6cb930c68ef617b202c3ff3c59d919e086b",
+      "archive_name": "libplacebo-vulkan-headers-74d8a6cb930c68ef617b202c3ff3c59d919e086b.tar.gz",
+      "sha256": "75967a8288ff16044a86d1af462b96d2e75c435937efb75f2bb4102ab0382f29",
+      "bytes": 3029927,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo/3rdparty/Vulkan-Headers",
+      "strip_components": 1,
+      "parent_component": "libplacebo",
+      "submodule_path": "3rdparty/Vulkan-Headers"
+    },
+    {
+      "id": "libplacebo-nuklear",
+      "ref": "242f35efa067a46c595645eeda7b1771ea1f83b1",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/Immediate-Mode-UI/Nuklear/tar.gz/242f35efa067a46c595645eeda7b1771ea1f83b1",
+      "archive_name": "libplacebo-nuklear-242f35efa067a46c595645eeda7b1771ea1f83b1.tar.gz",
+      "sha256": "ac567995f917c10a722409e0141d226e737d06488b0a31166f6e4925da8e58f0",
+      "bytes": 2339403,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/libplacebo/demos/3rdparty/nuklear",
+      "strip_components": 1,
+      "parent_component": "libplacebo",
+      "submodule_path": "demos/3rdparty/nuklear"
+    },
+    {
+      "id": "freetype-dlg",
+      "ref": "395ccad2c1e0daae535c4d20bb0a3f2424648e17",
+      "source_kind": "recursive_git_commit_archive",
+      "url": "https://codeload.github.com/nyorain/dlg/tar.gz/395ccad2c1e0daae535c4d20bb0a3f2424648e17",
+      "archive_name": "freetype-dlg-395ccad2c1e0daae535c4d20bb0a3f2424648e17.tar.gz",
+      "sha256": "263a4a3777d9839e34cd41db988310659e0c00eab37beb7aedd30511a460133b",
+      "bytes": 837072,
+      "extract_to": "mpv-android-2026-09-17/buildscripts/deps/freetype2/subprojects/dlg",
+      "strip_components": 1,
+      "parent_component": "freetype2",
+      "submodule_path": "subprojects/dlg"
+    }
+  ],
+  "build_toolchain": {
+    "ndk": "r30",
+    "ndk_version": "30.0.16248370",
+    "sdk_platform": 36,
+    "build_tools": "36.0.0",
+    "native_min_api": 23,
+    "build_host": "Linux or macOS; upstream explicitly says Windows/WSL unsupported",
+    "general_tools": [
+      "JDK17",
+      "Meson",
+      "Ninja",
+      "make",
+      "autoconf",
+      "pkg-config",
+      "libtool",
+      "gperf",
+      "nasm",
+      "Python3"
+    ],
+    "note": "General build tools need not be bundled as part of corresponding source; retain the exact NDK libc++ copyright/license/NOTICE for redistributed libc++_shared.so."
+  },
+  "relevant_configuration": {
+    "ffmpeg": [
+      "--enable-gpl",
+      "--enable-version3",
+      "--enable-shared",
+      "--disable-static",
+      "--enable-jni,mediacodec,mbedtls,libdav1d,libxml2",
+      "--disable-vulkan"
+    ],
+    "libplacebo": [
+      "-Dvulkan=disabled",
+      "-Ddemos=false",
+      "OpenGL is not disabled by wrapper recipe; include all recursive git dependencies unless audited as unused."
+    ],
+    "meson_cross_file": [
+      "default_library=static",
+      "wrap_mode=nodownload",
+      "buildtype=release"
+    ],
+    "mpv": [
+      "-Dlibmpv=true",
+      "-Dcplayer=false",
+      "-Dlua,libcurl=enabled",
+      "shared libmpv"
+    ],
+    "modified_configuration": [
+      "mbedtls.sh changes AESNI setting by architecture and MBEDTLS_PLATFORM_DEV_RANDOM to /dev/urandom",
+      "lua.sh supplies Android compatibility CFLAGS",
+      "libplacebo.sh appends -lc++ to generated pkg-config",
+      "Build scripts generate crossfile.txt and include 16KiB linker alignment flag"
+    ]
+  },
+  "additional_distribution_material": [
+    "Full application source corresponding to the release commit (public GitHub source archive plus build instructions).",
+    "All top-level and recursive source LICENSE/COPYING/NOTICE texts, kept in source trees and collected into a release notices archive.",
+    "Existing full GPL-3.0, Apache-2.0 and mpv-android MIT notices.",
+    "MPL-2.0 text + exact copied cacert.pem (2026-08-13) + provenance/conversion notice; https://curl.se/docs/caextract.html.",
+    "NDK r30 libc++_shared.so licenses/notices (Apache-2.0 with LLVM exceptions and any NDK third-party notices).",
+    "SHA256SUMS and source manifest with downloaded archive hashes, sizes, extraction paths and all recursive gitlink refs."
+  ],
+  "restoration_notes": [
+    "Extract the matching wrapper ZIP, then extract every listed dependency archive with strip_components=1 into its exact buildscripts/deps directory.",
+    "Restore every recursive git submodule/fallback using the extra manifest into its recorded path; ordinary GitHub parent archives omit gitlink content.",
+    "Do not run unmodified download-deps.sh to choose dependency revisions: it clones moving branches for five components and therefore does not reproduce this release.",
+    "Do not set IN_CI=1 for matching this runtime: v_ci_ffmpeg=n9.0 is not the release's FFmpeg commit.",
+    "Use the original build scripts with NDK r30, recorded configuration and source folders present; apply only explicit offline-restoration edits documented in the package.",
+    "For each app ABI, run buildscripts/buildall.sh --arch armv7l|arm64|x86_64 mpv in the wrapper checkout, then the wrapper JNI Android.mk/NDK build. App code is separately built using shyniflex's public Gradle/build scripts.",
+    "The bundle can supply corresponding source without claiming a bit-for-bit native rebuild; no native build was performed during this audit."
+  ],
+  "data_files": [
+    {
+      "id": "mozilla-ca-bundle",
+      "archive_name": "cacert.pem",
+      "bytes": 188900,
+      "sha256": "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9",
+      "license": "MPL-2.0",
+      "copy_to": "mpv-android-2026-09-17/app/src/main/assets/cacert.pem",
+      "origin": "https://github.com/mpv-android/mpv-android/releases/download/2026-09-17/app-default-universal-release.apk#assets/cacert.pem"
+    }
+  ],
+  "application_source": {
+    "tag": "v1.0.11",
+    "repository": "https://github.com/bluemirr8520-lgtm/shyniflex",
+    "source_asset": "shyniflex-1.0.11-corresponding-source.zip"
+  },
+  "native_library_hashes": [
+    {
+      "path": "jniLibs/arm64-v8a/libavcodec.so",
+      "sha256": "403df40505a0d43ec6fb160e08ec21785f0da3ce5bb802b536ce790038598a57"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libavdevice.so",
+      "sha256": "4f4593ea81ae39ee71d71ed08d1e76c8c5961eb93f05fa21f7c625116da6b68b"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libavfilter.so",
+      "sha256": "38aa94839ed4183b24165174d1de4ee2cda607973e25466e923170395b35b9b8"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libavformat.so",
+      "sha256": "28812d328fcf7d1833c4df18bd46a67517ccb74d0dd8369f45d4b2aab2959d88"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libavutil.so",
+      "sha256": "7089c47b942828b58d76ed88366eef87a8a4b0956821e4a4d6eb176198921771"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libc++_shared.so",
+      "sha256": "b5d97c38a728afe28d341cda3369f512d35eaf9c680c1b0563cd6a63e395230f"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libmpv.so",
+      "sha256": "03d2d02db0451cebf4da2648188df7b2502005c6409fad1841b1d2b91ca8a814"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libplayer.so",
+      "sha256": "5557256657de1ccfa3bea365dbe7f81b5c1026a8d54b8346807fdda5c170643d"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libswresample.so",
+      "sha256": "31c8d864c63d8f50632b654bffe8cb570100bfb98b2af6d0012faab2a1914759"
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libswscale.so",
+      "sha256": "702b612f848bbc58a7f60071778e6a2ca32b73e5d51b4c7885529e9ca7f3704d"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libavcodec.so",
+      "sha256": "018eb15aa54b13f2ec01ade5771ceb3a2634abeb1416ea3a25a700fe3b95156f"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libavdevice.so",
+      "sha256": "0be89605120c354842aecdc056ca2e944d53fdcc831a1771a4e35ad58d81efce"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libavfilter.so",
+      "sha256": "54be4201a98d2f0ce6546db66c4028e3ed13e135f9f9b30e29f3714627ccf9b3"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libavformat.so",
+      "sha256": "8e3c6da7dbbe00bcc8702d9fda948d4fe508a31ee8066cbe0bff9c798b68f993"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libavutil.so",
+      "sha256": "eec03260515de0d2afd8861027ee7b0052ef8280b4fd072a3cc6f1429c0b6f4b"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libc++_shared.so",
+      "sha256": "38331a1efcb446eb1a0db440a8db8f41fa4fb698d15c061ab8c491426531c2c0"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libmpv.so",
+      "sha256": "433381171115bce0d02b53b1402943815678a852fa5eee9a6c38873b25bf5c26"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libplayer.so",
+      "sha256": "3a4893363117f3726654dd7b6694d036cf410e46241c59c902a4aaee9110652e"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libswresample.so",
+      "sha256": "2e78cdcfc623ad8d18cb6b710c295933bf32aca286f11ca6ddd11258fd195ab8"
+    },
+    {
+      "path": "jniLibs/armeabi-v7a/libswscale.so",
+      "sha256": "0b432f812b83e24691b0e99b471e5a68d395bffbf1017371d0f6745c6d6c44d7"
+    },
+    {
+      "path": "jniLibs/x86_64/libavcodec.so",
+      "sha256": "79b444748d22ecf0541e3867a8e06888ba0f3d4684b2b5b069bdc79b282cc6b6"
+    },
+    {
+      "path": "jniLibs/x86_64/libavdevice.so",
+      "sha256": "eef390360374e2941a44a8e00d1f64f710c80faa3e58ed8f60884bf476eb73e8"
+    },
+    {
+      "path": "jniLibs/x86_64/libavfilter.so",
+      "sha256": "c566b75ef9f4af1268ce75ecf1da530bea890f742f9c17252d58485946962572"
+    },
+    {
+      "path": "jniLibs/x86_64/libavformat.so",
+      "sha256": "b3833dd4986c8b094cd2944bb172c5239af56dcf310aebf58db4d749de660e93"
+    },
+    {
+      "path": "jniLibs/x86_64/libavutil.so",
+      "sha256": "6bf80ed2d0faa682703818a3aa2bed98f09eb5b0c1b9cfd8ea7ee84f81f59684"
+    },
+    {
+      "path": "jniLibs/x86_64/libc++_shared.so",
+      "sha256": "39faf2d59346e65a18980f207794fab2f1faff8a8de3f087b8319a181fa16fbd"
+    },
+    {
+      "path": "jniLibs/x86_64/libmpv.so",
+      "sha256": "97f0621d8f6e236ed5491a89565c2ed526f5450074ec58df560ada5f5f1bc5f8"
+    },
+    {
+      "path": "jniLibs/x86_64/libplayer.so",
+      "sha256": "7b53223663f774d33706a266fc7a55dfc44f378296631d318ea909f6ba9be410"
+    },
+    {
+      "path": "jniLibs/x86_64/libswresample.so",
+      "sha256": "30d548d3391fbef2fe34ca1841c41b3009f21e092bd8b5b2c373ceb18f2812b4"
+    },
+    {
+      "path": "jniLibs/x86_64/libswscale.so",
+      "sha256": "08bae96ccfb332c319a2dd5bf90bae0d2ed0caaf5ed1c89322812a14baa0e1ab"
+    }
+  ]
+}

@@ -11,7 +11,20 @@ The official CA bundle was extracted from assets/cacert.pem.
 
 mpv-android JNI wrapper license: MIT, included as licenses/mpv-android-MIT.txt.
 Matching wrapper sources: https://github.com/mpv-android/mpv-android/tree/2026-09-17
-Full matching source archive is saved in android/runtime-source.
+
+Corresponding source for shyniflex 1.0.11:
+https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.11/shyniflex-1.0.11-corresponding-source.zip
+Application source tag:
+https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.11
+
+The corresponding-source ZIP contains app-source.zip for this release, the
+matching mpv-android wrapper/build recipes, all 14 primary native dependencies,
+and seven pinned recursive submodule source archives. Its manifests record
+archive SHA256 digests and extraction paths. restore-native-sources.py verifies
+all native archive hashes before restoring the complete native source tree.
+The wrapper ZIP cached by setup-mpv.ps1 alone is not the full native source set.
+Native compilation and a byte-identical native rebuild were not performed as
+part of assembling this source distribution.
 
 The libmpv and FFmpeg builds contain GPL components. Bundled native libraries
 retain their upstream licenses; the Android application must be distributed
@@ -19,7 +32,7 @@ under compatible terms with corresponding sources and notices when redistributed
 mpv sources: https://github.com/mpv-player/mpv
 FFmpeg sources: https://github.com/FFmpeg/FFmpeg
 Exact native dependency revisions and build recipes are recorded in the official
-release metadata and matching mpv-android source archive in android/runtime-source.
+release metadata and the corresponding-source distribution above.
 
 Official release dependency details:
 #### :information_source: New `allstorage` APK

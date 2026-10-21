@@ -2,11 +2,17 @@
 
 MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태블릿·Android TV에서 사용하며 Android 8.0 이상을 지원합니다. 첫 로그인 화면의 서버 주소는 빈칸이며 사용자가 직접 입력합니다.
 
-공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. 이 저장소에는 Android 소스와 빌드 안내를 공개하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. 설치 APK는 별도로 전달하는 로컬 산출물이며, 아래 `outputs/` 파일명은 로컬 배포본을 가리킵니다. APK는 Git에 포함하거나 GitHub Release로 게시하지 않습니다.
+공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
+
+- [shyniflex 1.0.11 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.11/shyniflex-1.0.11.apk)
+- [shyniflex 1.0.11 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.11/shyniflex-1.0.11-corresponding-source.zip)
+- [v1.0.11 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.11)
+
+전체 대응 소스 ZIP에는 해당 앱 소스, MPV·FFmpeg 등 네이티브 의존 소스, 하위 모듈, Maven 런타임 라이브러리의 소스, 빌드 스크립트와 라이선스를 함께 담습니다. 복원 방법은 [네이티브 대응 소스 안내](docs/NATIVE-SOURCES.md)를 참고하세요.
 
 ## 설치와 사용
 
-설치 파일은 `outputs/shyniflex-1.0.11.apk`(빌드 12)입니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함합니다. 기존 버전에서 업데이트 설치하면 로그인과 설정을 유지합니다.
+설치 파일은 위 APK 링크의 `shyniflex-1.0.11.apk`(빌드 12)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.11.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함합니다. 기존 버전에서 업데이트 설치하면 로그인과 설정을 유지합니다.
 
 1. APK를 Android 기기에 설치합니다.
 2. Shyni 서버의 HTTPS 주소와 사용자 이름·비밀번호를 입력해 로그인합니다. 2단계 인증을 사용하는 경우 인증 코드를 입력합니다.
@@ -73,7 +79,7 @@ JDK 17, Android SDK 플랫폼 36, PowerShell, 네트워크 또는 기존 Gradle 
 
 첫 빌드에서는 개인 서명키를 `android/.local/`에 생성합니다. 이 디렉터리와 `local.properties`, 빌드 결과, 서버 자료, 계정 정보는 공개 업로드 대상에서 제외합니다. 직접 생성한 키는 기존 배포본의 서명과 다르므로 해당 APK 위에 업데이트 설치할 수 없습니다. 자신의 배포본 업데이트를 유지하려면 생성한 키를 안전하게 보관하세요.
 
-프로젝트 라이선스는 [LICENSE](LICENSE), 구성 요소의 출처와 네이티브 런타임 안내는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.
+프로젝트 라이선스는 [LICENSE](LICENSE), 구성 요소의 출처는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), 네이티브 소스 복원과 빌드 환경은 [docs/NATIVE-SOURCES.md](docs/NATIVE-SOURCES.md)를 참고하세요. 일반 앱 빌드는 고정된 공식 네이티브 바이너리를 재사용하며, 네이티브 소스에서의 별도 빌드는 Linux 또는 macOS 환경을 사용합니다.
 
 ## 출처
 

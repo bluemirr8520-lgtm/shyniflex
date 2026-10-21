@@ -8,6 +8,15 @@ captures and local QA output are excluded from Git. The project license does not
 replace third-party component licenses or grant rights that their owners have
 not provided.
 
+The v1.0.11 GitHub Release is prepared to distribute the APK together with
+[`shyniflex-1.0.11-corresponding-source.zip`](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.11/shyniflex-1.0.11-corresponding-source.zip).
+This is the planned stable asset URL, rather than a claim that publication has
+already completed. The bundle includes the exact release's `app-source.zip`,
+the matching upstream wrapper/build recipes, all 14 primary native dependency
+sources and seven pinned recursive submodule sources, manifests, license texts,
+and a hash-verifying restoration script. The application source is also
+identified by [tag v1.0.11](https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.11).
+
 ## Native playback runtime
 
 [`android/setup-mpv.ps1`](android/setup-mpv.ps1) fetches the official
@@ -23,9 +32,12 @@ The native binaries are downloaded during setup rather than included in this
 source repository. Their libmpv and FFmpeg builds include GPL components. Anyone
 redistributing a built APK must preserve the applicable licenses and notices and
 provide access to the corresponding source and build information for that exact
-runtime. The pinned upstream release and source archive identify the dependency
-revisions and build recipes; a license notice alone is not a substitute for
-corresponding source.
+runtime. The release's complete corresponding-source asset supplies those
+separately fetched dependency and submodule sources alongside the recipes;
+the small upstream wrapper ZIP alone does not. See
+[`docs/NATIVE-SOURCES.md`](docs/NATIVE-SOURCES.md) for the pinned environment,
+archive layout and restoration instructions. No native compilation or
+byte-identical rebuild is claimed for the source collection process.
 
 - [mpv source](https://github.com/mpv-player/mpv)
 - [FFmpeg source](https://github.com/FFmpeg/FFmpeg)
@@ -37,7 +49,9 @@ The JNI declarations in `is.xyz.mpv.MPVLib` derive from mpv-android, copyright
 [`mpv-android-MIT.txt`](android/app/src/main/assets/licenses/mpv-android-MIT.txt).
 The CA certificate bundle is downloaded from the same pinned official APK. The
 upstream [curl / Mozilla CA bundle](https://curl.se/docs/caextract.html) is subject
-to MPL-2.0; its applicable notice must accompany a later binary redistribution.
+to MPL-2.0. Its matching data, provenance and applicable license notice are part
+of the release distribution materials. The NDK's redistributed
+`libc++_shared.so` also retains its own license and notices.
 
 ## Subtitle components
 
@@ -74,9 +88,11 @@ Media3's numeric control font is an upstream UI resource, not a bundled subtitle
 font. The application offers the Android system font and user-imported fonts;
 users remain responsible for the rights to fonts they import.
 
-Before distributing an APK, retain the dependency license texts and applicable
-NOTICE files in that binary's notices. Declaring an application license or
-listing upstream links alone does not replace those notices.
+The APK's `assets/licenses/` retains dependency license texts and applicable
+notices; the source bundle preserves the source archives' original license
+files as well. Declaring an application license or listing upstream links alone
+does not replace those notices. Redistributors must retain them and provide
+the corresponding source for the exact binaries they distribute.
 
 ## Synthetic media fixtures
 

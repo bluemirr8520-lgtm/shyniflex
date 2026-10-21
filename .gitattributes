@@ -11,3 +11,4 @@ android/gradlew text eol=lf
 *.ttf binary
 *.mp4 binary
 *.mkv binary
+android/app/src/main/assets/licenses/components/*.txt -whitespace
