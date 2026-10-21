@@ -27,6 +27,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** Keep an unexpected successful response separate from an authoritative empty history. */
+class ContinueWatchingResponseException : IOException("이어보기 응답 형식이 올바르지 않습니다. 잠시 후 새로고침해 주세요.")
+
 /** Shyni beta4 public Library View API. Section IDs never substitute for View IDs. */
 class ShyniClient(
     val server: String,
@@ -124,7 +127,7 @@ class ShyniClient(
         request("/spoiler/client/libraries", spoiler = true), true)
 
     suspend fun spoilerContinueWatching(): List<MediaItem> = parseContinueWatching(
-        request("/spoiler/client/continue-watching?limit=30", spoiler = true), true)
+        request("/spoiler/client/continue-watching?limit=30", spoiler = true, expectContinueResponse = true), true)
 
     private data class PhysicalPart(val partId: Int, val metadataId: Int, val folderKey: String?,
         val fileName: String, val partIndex: Int?)
@@ -290,9 +293,27 @@ class ShyniClient(
         try { request("/auth/logout", JSONObject()) } finally { token = null }
     }
 
-    suspend fun continueWatching(): List<MediaItem> = parseContinueWatching(request("/continue-watching?limit=30"), false)
+    suspend fun continueWatching(): List<MediaItem> = parseContinueWatching(
+        request("/continue-watching?limit=30", expectContinueResponse = true), false)
 
-    private fun parseContinueWatching(value: Any, privateCatalog: Boolean): List<MediaItem> = rows(value, "items").mapNotNull { row ->
+    private fun continueRows(value: Any): List<JSONObject> {
+        val array = when (value) {
+            is JSONArray -> value
+            is JSONObject -> {
+                var selected: JSONArray? = null
+                for (key in listOf("items", "results")) {
+                    if (!value.has(key)) continue
+                    val candidate = value.opt(key) as? JSONArray ?: throw ContinueWatchingResponseException()
+                    if (selected == null) selected = candidate
+                }
+                selected ?: throw ContinueWatchingResponseException()
+            }
+            else -> throw ContinueWatchingResponseException()
+        }
+        return List(array.length()) { index -> array.opt(index) as? JSONObject ?: throw ContinueWatchingResponseException() }
+    }
+
+    private fun parseContinueWatching(value: Any, privateCatalog: Boolean): List<MediaItem> = continueRows(value).mapNotNull { row ->
         val libraryId = row.intOrNull("library_view_id") ?: return@mapNotNull null
         if (row.stringOrNull("federated_id") != null || row.optBoolean("remote")) return@mapNotNull null
         val type = row.stringOrNull("item_type") ?: row.stringOrNull("type") ?: "movie"
@@ -883,7 +904,7 @@ class ShyniClient(
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, "UTF-8")
 
     private suspend fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true, method: String = "POST", responseLimit: Long? = null,
-        spoiler: Boolean = false, spoilerToken: String? = null): Any {
+        spoiler: Boolean = false, spoilerToken: String? = null, expectContinueResponse: Boolean = false): Any {
         val url = resolve(path)
         if (!sameOrigin(url)) throw ApiException("다른 서버로 인증 정보를 전달할 수 없습니다.")
         val builder = Request.Builder().url(url).header("Accept", "application/json")
@@ -921,6 +942,7 @@ class ShyniClient(
                             }
                             val json = runCatching { JSONTokener(text).nextValue() }.getOrNull()
                             if (!it.isSuccessful) throw ApiException(errorMessage(json, it.code), it.code)
+                            if (expectContinueResponse && json == null) throw ContinueWatchingResponseException()
                             // Current Shyni web servers may issue an HttpOnly session
                             // instead of a JSON bearer. Keep that session scoped to
                             // this origin, encrypted by SessionStore like a bearer.

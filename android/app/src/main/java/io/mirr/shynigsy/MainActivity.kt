@@ -51,7 +51,9 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaybackCompletionSignals.changes.combine(model.state) { revision, state -> revision to state }
                     .collect { (revision, state) ->
-                    if (revision > lastCompletionRevision && state.loggedIn && !state.busy && !state.spoilerBusy) {
+                    // A late progress commit must not wait behind the recent catalog.
+                    if (revision > lastCompletionRevision && state.loggedIn &&
+                        (!state.busy || state.homeLoading) && !state.spoilerBusy) {
                         lastCompletionRevision = revision
                         model.refresh()
                     }

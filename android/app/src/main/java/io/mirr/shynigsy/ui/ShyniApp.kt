@@ -201,8 +201,11 @@ fun ShyniApp(
                         recent = state.recentItems,
                         continuing = state.continueItems,
                         continueDetails = state.continueDetails,
+                        continueLoading = state.continueLoading,
+                        continueError = state.continueError,
+                        recentLoading = state.recentLoading,
                         spoilerUnlocked = state.spoilerUnlocked,
-                        busy = state.busy,
+                        busy = state.busy && !state.homeLoading,
                         error = state.error,
                         viewModel = viewModel,
                         onWatchOptions = onWatchOptions,
@@ -393,6 +396,9 @@ private fun HomeScreen(
     recent: List<MediaItem>,
     continuing: List<MediaItem>,
     continueDetails: MediaItem?,
+    continueLoading: Boolean,
+    continueError: String?,
+    recentLoading: Boolean,
     spoilerUnlocked: Boolean,
     busy: Boolean,
     error: String?,
@@ -403,13 +409,14 @@ private fun HomeScreen(
     val heroAlignment = if (LocalConfiguration.current.screenWidthDp >= 600) Alignment.CenterEnd else Alignment.Center
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = if (visibleContinuing.isNotEmpty()) 0.dp else 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        if (visibleContinuing.isEmpty()) item { SectionTitle("최근 추가됨") }
-        if (visibleContinuing.isNotEmpty()) {
-            item {
-                ContinueWatchingSection(
+        item {
+                HomeContinueWatchingSection(
                     items = visibleContinuing,
+                    loading = continueLoading,
+                    error = continueError,
                     spoilerUnlocked = spoilerUnlocked,
                     busy = busy,
+                    onRetry = viewModel::refresh,
                     onResume = viewModel::playContinue,
                     onSelected = viewModel::selectContinueItem,
                     selectedDetails = continueDetails,
@@ -421,12 +428,11 @@ private fun HomeScreen(
                     backdrop = { item, modifier -> Poster(item, viewModel, modifier,
                         imageUrl = item.backdrop ?: item.poster, imageAlignment = heroAlignment) },
                 )
-            }
-            item { SectionTitle("최근 추가됨") }
         }
+        item { SectionTitle("최근 추가됨") }
         if (error != null) item { ErrorMessage(error, Modifier.padding(horizontal = 20.dp)) }
         if (recent.isEmpty() && error == null) item {
-            EmptyMessage(if (busy) "작품을 불러오는 중입니다" else "최근 추가된 작품이 없습니다",
+            EmptyMessage(if (recentLoading) "작품을 불러오는 중입니다" else "최근 추가된 작품이 없습니다",
                 Modifier.padding(horizontal = 20.dp))
         } else if (recent.isNotEmpty()) {
             libraries.forEach { library ->
