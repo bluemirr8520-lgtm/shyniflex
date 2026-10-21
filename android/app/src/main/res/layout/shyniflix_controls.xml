@@ -48,9 +48,9 @@
                 android:contentDescription="다음 영상" android:enabled="false" android:alpha="0.35"
                 android:backgroundTint="#142536" />
             <Button android:id="@+id/player_conversion" android:layout_width="72dp" android:layout_height="48dp"
-                android:text="변환" android:textSize="14sp" android:textColor="#FFFFFF" android:minWidth="0dp"
+                android:text="화질" android:textSize="14sp" android:textColor="#FFFFFF" android:minWidth="0dp"
                 android:paddingHorizontal="4dp" android:maxLines="1" android:ellipsize="end"
-                android:contentDescription="변환 (데이터 절약)" android:backgroundTint="#142536" />
+                android:contentDescription="화질" android:backgroundTint="#142536" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

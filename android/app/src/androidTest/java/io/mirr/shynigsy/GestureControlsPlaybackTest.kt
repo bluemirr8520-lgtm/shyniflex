@@ -46,6 +46,93 @@ import kotlin.math.roundToInt
 class GestureControlsPlaybackTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun tvResizeUpdatesNativeRenderer() = withFixture(false) { scenario ->
+        org.junit.Assume.assumeTrue(instrumentation.targetContext.isTelevision())
+        waitFor(scenario, "source ready for resize") { activity ->
+            findView<PlayerView>(activity.findViewById(android.R.id.content))?.player?.playbackState == Player.STATE_READY
+        }
+        scenario.onActivity { activity ->
+            val video = findView<PlayerView>(activity.findViewById(android.R.id.content))!!
+            repeat(3) {
+                activity.findViewById<View>(R.id.player_resize).performClick()
+                assertEquals(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL, video.resizeMode)
+                when (activity.findViewById<View>(R.id.player_resize).contentDescription.toString()) {
+                    "화면 맞춤" -> {
+                        assertEquals(true, `is`.xyz.mpv.MPVLib.getPropertyBoolean("keepaspect"))
+                        assertEquals(0.0, `is`.xyz.mpv.MPVLib.getPropertyDouble("panscan")!!, .001)
+                    }
+                    "화면 채움" -> {
+                        assertEquals(true, `is`.xyz.mpv.MPVLib.getPropertyBoolean("keepaspect"))
+                        assertEquals(1.0, `is`.xyz.mpv.MPVLib.getPropertyDouble("panscan")!!, .001)
+                    }
+                    "화면 늘림" -> assertEquals(false, `is`.xyz.mpv.MPVLib.getPropertyBoolean("keepaspect"))
+                    else -> fail("Unknown resize mode")
+                }
+            }
+        }
+    }
+
+    @Test fun tvSettingsTabsAndRowsAcceptDirectionalNavigation() = withFixture(false) { scenario ->
+        org.junit.Assume.assumeTrue(instrumentation.targetContext.isTelevision())
+        waitFor(scenario, "paused source ready for settings navigation") { activity ->
+            val active = findView<PlayerView>(activity.findViewById(android.R.id.content))?.player
+            if (active?.playbackState == Player.STATE_READY) active.pause()
+            active?.playbackState == Player.STATE_READY && !active.playWhenReady
+        }
+        fun focusedLabel(): String {
+            val root = instrumentation.uiAutomation.rootInActiveWindow ?: return ""
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            return try { focused?.contentDescription?.toString() ?: focused?.text?.toString().orEmpty() }
+            finally { focused?.recycle(); root.recycle() }
+        }
+        scenario.onActivity { it.findViewById<View>(R.id.player_settings).performClick() }
+        waitForWindow("settings opens with speed row focused") { focusedLabel().startsWith("배속") }
+        listOf("화면 크기", "화질", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
+            waitForWindow("settings focus reaches $label") { focusedLabel().startsWith(label) }
+        }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+        waitForWindow("confirm opens actual font options") { activeWindowChoiceLabels().isNotEmpty() }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        scenario.onActivity { activity ->
+            val active = findView<PlayerView>(activity.findViewById(android.R.id.content))!!.player!!
+            assertFalse("Settings navigation must preserve paused playback", active.playWhenReady)
+        }
+    }
+
+    @Test fun remoteSeekPreviewKeepsLatestTargetAndRestoresPause() = withFixture(false) { scenario ->
+        var overlay: Media3GestureView? = null
+        var video: PlayerView? = null
+        waitFor(scenario, "paused source ready for remote preview") { activity ->
+            val root = activity.findViewById<View>(android.R.id.content)
+            overlay = findView(root)
+            video = findView(root)
+            video?.player?.let { active ->
+                active.volume = 0f
+                if (active.playbackState == Player.STATE_READY) active.pause()
+                active.playbackState == Player.STATE_READY && !active.playWhenReady
+            } == true
+        }
+        scenario.onActivity {
+            val gesture = requireNotNull(overlay)
+            assertTrue(gesture.beginRemoteSeek(true))
+            gesture.previewRemoteSeek(2_500)
+            gesture.previewRemoteSeek(3_000)
+            gesture.previewRemoteSeek(4_000)
+            assertFalse(gesture.findViewWithTag<View>(Media3GestureView.LEVEL_HUD_TAG).isShown)
+            val indicator = gesture.findViewWithTag<TextView>(Media3GestureView.SEEK_INDICATOR_TAG)
+            assertTrue(indicator.isShown)
+            assertFalse(indicator.text.contains(':'))
+            assertEquals(4_000L, gesture.pendingSeekPositionMs)
+            gesture.finishRemoteSeek()
+        }
+        waitFor(scenario, "latest remote preview target settles without resuming paused video") {
+            val active = video!!.player!!
+            !overlay!!.isSeekGestureActive && active.playbackState == Player.STATE_READY &&
+                !active.playWhenReady && abs(active.currentPosition - 4_000) < 500
+        }
+    }
+
     @Test fun introSkipPreservesPauseAndCreditsAtTheEndReturnsHome() = withFixture(false,
         markers = listOf(PlaybackMarker("intro", 1_000, 3_000), PlaybackMarker("credits", 4_000, 6_000))) { scenario ->
         var video: PlayerView? = null
@@ -347,10 +434,17 @@ class GestureControlsPlaybackTest {
         }
         tapThroughActivityRoot(scenario, R.id.player_conversion)
         waitForWindow("a local file offers original playback without a server lookup") {
-            activeWindowChoiceLabels().contains("원본 (변환 안 함)")
+            activeWindowChoiceLabels().contains("원본")
         }
         assertEquals("A local file cannot offer server conversion or invented 720p/4K profiles",
-            listOf("원본 (변환 안 함)"), activeWindowChoiceLabels())
+            listOf("원본"), activeWindowChoiceLabels())
+        if (instrumentation.targetContext.isTelevision()) {
+            val root = instrumentation.uiAutomation.rootInActiveWindow!!
+            val bounds = android.graphics.Rect()
+            try { root.getBoundsInScreen(bounds) } finally { root.recycle() }
+            assertTrue("The TV conversion picker should use a compact width", bounds.width() in
+                1 until (instrumentation.targetContext.resources.displayMetrics.widthPixels * .6f).toInt())
+        }
         assertTrue("The conversion picker can be dismissed without changing playback", clickWindowText("취소"))
         scenario.onActivity {
             assertFalse("Inspecting local conversion choices preserves paused playback", nativeView.player!!.playWhenReady)

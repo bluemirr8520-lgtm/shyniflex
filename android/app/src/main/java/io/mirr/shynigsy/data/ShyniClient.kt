@@ -52,6 +52,10 @@ class ShyniClient(
     private val browseCache = ConcurrentHashMap<String, CachedItems>()
     private data class CachedMediaInfo(val at: Long, val data: JSONObject)
     private val mediaInfoCache = ConcurrentHashMap<String, CachedMediaInfo>()
+    private val seriesCountSlots = Semaphore(2)
+    private val seriesCountGeneration = java.util.concurrent.atomic.AtomicLong()
+    private val seriesCounts = ConcurrentHashMap<String, Pair<Long, Int>>()
+    fun invalidateSeriesCounts() { seriesCountGeneration.incrementAndGet(); seriesCounts.clear() }
     var token: String? = token
         set(value) { if (field != value) { clearSpoilerGrant(); browseCache.clear(); mediaInfoCache.clear() }; field = value }
 
@@ -65,7 +69,7 @@ class ShyniClient(
     val spoilerUnlocked: Boolean get() = spoilerGrant() != null
     val spoilerExpiresAtMs: Long get() = spoilerGrant()?.expiresAtMs ?: 0
 
-    fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); browseCache.clear(); mediaInfoCache.clear() }
+    fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); browseCache.clear(); mediaInfoCache.clear(); invalidateSeriesCounts() }
 
     fun absoluteUrl(path: String): String = resolve(path).toString()
 
@@ -375,14 +379,15 @@ class ShyniClient(
     }
 
     /** Movies/shows are full arrays in beta4; paginate them locally, never fake API offsets. */
-    suspend fun items(library: Library, offset: Int = 0, query: String = ""): MediaPage {
+    suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort = LibrarySort.TITLE_ASC,
+        genre: String? = null, year: Int? = null): MediaPage {
         val normalizedQuery = query.trim()
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
-        val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery"
+        val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$sort"
         val cached = browseCache[key]?.takeIf { System.currentTimeMillis() - it.at < 60_000 && offset > 0 }
         val page = cached ?: run {
             val path = if (normalizedQuery.isEmpty())
-                "/libraries/${library.id}/${if (library.type == "tv") "shows" else "movies"}?sort=title"
+                "/libraries/${library.id}/${if (library.type == "tv") "shows" else "movies"}?${sort.query(library)}"
             else "/libraries/${library.id}/search?q=${encode(normalizedQuery)}&limit=200&metadata_type=${if (library.type == "tv") "2" else "1"}"
             val value = request(path, spoiler = library.isSpoiler)
             val parsed = rows(value, "items", "results").map { parseMedia(it, library.id, if (library.type == "tv") "show" else "movie").copy(isSpoiler = library.isSpoiler) }
@@ -390,8 +395,9 @@ class ShyniClient(
             // total contract. Expose exactly the available set to the UI.
             CachedItems(System.currentTimeMillis(), parsed, parsed.size).also { browseCache[key] = it }
         }
-        val start = offset.coerceIn(0, page.items.size)
-        return MediaPage(withProgress(page.items.drop(start).take(PAGE_SIZE)), page.total)
+        val filtered = filteredCatalog(page.items, genre, year)
+        val start = offset.coerceIn(0, filtered.items.size)
+        return filtered.copy(items = withProgress(filtered.items.drop(start).take(PAGE_SIZE)))
     }
 
     suspend fun details(item: MediaItem): MediaDetails = when (item.type) {
@@ -427,6 +433,56 @@ class ShyniClient(
             MediaDetails(item, withProgress(episodes))
         }
         else -> MediaDetails(item)
+    }
+
+    /** Count authorized episode identities, never physical file versions or partial history. */
+    suspend fun unwatchedEpisodeCount(item: MediaItem): Int? {
+        if (item.type !in setOf("show", "tv", "season")) return null
+        if (item.isSpoiler && !spoilerUnlocked) return null
+        val generation = seriesCountGeneration.get()
+        val key = "${item.libraryId}:${item.id}:${item.type}:${item.viewItemId}:${item.isSpoiler}"
+        return seriesCountSlots.withPermit {
+            if (generation != seriesCountGeneration.get()) return@withPermit null
+            seriesCounts[key]?.takeIf { System.currentTimeMillis() - it.first < 60_000 }?.let { return@withPermit it.second }
+            try {
+                fun episodeRows(value: Any): List<JSONObject> {
+                    if (value !is JSONArray && (value !is JSONObject ||
+                            (value.optJSONArray("items") == null && value.optJSONArray("results") == null))) {
+                        throw ApiException("회차 목록의 응답을 확인하지 못했습니다.")
+                    }
+                    return rows(value)
+                }
+                val showId = if (item.type == "season") item.showId ?: return@withPermit null else item.id
+                val seasonIds = if (item.type == "season") listOf(item.id) else episodeRows(request(
+                    "/libraries/${item.libraryId}/shows/$showId/seasons?platform=mobile", spoiler = item.isSpoiler))
+                    .map { it.exactPositiveInt("id") ?: throw ApiException("시즌 정보를 확인하지 못했습니다.") }.distinct()
+                val ids = linkedSetOf<Int>()
+                for (seasonId in seasonIds) {
+                    var offset = 0
+                    val seasonIdsSeen = mutableSetOf<Int>()
+                    do {
+                        val batch = episodeRows(request("/libraries/${item.libraryId}/shows/$showId/seasons/$seasonId/episodes?limit=100&offset=$offset",
+                            spoiler = item.isSpoiler))
+                        val batchIds = batch.map { it.exactPositiveInt("id") ?: throw ApiException("회차 정보를 확인하지 못했습니다.") }
+                        if (batch.isNotEmpty() && batchIds.none { it !in seasonIdsSeen }) throw ApiException("회차 목록이 반복되었습니다.")
+                        seasonIdsSeen.addAll(batchIds)
+                        ids.addAll(batchIds); offset += batch.size
+                    } while (batch.size == 100)
+                }
+                var remaining = 0
+                for (batch in ids.toList().chunked(100)) {
+                    val progress = request("/playback/progress?item_ids=${batch.joinToString(",")}&library_view_id=${item.libraryId}",
+                        spoiler = item.isSpoiler)
+                    if (progress !is JSONObject && progress !is JSONArray) throw ApiException("시청 기록을 확인하지 못했습니다.")
+                    // A failed history request is unknown; do not turn it into an unwatched count.
+                    remaining += batch.count { progressFor(progress, it)?.watchedState() != true }
+                }
+                if (generation != seriesCountGeneration.get() || (item.isSpoiler && !spoilerUnlocked)) return@withPermit null
+                seriesCounts[key] = System.currentTimeMillis() to remaining
+                remaining
+            } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+            catch (_: Exception) { null }
+        }
     }
 
     private suspend fun enrichEpisode(item: MediaItem): MediaItem {
@@ -1011,7 +1067,8 @@ class ShyniClient(
             previous?.isSpoiler == true || row.booleanOrNull("spoiler_enabled") == true,
             if (row.has("markers") && !row.isNull("markers")) PlaybackMarker.parse(row.opt("markers"), duration)
                 else previous?.markers ?: emptyList(), previous?.folderKey, previous?.navigationPartId,
-            thumbnail ?: previous?.thumbnail, playbackPart)
+            thumbnail ?: previous?.thumbnail, playbackPart,
+            mediaYear(row) ?: previous?.year, mediaGenres(row).ifEmpty { previous?.genres.orEmpty() })
     }
 
     private fun JSONObject.watchedState(): Boolean? = when {

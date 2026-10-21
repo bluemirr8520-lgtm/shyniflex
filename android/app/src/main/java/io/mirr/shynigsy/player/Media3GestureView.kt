@@ -72,6 +72,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
     private var tapSuppressed = false
     private var seekForwardHint = true
     private var displayedSeekForward = true
+    private var remoteSeeking = false
     private var stableEdgeInsets = Insets.NONE
 
     private enum class Axis { NONE, SEEK, BRIGHTNESS, VOLUME, SUBTITLE }
@@ -186,6 +187,44 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
         player?.addListener(listener)
     }
 
+    /** Remote preview shares the bounded native seek queue but leaves touch behavior unchanged. */
+    fun beginRemoteSeek(forward: Boolean): Boolean {
+        val active = player ?: return false
+        if (remoteSeeking && seeking && ending && !previewStalled) {
+            ending = false
+            seekForwardHint = forward
+            queue.resumePreview()
+            removeCallbacks(hideHud)
+            return true
+        }
+        if (seeking || locked || !canSeek(active)) return false
+        startPositionMs = active.currentPosition.coerceAtLeast(0)
+        durationMs = active.duration
+        seekForwardHint = forward
+        beginSeek(active)
+        remoteSeeking = true
+        removeCallbacks(hideHud)
+        return true
+    }
+
+    fun previewRemoteSeek(positionMs: Long) {
+        if (!remoteSeeking || !seeking || ending) return
+        targetPositionMs = positionMs.coerceIn(0, (durationMs - 1).coerceAtLeast(0))
+        showSeekIndicator()
+        queue.offer(targetPositionMs)
+        schedulePump(0)
+    }
+
+    fun finishRemoteSeek() {
+        if (remoteSeeking && seeking && !ending) finishSeek(commit = true)
+    }
+
+    fun updateSeekPlaybackIntent(play: Boolean): Boolean {
+        if (!seeking) return false
+        originalPlayWhenReady = play
+        return true
+    }
+
     /** Call before Activity pause/release; preserves a committed target, or the drag origin. */
     fun cancelSeekGesture(restorePlayback: Boolean = false): Long? {
         tapSuppressed = true
@@ -289,6 +328,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
     }
 
     private fun beginSeek(active: Player) {
+        remoteSeeking = false
         queue.reset()
         originalPlayWhenReady = active.playWhenReady
         active.playWhenReady = false
@@ -363,6 +403,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
         queue.reset()
         seeking = false
         ending = false
+        remoteSeeking = false
         axis = Axis.NONE
         removeCallbacks(pump)
         active?.playWhenReady = originalPlayWhenReady
@@ -447,6 +488,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
     }
 
     private fun showLevel(label: String, percent: Int) {
+        progress.max = 1000
         seekIndicator.visibility = View.GONE
         caption.text = "$label $percent%"
         progress.visibility = View.VISIBLE
@@ -455,6 +497,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
     }
 
     private fun resetTouchUi() {
+        remoteSeeking = false
         axis = Axis.NONE
         pointerId = -1
         removeCallbacks(hideHud)

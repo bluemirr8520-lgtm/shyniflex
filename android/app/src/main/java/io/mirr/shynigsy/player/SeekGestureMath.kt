@@ -56,6 +56,11 @@ internal class LatestSeekQueue(private val intervalMs: Long = 250) {
 
     fun complete(): Request? = inFlight.also { inFlight = null }
 
+    fun resumePreview() {
+        inFlight = inFlight?.copy(final = false)
+        pending = pending?.copy(final = false)
+    }
+
     fun reset() {
         inFlight = null
         pending = null

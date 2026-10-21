@@ -602,6 +602,13 @@ class MpvPlayer(
         holder = value; value.addCallback(this)
         if (value.surface.isValid) { surfaceSize = Size(value.surfaceFrame.width(), value.surfaceFrame.height()); attach(value.surface) }
     }
+    /** MPV owns aspect correction inside its Surface; resizing the host alone cannot stretch video. */
+    fun setVideoLayout(keepAspect: Boolean, crop: Boolean) {
+        if (!alive) return
+        MPVLib.setPropertyBoolean("keepaspect", keepAspect)
+        MPVLib.setPropertyDouble("panscan", if (crop) 1.0 else 0.0)
+    }
+
     private fun attach(surface: Surface) {
         if (!alive || !surface.isValid) return
         MPVLib.attachSurface(surface); surfaceAttached = true

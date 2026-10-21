@@ -68,6 +68,8 @@ data class MediaItem(
     val navigationPartId: Int? = null,
     val thumbnail: String? = null,
     val playbackPartId: Int? = null,
+    val year: Int? = null,
+    val genres: List<String> = emptyList(),
 ) {
     val playable: Boolean get() = type == "movie" || type == "episode"
 
@@ -84,6 +86,7 @@ data class MediaItem(
         put("folderKey", folderKey); put("navigationPartId", navigationPartId)
         put("thumbnail", thumbnail)
         put("playbackPartId", playbackPartId)
+        put("year", year); put("genres", JSONArray(genres))
     }
 
     companion object {
@@ -101,11 +104,14 @@ data class MediaItem(
             value.stringOrNull("folderKey"), value.intOrNull("navigationPartId"),
             value.stringOrNull("thumbnail"),
             value.intOrNull("playbackPartId"),
+            value.intOrNull("year"),
+            value.optJSONArray("genres")?.let { rows -> (0 until rows.length()).map { rows.getString(it) } }.orEmpty(),
         )
     }
 }
 
-data class MediaPage(val items: List<MediaItem>, val total: Int)
+data class MediaPage(val items: List<MediaItem>, val total: Int,
+    val genres: List<String> = emptyList(), val years: List<Int> = emptyList())
 data class MediaDetails(val item: MediaItem, val children: List<MediaItem> = emptyList())
 data class MediaVersion(
     val partId: Int,

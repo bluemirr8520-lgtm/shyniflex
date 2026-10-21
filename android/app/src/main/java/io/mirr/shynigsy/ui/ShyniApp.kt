@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -71,11 +73,14 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
@@ -97,6 +102,7 @@ import coil3.request.CachePolicy
 import coil3.request.crossfade
 import androidx.compose.ui.layout.ContentScale
 import io.mirr.shynigsy.AppViewModel
+import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
@@ -127,6 +133,8 @@ fun ShyniApp(
     onPlay: (PlaybackSpec) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
+    val tv = LocalContext.current.isTelevision()
+    val tvScreens = rememberSaveableStateHolder()
     var logoutConfirm by rememberSaveable { mutableStateOf(false) }
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
     var watchOptions by remember { mutableStateOf<MediaItem?>(null) }
@@ -154,6 +162,12 @@ fun ShyniApp(
         Scaffold(
             containerColor = Navy,
             topBar = {
+                if (tv && state.loggedIn) {
+                    if (detail != null || state.library != null) TvHeader(
+                    title = detail?.item?.title ?: state.library?.title,
+                    onBack = viewModel::back,
+                    )
+                } else
                 AppHeader(
                     loggedIn = state.loggedIn,
                     title = detail?.item?.title ?: state.library?.title,
@@ -177,6 +191,29 @@ fun ShyniApp(
                         onTotp = viewModel::submitTotp,
                         onCancelTotp = viewModel::cancelTotp,
                     )
+                    tv -> {
+                        Row(Modifier.fillMaxSize()) {
+                        TvSidebar(onLibraries = { libraryPickerOpen = true }, onRefresh = viewModel::refresh,
+                            onLogout = { logoutConfirm = true },
+                            libraries = state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler },
+                            selectedLibraryId = state.library?.id,
+                            homeSelected = state.library == null && detail == null,
+                            onHome = viewModel::openHome, onLibrary = viewModel::selectLibrary,
+                            showLocked = !state.spoilerUnlocked,
+                            spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler)
+                        Box(Modifier.weight(1f).fillMaxSize()) {
+                        val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
+                            ?: state.library?.let { "library:${it.id}" } ?: "home"
+                        tvScreens.SaveableStateProvider(screenKey) {
+                            when {
+                                detail != null -> TvDetail(state, viewModel, onWatchOptions)
+                                state.library != null -> TvLibrary(state, viewModel, onWatchOptions)
+                                else -> TvHome(state, viewModel, onWatchOptions)
+                            }
+                        }
+                        }
+                        }
+                    }
                     detail != null -> key(detail.item.libraryId, detail.item.id) { DetailScreen(
                         detail = detail,
                         versions = state.versions,
@@ -221,9 +258,9 @@ fun ShyniApp(
             title = { Text("로그아웃") },
             text = { Text("이 기기에서 로그아웃할까요?") },
             confirmButton = {
-                TextButton(onClick = { logoutConfirm = false; viewModel.logout() }) { Text("로그아웃") }
+                TextButton(onClick = { logoutConfirm = false; viewModel.logout() }, modifier = Modifier.tvOnlyFocus()) { Text("로그아웃") }
             },
-            dismissButton = { TextButton(onClick = { logoutConfirm = false }) { Text("취소") } },
+            dismissButton = { TextButton(onClick = { logoutConfirm = false }, modifier = Modifier.tvOnlyFocus()) { Text("취소") } },
         )
         if (libraryPickerOpen && state.loggedIn) LibraryPicker(
             libraries = state.libraries,
@@ -321,12 +358,17 @@ internal fun LoginScreen(
     var code by remember(totpChallenge) { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
+    val tv = LocalContext.current.isTelevision()
+    val initialFocus = remember { FocusRequester() }
+    LaunchedEffect(tv, totpChallenge, busy) {
+        if (tv && !busy) { androidx.compose.runtime.withFrameNanos { }; initialFocus.requestFocus() }
+    }
     fun submitLogin() {
         focus.clearFocus()
         onLogin(server.trim(), user.trim(), password)
     }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = if (tv) Modifier.fillMaxSize().wrapContentSize(Alignment.TopCenter).widthIn(max = 640.dp) else Modifier.fillMaxSize(),
         contentPadding = PaddingValues(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -347,20 +389,20 @@ internal fun LoginScreen(
             item {
                 OutlinedTextField(server, { server = it }, label = { Text("서버 주소") },
                     enabled = !busy,
-                    singleLine = true, modifier = Modifier.fillMaxWidth().testTag("login_server"),
+                    singleLine = true, modifier = Modifier.fillMaxWidth().then(if (tv) Modifier.focusRequester(initialFocus) else Modifier).tvOnlyFocus().testTag("login_server"),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next))
             }
             item {
                 OutlinedTextField(user, { user = it }, label = { Text("아이디") }, enabled = !busy,
-                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    singleLine = true, modifier = Modifier.fillMaxWidth().tvOnlyFocus(),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next))
             }
             item {
                 OutlinedTextField(password, { password = it }, label = { Text("비밀번호") }, enabled = !busy,
-                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    singleLine = true, modifier = Modifier.fillMaxWidth().tvOnlyFocus(),
                     visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }, modifier = Modifier.tvOnlyFocus()) {
                             Icon(if (passwordVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
                                 if (passwordVisible) "비밀번호 숨기기" else "비밀번호 표시")
                         }
@@ -370,7 +412,7 @@ internal fun LoginScreen(
             }
         } else item {
             OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("인증 코드") },
-                enabled = !busy, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                enabled = !busy, singleLine = true, modifier = Modifier.fillMaxWidth().then(if (tv) Modifier.focusRequester(initialFocus) else Modifier).tvOnlyFocus(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { if (!busy && code.length == 6) { focus.clearFocus(); onTotp(code) } }))
         }
@@ -379,14 +421,14 @@ internal fun LoginScreen(
             Button(
                 onClick = { if (totpChallenge == null) submitLogin() else { focus.clearFocus(); onTotp(code) } },
                 enabled = !busy && if (totpChallenge == null) server.isNotBlank() && user.isNotBlank() && password.isNotEmpty() else code.length == 6,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
+                modifier = Modifier.fillMaxWidth().tvOnlyFocus().height(52.dp),
                 shape = RoundedCornerShape(14.dp),
             ) {
                 if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else Text(if (totpChallenge == null) "로그인" else "인증하고 로그인", fontWeight = FontWeight.Bold)
             }
         }
-        if (totpChallenge != null) item { TextButton(onClick = onCancelTotp, enabled = !busy) { Text("로그인 화면으로 돌아가기") } }
+        if (totpChallenge != null) item { TextButton(onClick = onCancelTotp, enabled = !busy, modifier = Modifier.tvOnlyFocus()) { Text("로그인 화면으로 돌아가기") } }
     }
 }
 
@@ -472,7 +514,7 @@ private fun LibraryPicker(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (spoilerAvailable || spoilerUnlocked) OutlinedButton(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
-                enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
+                enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
                 Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null)
                 Spacer(Modifier.width(8.dp))
                 Text(if (spoilerUnlocked) "스포일러 라이브러리 잠금" else "스포일러 라이브러리 열기")
@@ -483,7 +525,7 @@ private fun LibraryPicker(
             else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(libraries, key = { it.id }) { library ->
-                    Card(onClick = { onSelect(library) }, modifier = Modifier.fillMaxWidth(),
+                    Card(onClick = { onSelect(library) }, modifier = Modifier.fillMaxWidth().tvOnlyFocus(),
                         colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(12.dp)) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -500,7 +542,7 @@ private fun LibraryPicker(
             }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("닫기") } },
+        confirmButton = { TextButton(onClick = onDismiss, modifier = Modifier.tvOnlyFocus()) { Text("닫기") } },
     )
 }
 
@@ -524,14 +566,14 @@ private fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Uni
                     label = { Text("PIN") }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submit() }),
-                    modifier = Modifier.fillMaxWidth().testTag("spoiler-pin"))
+                    modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("spoiler-pin"))
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (error != null) Text(error, color = Color(0xFFFFBCCB))
             }
         },
         confirmButton = { TextButton(onClick = { submit() }, enabled = !busy && pin.isNotBlank(),
-            modifier = Modifier.testTag("spoiler-unlock")) { Text("잠금 해제") } },
-        dismissButton = { TextButton(onClick = { pin = ""; onDismiss() }) { Text("취소") } },
+            modifier = Modifier.tvOnlyFocus().testTag("spoiler-unlock")) { Text("잠금 해제") } },
+        dismissButton = { TextButton(onClick = { pin = ""; onDismiss() }, modifier = Modifier.tvOnlyFocus()) { Text("취소") } },
     )
 }
 
@@ -723,20 +765,20 @@ internal fun WatchedOptionsDialog(item: MediaItem, onDismiss: () -> Unit, onSetW
     AlertDialog(onDismissRequest = onDismiss, title = { Text(item.showTitle ?: item.title) },
         text = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { onSetWatched(true) }, modifier = Modifier.fillMaxWidth().testTag("watched-mark-seen")) {
+                TextButton(onClick = { onSetWatched(true) }, modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("watched-mark-seen")) {
                     Text(if (collection) "모든 회차 보았음" else "보았음")
                 }
-                TextButton(onClick = { onSetWatched(false) }, modifier = Modifier.fillMaxWidth().testTag("watched-mark-unseen")) {
+                TextButton(onClick = { onSetWatched(false) }, modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("watched-mark-unseen")) {
                     Text(if (collection) "모든 회차 보지 않음" else "보지 않음")
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("취소") } },
+        confirmButton = { TextButton(onClick = onDismiss, modifier = Modifier.tvOnlyFocus()) { Text("취소") } },
     )
 }
 
 @Composable
-private fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier = Modifier,
+internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop, transparentBackground: Boolean = false,
     imageUrl: String? = item.poster, imageAlignment: Alignment = Alignment.Center) {
     val context = LocalContext.current
@@ -758,12 +800,12 @@ private fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier 
 }
 
 @Composable
-private fun VersionSelector(versions: List<MediaVersion>, selected: Int?, enabled: Boolean, onSelect: (Int?) -> Unit) {
+internal fun VersionSelector(versions: List<MediaVersion>, selected: Int?, enabled: Boolean, onSelect: (Int?) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("재생 파일", style = MaterialTheme.typography.labelLarge, color = Muted)
         Box {
-            OutlinedButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().tvOnlyFocus()) {
                 Text(versions.firstOrNull { it.partId == selected }?.label ?: "기본 파일", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Icon(Icons.Rounded.ExpandMore, "재생 파일 선택")
             }

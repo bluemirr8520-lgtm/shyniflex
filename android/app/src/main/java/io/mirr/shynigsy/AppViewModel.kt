@@ -36,6 +36,11 @@ data class AppState(
     val items: List<MediaItem> = emptyList(),
     val total: Int = 0,
     val query: String = "",
+    val librarySort: LibrarySort = LibrarySort.TITLE_ASC,
+    val libraryGenre: String? = null,
+    val libraryYear: Int? = null,
+    val libraryGenres: List<String> = emptyList(),
+    val libraryYears: List<Int> = emptyList(),
     val detailStack: List<MediaDetails> = emptyList(),
     val versions: List<MediaVersion> = emptyList(),
     val selectedPartId: Int? = null,
@@ -47,6 +52,7 @@ data class AppState(
     val spoilerBusy: Boolean = false,
     val spoilerPromptOpen: Boolean = false,
     val spoilerError: String? = null,
+    val seriesCountRevision: Int = 0,
 )
 
 /** A first launch has no server; only a user's previously saved address can restore one. */
@@ -75,6 +81,7 @@ internal fun navigationQueryForPlayback(state: AppState, item: MediaItem): Strin
 internal fun withoutSpoilerContent(state: AppState): AppState {
     val privateScreen = state.library?.isSpoiler == true || state.detailStack.any { it.item.isSpoiler }
     return state.copy(spoilerUnlocked = false, spoilerBusy = false, spoilerPromptOpen = false, spoilerError = null,
+        seriesCountRevision = state.seriesCountRevision + 1,
         libraries = state.libraries.filterNot { it.isSpoiler }, recentItems = state.recentItems.filterNot { it.isSpoiler },
         continueItems = state.continueItems.filterNot { it.isSpoiler },
         continueDetails = state.continueDetails?.takeUnless { it.isSpoiler },
@@ -578,10 +585,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         if (library.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         mutableState.update { it.copy(library = library, items = emptyList(), total = 0,
-            query = "", detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
+            query = "", librarySort = LibrarySort.TITLE_ASC, libraryGenre = null, libraryYear = null,
+            libraryGenres = emptyList(), libraryYears = emptyList(), detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
         launchRequest {
             val page = active.items(library)
-            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
+                libraryGenres = page.genres, libraryYears = page.years) }
         }
     }
 
@@ -591,7 +600,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val library = snapshot.library ?: return
         if (snapshot.busy || snapshot.items.size >= snapshot.total) return
         launchRequest {
-            val page = active.items(library, snapshot.items.size, snapshot.query)
+            val page = active.items(library, snapshot.items.size, snapshot.query, snapshot.librarySort, snapshot.libraryGenre, snapshot.libraryYear)
             mutableState.update { it.copy(items = (snapshot.items + page.items).map(::collectionWatchState).distinctBy { item -> item.id },
                 total = if (page.items.isEmpty()) snapshot.items.size else page.total) }
         }
@@ -604,6 +613,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchRequest {
             val page = active.items(library, query = query)
             mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+        }
+    }
+
+    fun setLibraryOptions(sort: LibrarySort = mutableState.value.librarySort,
+        genre: String? = mutableState.value.libraryGenre, year: Int? = mutableState.value.libraryYear) {
+        val active = client ?: return
+        val library = mutableState.value.library ?: return
+        mutableState.update { it.copy(librarySort = sort, libraryGenre = genre, libraryYear = year,
+            query = "", items = emptyList(), total = 0) }
+        launchRequest {
+            val page = active.items(library, sort = sort, genre = genre, year = year)
+            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
+                libraryGenres = page.genres, libraryYears = page.years) }
         }
     }
 
@@ -716,6 +738,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refresh()
     }
 
+    fun openHome() {
+        requestJob?.cancel(); revision++
+        mutableState.update { it.copy(detailStack = emptyList(), library = null, items = emptyList(),
+            total = 0, query = "", busy = false, error = null, versions = emptyList(), selectedPartId = null) }
+    }
+
     fun back() {
         requestJob?.cancel(); revision++
         mutableState.update {
@@ -725,10 +753,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun seriesUnwatchedCount(item: MediaItem): Int? {
+        val active = client ?: return null
+        val epoch = mutableState.value.seriesCountRevision
+        if (item.isSpoiler && !mutableState.value.spoilerUnlocked) return null
+        val result = withTimeoutOrNull(30_000) { active.unwatchedEpisodeCount(item) }
+        return result.takeIf { active === client && epoch == mutableState.value.seriesCountRevision &&
+            mutableState.value.loggedIn && (!item.isSpoiler || (mutableState.value.spoilerUnlocked && active.spoilerUnlocked)) }
+    }
+
     fun refresh() = refreshCurrent()
 
     private fun refreshCurrent(afterRefresh: (() -> Unit)? = null) {
         val active = client ?: return
+        active.invalidateSeriesCounts()
+        mutableState.update { it.copy(seriesCountRevision = it.seriesCountRevision + 1) }
         val snapshot = mutableState.value
         launchRequest {
             coroutineScope {
@@ -742,8 +781,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         mutableState.update { it.copy(versions = versions) }
                     }
                 } else snapshot.library?.let { library ->
-                    val page = active.items(library, query = snapshot.query)
-                    mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+                    val page = active.items(library, query = snapshot.query, sort = snapshot.librarySort,
+                        genre = snapshot.libraryGenre, year = snapshot.libraryYear)
+                    mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
+                        libraryGenres = page.genres, libraryYears = page.years) }
                 }
             }
             afterRefresh?.invoke()

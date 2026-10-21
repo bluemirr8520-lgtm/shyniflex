@@ -36,6 +36,7 @@ import io.mirr.shynigsy.player.mpv.MpvPlayer
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.AspectRatioFrameLayout
 import io.mirr.shynigsy.R
+import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.PlaybackSpec
 import io.mirr.shynigsy.data.PlaybackNeighbors
 import io.mirr.shynigsy.data.PlaybackMarker
@@ -61,12 +62,28 @@ import java.util.concurrent.ConcurrentHashMap
 
 /** MPV decodes media while the original Shyni controls and subtitle Canvas remain native. */
 class NativePlayerActivity : AppCompatActivity() {
+    private val television by lazy { isTelevision() }
     private lateinit var spec: PlaybackSpec
     private lateinit var client: ShyniClient
     private lateinit var playerView: PlayerView
     private lateinit var gestures: Media3GestureView
     private lateinit var lockButton: Button
     private lateinit var segmentSkipButton: Button
+    private var remoteSeek: RemoteSeekTimeline? = null
+    private var remoteSeekKey = KeyEvent.KEYCODE_UNKNOWN
+    private var remoteSeekLastEventAt = 0L
+    private val remoteSeekFrame = object : Runnable {
+        override fun run() {
+            val timeline = remoteSeek ?: return
+            val now = SystemClock.elapsedRealtime()
+            if (!visible || exiting || !gestures.isSeekGestureActive || now - remoteSeekLastEventAt > 1500) {
+                finishRemoteSeeking()
+                return
+            }
+            gestures.previewRemoteSeek(timeline.targetAt(now))
+            handler.postDelayed(this, 16)
+        }
+    }
     private var activeSkipMarker: PlaybackMarker? = null
     private var playerGestureActive = false
     private lateinit var errorPanel: LinearLayout
@@ -289,7 +306,10 @@ class NativePlayerActivity : AppCompatActivity() {
             } finally { progressScope.cancel() }
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() = leavePlayer()
+            override fun handleOnBackPressed() {
+                if (television && playerView.isControllerFullyVisible) playerView.hideController()
+                else leavePlayer()
+            }
         })
         preparePlayback(resumeWhenVisible)
         refreshPlaybackNeighbors()
@@ -375,7 +395,7 @@ class NativePlayerActivity : AppCompatActivity() {
             gestures.controllerVisible = visibility == View.VISIBLE && !gestures.locked
             if (gestures.locked) {
                 if (visibility == View.VISIBLE) playerView.hideController()
-            } else lockButton.visibility = if (visibility == View.VISIBLE) View.VISIBLE else View.GONE
+            } else lockButton.visibility = if (!television && visibility == View.VISIBLE) View.VISIBLE else View.GONE
             updateSegmentSkipButton()
         })
         gestures.controllerVisible = playerView.isControllerFullyVisible
@@ -388,6 +408,22 @@ class NativePlayerActivity : AppCompatActivity() {
             addView(Button(this@NativePlayerActivity).apply { text = "라이브러리로 돌아가기"; setOnClickListener { leavePlayer() } })
         }
         root.addView(errorPanel, FrameLayout.LayoutParams(dp(410), -2, Gravity.CENTER))
+        if (television) {
+            // The screen lock is a touch control; a TV must always retain remote navigation.
+            lockButton.visibility = View.GONE
+            playerView.controllerShowTimeoutMs = 6000
+            listOf(R.id.player_back, R.id.player_resize, R.id.player_settings, R.id.player_speed,
+                R.id.player_conversion, R.id.player_previous, R.id.player_next,
+                androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_play_pause,
+                androidx.media3.ui.R.id.exo_ffwd).forEach { id ->
+                playerView.findViewById<View>(id)?.apply {
+                    background = androidx.core.content.ContextCompat.getDrawable(this@NativePlayerActivity, R.drawable.tv_player_button)
+                    backgroundTintList = null
+                    isFocusable = true
+                }
+            }
+            segmentSkipButton.background = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.tv_control_background)
+        }
         setContentView(root)
     }
 
@@ -437,6 +473,9 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (television && ::playerView.isInitialized && ::errorPanel.isInitialized && errorPanel.isShown)
+            return super.dispatchKeyEvent(event)
+        if (television && ::gestures.isInitialized && !gestures.locked && handleTvKey(event)) return true
         if (::gestures.isInitialized && !gestures.locked && event.keyCode in
             listOf(KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS)) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
@@ -460,6 +499,62 @@ class NativePlayerActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun handleTvKey(event: KeyEvent): Boolean {
+        val active = player ?: return false
+        val down = event.action == KeyEvent.ACTION_DOWN
+        val firstDown = down && event.repeatCount == 0
+        val ready = prepared && !exiting && !refreshing && !navigationLoading && !conversionLoading
+        if (remoteSeek != null && event.keyCode == remoteSeekKey) {
+            remoteSeekLastEventAt = SystemClock.elapsedRealtime()
+            if (event.action == KeyEvent.ACTION_UP) finishRemoteSeeking()
+            return true
+        }
+        if (remoteSeek != null && firstDown && event.keyCode != KeyEvent.KEYCODE_DPAD_LEFT &&
+            event.keyCode != KeyEvent.KEYCODE_DPAD_RIGHT && event.keyCode != KeyEvent.KEYCODE_MEDIA_REWIND &&
+            event.keyCode != KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) finishRemoteSeeking()
+        when (val action = tvRemoteAction(event.keyCode, playerView.isControllerFullyVisible)) {
+            TvRemoteAction.PLAY, TvRemoteAction.PAUSE, TvRemoteAction.TOGGLE_PLAY -> if (firstDown && ready) {
+                val play = when (action) {
+                    TvRemoteAction.PLAY -> true
+                    TvRemoteAction.PAUSE -> false
+                    else -> !(gestures.playWhenReadyBeforeSeek ?: active.playWhenReady)
+                }
+                if (!gestures.updateSeekPlaybackIntent(play)) active.playWhenReady = play
+            }
+            TvRemoteAction.SEEK_BACK, TvRemoteAction.SEEK_FORWARD -> if (down && ready && active.isCurrentMediaItemSeekable) {
+                val forward = action == TvRemoteAction.SEEK_FORWARD
+                val now = SystemClock.elapsedRealtime()
+                val origin = remoteSeek?.targetAt(now) ?: gestures.pendingSeekPositionMs ?: active.currentPosition
+                if (remoteSeek != null || gestures.beginRemoteSeek(forward)) {
+                    remoteSeek = RemoteSeekTimeline(origin, active.duration, forward, now)
+                    remoteSeekKey = event.keyCode
+                    remoteSeekLastEventAt = now
+                    gestures.previewRemoteSeek(remoteSeek!!.targetAt(now))
+                    handler.removeCallbacks(remoteSeekFrame)
+                    handler.postDelayed(remoteSeekFrame, 16)
+                }
+            }
+            TvRemoteAction.SETTINGS -> if (firstDown && ready) showSettings()
+            TvRemoteAction.SHOW_CONTROLS -> {
+                // Opening on release prevents the same press activating a newly focused button.
+                if (event.action == KeyEvent.ACTION_UP) {
+                    playerView.showController()
+                    playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+                }
+            }
+            null -> return false
+        }
+        return true
+    }
+
+    private fun finishRemoteSeeking() {
+        if (remoteSeek == null) return
+        remoteSeek = null
+        remoteSeekKey = KeyEvent.KEYCODE_UNKNOWN
+        handler.removeCallbacks(remoteSeekFrame)
+        gestures.finishRemoteSeek()
+    }
+
     private fun preparePlayback(autoStart: Boolean) {
         prepared = false
         releasePlayer()
@@ -469,6 +564,7 @@ class NativePlayerActivity : AppCompatActivity() {
             serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
+        applyResizeMode()
         mpvSubtitleController.reset()
         created.nativeSubtitleVisibility = false
         created.trackSelectionParameters = created.trackSelectionParameters.buildUpon()
@@ -606,6 +702,7 @@ class NativePlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(12), dp(20), dp(12))
             setBackgroundColor(0xFF14202D.toInt())
+            descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         panel.addView(TextView(this).apply {
             text = "재생 설정"; textSize = 18f; setTextColor(Color.WHITE)
@@ -613,7 +710,10 @@ class NativePlayerActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(-1, -2))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val focusRows = mutableListOf<View>()
+        var selectedTab = 0
         panel.addView(tabs, LinearLayout.LayoutParams(-1, dp(48)))
+        if (television) tabs.visibility = View.GONE
         val scroll = object : ScrollView(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 val limit = (resources.displayMetrics.heightPixels - dp(210)).coerceAtLeast(dp(100))
@@ -627,6 +727,7 @@ class NativePlayerActivity : AppCompatActivity() {
         panel.addView(scroll, LinearLayout.LayoutParams(-1, -2))
         val dialog = AlertDialog.Builder(this).setView(panel).create()
         val close = Button(this).apply {
+            id = View.generateViewId()
             text = "닫기"; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { dialog.dismiss() }
         }
@@ -634,10 +735,12 @@ class NativePlayerActivity : AppCompatActivity() {
 
         fun addRow(label: String, value: String = "", action: () -> Unit) {
             val row = LinearLayout(this).apply {
+                id = View.generateViewId()
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(8), 0, dp(8), 0)
                 isClickable = true; isFocusable = true
-                background = getDrawable(android.R.drawable.list_selector_background)
+                background = getDrawable(if (television) R.drawable.tv_control_background else android.R.drawable.list_selector_background)
+                descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 contentDescription = listOf(label, value).filter { it.isNotBlank() }.joinToString(", ")
                 setOnClickListener { dialog.dismiss(); action() }
             }
@@ -653,6 +756,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 text = "›"; textSize = 24f; setTextColor(0xFF92A5B6.toInt()); gravity = Gravity.END
             }, LinearLayout.LayoutParams(dp(22), -2))
             rows.addView(row, LinearLayout.LayoutParams(-1, dp(52)))
+            focusRows.add(row)
             rows.addView(View(this).apply { setBackgroundColor(0xFF30404D.toInt()) },
                 LinearLayout.LayoutParams(-1, dp(1)))
         }
@@ -660,21 +764,45 @@ class NativePlayerActivity : AppCompatActivity() {
         val titles = arrayOf("재생", "영상", "음성", "자막")
         val buttons = titles.map { title ->
             Button(this).apply {
+                id = View.generateViewId()
                 text = title; textSize = 15f; isAllCaps = false
                 setPadding(0, 0, 0, 0)
             }.also { tabs.addView(it, LinearLayout.LayoutParams(0, -1, 1f)) }
         }
         fun selectTab(index: Int) {
+            selectedTab = index
             buttons.forEachIndexed { selected, button ->
                 button.isSelected = selected == index
                 button.setTextColor(if (selected == index) 0xFF7BE6C6.toInt() else Color.WHITE)
-                button.setBackgroundColor(if (selected == index) 0xFF243B4D.toInt() else Color.TRANSPARENT)
+                if (television) button.background = getDrawable(R.drawable.tv_control_background)
+                else button.setBackgroundColor(if (selected == index) 0xFF243B4D.toInt() else Color.TRANSPARENT)
             }
             rows.removeAllViews()
+            focusRows.clear()
             when (index) {
+                -1 -> {
+                    addRow("배속", speedLabel()) { showSpeed() }
+                    addRow("화면 크기", resizeLabels[resizeModes.indexOf(resizeMode)]) {
+                        AlertDialog.Builder(this).setTitle("화면 크기")
+                            .setSingleChoiceItems(resizeLabels, resizeModes.indexOf(resizeMode)) { choice, position ->
+                                resizeMode = resizeModes[position]
+                                applyResizeMode()
+                                getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putInt("resize_mode", resizeMode).apply()
+                                choice.dismiss()
+                            }.setNegativeButton("닫기", null).show()
+                    }
+                    addRow("화질", conversionLabel()) { showConversion() }
+                    addRow("오디오 트랙", selectedTrackLabel(C.TRACK_TYPE_AUDIO)) { showTracks(C.TRACK_TYPE_AUDIO) }
+                    addRow("자막 선택", if (!subtitlesEnabled) "끔" else selectedTrackLabel(C.TRACK_TYPE_TEXT)) { showTracks(C.TRACK_TYPE_TEXT) }
+                    addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
+                    addRow("자막 위치") { showSubtitlePosition() }
+                    addRow("자막 모양") { showSubtitleAppearance() }
+                    if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
+                    addRow("싱크 다시 맞추기") { resynchronize() }
+                }
                 0 -> addRow("배속", speedLabel()) { showSpeed() }
                 1 -> {
-                    addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
+                    addRow("화질", conversionLabel()) { showConversion() }
                     addRow("화면 크기", resizeLabels[resizeModes.indexOf(resizeMode)]) {
                         cycleResizeMode(); selectTab(1)
                     }
@@ -689,18 +817,40 @@ class NativePlayerActivity : AppCompatActivity() {
                             ?: selectedTrackLabel(C.TRACK_TYPE_TEXT)
                     addRow("자막 선택", subtitleLabel) { showTracks(C.TRACK_TYPE_TEXT) }
                     addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
-                    addRow("자막 위치", "길게 눌러 이동") { showSubtitlePosition() }
+                    addRow("자막 위치", if (television) "방향별 위치 조절" else "길게 눌러 이동") { showSubtitlePosition() }
                     addRow("자막 모양") { showSubtitleAppearance() }
                     if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
                 }
             }
+            if (television) {
+                buttons.forEachIndexed { position, button ->
+                    button.nextFocusLeftId = buttons[(position - 1).coerceAtLeast(0)].id
+                    button.nextFocusRightId = buttons[(position + 1).coerceAtMost(buttons.lastIndex)].id
+                    button.nextFocusUpId = button.id
+                    button.nextFocusDownId = focusRows.firstOrNull()?.id ?: close.id
+                }
+                focusRows.forEachIndexed { position, row ->
+                    row.nextFocusUpId = if (position == 0) (if (selectedTab < 0) row.id else buttons[selectedTab].id) else focusRows[position - 1].id
+                    row.nextFocusDownId = focusRows.getOrNull(position + 1)?.id ?: close.id
+                    row.nextFocusLeftId = row.id
+                    row.nextFocusRightId = row.id
+                }
+                close.nextFocusUpId = focusRows.lastOrNull()?.id ?: buttons.first().id
+                close.nextFocusDownId = close.id
+                close.background = getDrawable(R.drawable.tv_control_background)
+                close.backgroundTintList = null
+            }
         }
-        buttons.forEachIndexed { index, button -> button.setOnClickListener { selectTab(index) } }
-        selectTab(0)
+        buttons.forEachIndexed { index, button ->
+            button.setOnClickListener { selectTab(index) }
+            if (television) button.setOnFocusChangeListener { _, focused -> if (focused) selectTab(index) }
+        }
+        selectTab(if (television) -1 else 0)
         dialog.show()
+        if (television) focusRows.firstOrNull()?.requestFocus()
         dialog.window?.apply {
-            setGravity(Gravity.BOTTOM)
-            setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            setGravity(if (television) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM)
+            setLayout(if (television) dp(440) else WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
     }
@@ -794,8 +944,8 @@ class NativePlayerActivity : AppCompatActivity() {
             .addOverride(TrackSelectionOverride(group.mediaTrackGroup, listOf(track))).build()
     }
 
-    private fun conversionLabel(): String = spec.conversionHeight?.let { "${it}p 변환" }
-        ?: if (spec.isServerConversion) "서버 자동 변환" else "원본 (변환 안 함)"
+    private fun conversionLabel(): String = spec.conversionHeight?.let { "${it}p" }
+        ?: if (spec.isServerConversion) "서버 자동" else "원본"
 
     private fun closeLockedSpoilerPlayback(): Boolean {
         if (!::spec.isInitialized || !::client.isInitialized || spec.sourceItem?.isSpoiler != true || client.spoilerUnlocked) return false
@@ -932,7 +1082,7 @@ class NativePlayerActivity : AppCompatActivity() {
             text = speedLabel(); contentDescription = "배속 설정, $text"; tooltipText = contentDescription
         }
         playerView.findViewById<Button>(R.id.player_conversion).apply {
-            text = "변환"; contentDescription = "변환 (데이터 절약), ${conversionLabel()}"; tooltipText = contentDescription
+            text = "화질"; contentDescription = "화질, ${conversionLabel()}"; tooltipText = contentDescription
             isEnabled = !conversionLoading && !refreshing
         }
         updateNavigationButtons()
@@ -943,19 +1093,20 @@ class NativePlayerActivity : AppCompatActivity() {
         val serverMedia = spec.url.startsWith("https://", true) || spec.url.startsWith("http://", true)
         val heights = if (serverMedia) listOf(null, 1080, 720, 480) else listOf(null)
         val labels = heights.map { height -> when (height) {
-            null -> "원본 (변환 안 함)"
-            1080 -> "1080p 변환"
-            720 -> "720p 변환 · 데이터 절약"
-            else -> "480p 변환 · 데이터 더 절약"
+            null -> "원본"
+            1080 -> "1080p"
+            720 -> "720p"
+            else -> "480p"
         } }
         val selected = if (spec.isServerConversion && spec.conversionHeight == null) -1 else heights.indexOf(spec.conversionHeight)
-        AlertDialog.Builder(this).setTitle("변환 (데이터 절약)")
+        val dialog = AlertDialog.Builder(this).setTitle("화질")
             .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, index ->
                 dialog.dismiss()
                 val height = heights[index]
                 if (height == spec.conversionHeight && (height != null || !spec.isServerConversion)) return@setSingleChoiceItems
                 switchConversion(height)
             }.setNegativeButton("취소", null).show()
+        if (television) dialog.window?.setLayout(dp(360), WindowManager.LayoutParams.WRAP_CONTENT)
     }
 
     private fun switchConversion(height: Int?) {
@@ -976,8 +1127,8 @@ class NativePlayerActivity : AppCompatActivity() {
         refreshing = true; conversionLoading = true
         conversionResumeWhenVisible = snapshot.playing; resumeWhenVisible = snapshot.playing
         active.pause(); playerView.hideController(); hideLockControl(); updatePlaybackButtons()
-        val loading = AlertDialog.Builder(this).setTitle("변환 (데이터 절약)")
-            .setMessage("현재 시청 위치에서 ${height?.let { "${it}p 변환" } ?: "원본 재생"}을 준비하고 있습니다…")
+        val loading = AlertDialog.Builder(this).setTitle("화질")
+            .setMessage("현재 시청 위치에서 ${height?.let { "${it}p" } ?: "원본 재생"}을 준비하고 있습니다…")
             .setNegativeButton("취소") { _, _ -> conversionJob?.cancel() }.create()
         loading.setOnCancelListener { conversionJob?.cancel() }
         loading.show()
@@ -1081,7 +1232,12 @@ class NativePlayerActivity : AppCompatActivity() {
     private val resizeLabels = arrayOf("화면 맞춤", "화면 채움", "화면 늘림")
 
     private fun applyResizeMode() {
-        playerView.resizeMode = resizeMode
+        // Keep the TV output surface at screen size, then let the renderer fit/crop/stretch.
+        // Otherwise MPV letterboxes again inside the already resized Media3 surface.
+        playerView.resizeMode = if (television) AspectRatioFrameLayout.RESIZE_MODE_FILL else resizeMode
+        if (television) player?.setVideoLayout(
+            keepAspect = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL,
+            crop = resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM)
         val selected = resizeModes.indexOf(resizeMode)
         playerView.findViewById<ImageButton>(R.id.player_resize).apply {
             setImageResource(arrayOf(R.drawable.ic_player_fit, R.drawable.ic_player_zoom,
@@ -1462,6 +1618,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        finishRemoteSeeking()
         visible = false
         playerGestureActive = false
         unlockKeyPending = false
@@ -1500,7 +1657,15 @@ class NativePlayerActivity : AppCompatActivity() {
         releasePlayer(); updates.close(); super.onDestroy()
     }
 
-    private fun showError(message: String) { errorText.text = message; errorPanel.visibility = View.VISIBLE }
+    private fun showError(message: String) {
+        errorText.text = message
+        errorPanel.visibility = View.VISIBLE
+        if (television) {
+            playerView.hideController()
+            finishRemoteSeeking()
+            errorPanel.getChildAt(1)?.requestFocus()
+        }
+    }
     private fun hideSystemBars() {
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
