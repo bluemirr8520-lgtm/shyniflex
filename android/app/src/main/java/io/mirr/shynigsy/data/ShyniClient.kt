@@ -400,7 +400,16 @@ class ShyniClient(
         )))
         "episode" -> MediaDetails(withProgress(enrichEpisode(item)))
         "show", "tv" -> {
-            val fresh = parseMedia(request("/libraries/${item.libraryId}/shows/${item.id}", spoiler = item.isSpoiler).objectValue(), item.libraryId, "show", item)
+            // Some servers also resolve a resume episode inside the show header.
+            // An unidentifiable episode must not prevent opening the separately
+            // authorized season list. Keep the original card's numeric identity.
+            val fresh = try {
+                parseMedia(request("/libraries/${item.libraryId}/shows/${item.id}", spoiler = item.isSpoiler)
+                    .objectValue(), item.libraryId, "show", item)
+            } catch (error: ApiException) {
+                if (!error.isEpisodeIdentityFailure()) throw error
+                item
+            }
             val children = rows(request("/libraries/${item.libraryId}/shows/${item.id}/seasons?platform=mobile", spoiler = item.isSpoiler))
                 .map { parseMedia(it, item.libraryId, "season").copy(showId = item.id, isSpoiler = item.isSpoiler) }
             MediaDetails(fresh, children)
@@ -473,17 +482,27 @@ class ShyniClient(
 
     /** Browse rows have no watch-history join; refresh only the visible playable items. */
     private suspend fun withProgress(items: List<MediaItem>): List<MediaItem> {
-        val updates = mutableMapOf<Pair<Int, Int>, JSONObject>()
+        val updates = mutableMapOf<Triple<Int, Boolean, Int>, JSONObject>()
+        val unavailable = mutableSetOf<Triple<Int, Boolean, Int>>()
         items.filter { it.playable }.groupBy { it.libraryId to it.isSpoiler }.forEach { (context, group) ->
             val (viewId, privateCatalog) = context
-            group.map { it.id }.distinct().chunked(100).forEach { ids ->
-                val value = request("/playback/progress?item_ids=${ids.joinToString(",")}&library_view_id=$viewId", spoiler = privateCatalog)
-                ids.forEach { id -> progressFor(value, id)?.let { updates[viewId to id] = it } }
+            group.map { it.id }.distinct().chunked(100).forEach batch@{ ids ->
+                val value = try {
+                    request("/playback/progress?item_ids=${ids.joinToString(",")}&library_view_id=$viewId", spoiler = privateCatalog)
+                } catch (error: ApiException) {
+                    if (!error.isEpisodeIdentityFailure()) throw error
+                    // A failed optional batch is unknown, not an authoritative
+                    // empty watch history. Other successful batches still apply.
+                    ids.forEach { unavailable += Triple(viewId, privateCatalog, it) }
+                    return@batch
+                }
+                ids.forEach { id -> progressFor(value, id)?.let { updates[Triple(viewId, privateCatalog, id)] = it } }
             }
         }
         return items.map { item ->
-            if (!item.playable) item else {
-                val progress = updates[item.libraryId to item.id]
+            val key = Triple(item.libraryId, item.isSpoiler, item.id)
+            if (!item.playable || key in unavailable) item else {
+                val progress = updates[key]
                 val watched = progress?.watchedState() ?: false
                 item.copy(
                     watched = watched,
@@ -492,6 +511,15 @@ class ShyniClient(
                 )
             }
         }
+    }
+
+    /** Only a reported episode identity failure in optional browse enrichment. */
+    private fun ApiException.isEpisodeIdentityFailure(): Boolean {
+        if (status !in setOf(400, 404, 409, 422, 500)) return false
+        return message?.trim()?.removeSuffix(".")?.trim() in setOf(
+            "에피소드의 정체성을 확인할 수 없습니다",
+            "에피소의 정체성을 확인할 수 없습니다",
+        )
     }
 
     /** Available source files supplied by Shyni; this never changes account transcode policy. */

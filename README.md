@@ -4,15 +4,15 @@ MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태�
 
 공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
 
-- [shyniflex 1.0.11 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.11/shyniflex-1.0.11.apk)
-- [shyniflex 1.0.11 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.11/shyniflex-1.0.11-corresponding-source.zip)
-- [v1.0.11 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.11)
+- [shyniflex 1.0.12 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.12/shyniflex-1.0.12.apk)
+- [shyniflex 1.0.12 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.12/shyniflex-1.0.12-corresponding-source.zip)
+- [v1.0.12 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.12)
 
 전체 대응 소스 ZIP에는 해당 앱 소스, MPV·FFmpeg 등 네이티브 의존 소스, 하위 모듈, Maven 런타임 라이브러리의 소스, 빌드 스크립트와 라이선스를 함께 담습니다. 복원 방법은 [네이티브 대응 소스 안내](docs/NATIVE-SOURCES.md)를 참고하세요.
 
 ## 설치와 사용
 
-설치 파일은 위 APK 링크의 `shyniflex-1.0.11.apk`(빌드 12)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.11.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함합니다. 기존 버전에서 업데이트 설치하면 로그인과 설정을 유지합니다.
+설치 파일은 위 APK 링크의 `shyniflex-1.0.12.apk`(빌드 13)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.12.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함합니다. 기존 버전에서 업데이트 설치하면 로그인과 설정을 유지합니다.
 
 1. APK를 Android 기기에 설치합니다.
 2. Shyni 서버의 HTTPS 주소와 사용자 이름·비밀번호를 입력해 로그인합니다. 2단계 인증을 사용하는 경우 인증 코드를 입력합니다.
@@ -22,6 +22,8 @@ MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태�
 6. 자막을 길게 누른 뒤 끌면 위치가 바뀝니다. 손을 떼면 저장하고, 화면 밖으로는 벗어나지 않습니다. TV에서는 같은 설정의 **자막 위치** 메뉴를 사용합니다.
 
 이어보기는 부분 시청을 끝낼 때 최종 위치 저장을 최대 4초 기다린 뒤 갱신하며, 늦게 저장이 완료돼도 홈을 다시 불러옵니다. 진행률 저장의 일시적인 통신 오류는 요청당 5초 한도로 최대 3번 시도합니다. 이어보기 조회가 실패하면 오류를 표시하고, 같은 서버·계정에서 여전히 접근 가능한 목록만 유지합니다. 로그인 변경·권한 거부·스포일러 잠금 뒤에는 이전 비공개 항목을 재사용하지 않습니다. 서버의 표시 기준은 그대로 적용됩니다. 기본 설정은 실제 시청 누적 1분 이상이며, 앞으로 건너뛴 위치만 길다고 등록되지는 않습니다. 앱 프로세스가 종료될 때까지 저장에 성공하지 못한 요청을 영구 보관하는 기능은 포함하지 않습니다.
+
+작품 상세의 이어보기 대상이나 회차 시청 기록에서 서버가 회차 정체성 오류를 보내더라도, 접근이 허용된 시즌·회차 목록을 표시합니다. 조회에 실패한 시청 기록은 기존 상태를 유지하며, 다른 묶음에서 정상 조회한 기록은 반영합니다. 실제 시즌·회차 목록 조회와 재생 요청의 오류는 그대로 안내합니다.
 
 이어보기와 최근 추가 목록은 각 응답이 도착하는 대로 따로 표시합니다. 최근 추가 목록을 불러오는 동안에도 이어보기 카드를 선택할 수 있습니다. 이어보기 영역은 빈 기록·불러오는 중·오류를 구분해 표시하고, 오류에는 다시 시도 버튼을 제공합니다. 잘못된 응답 구조를 빈 기록으로 간주하지 않으며, 같은 계정의 기존 목록만 권한 범위 안에서 유지합니다.
 
