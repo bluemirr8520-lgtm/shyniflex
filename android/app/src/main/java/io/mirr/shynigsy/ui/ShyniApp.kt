@@ -1,0 +1,849 @@
+package io.mirr.shynigsy.ui
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SmartDisplay
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
+import coil3.network.NetworkHeaders
+import coil3.network.httpHeaders
+import coil3.request.ImageRequest
+import coil3.request.CachePolicy
+import coil3.request.crossfade
+import androidx.compose.ui.layout.ContentScale
+import io.mirr.shynigsy.AppViewModel
+import io.mirr.shynigsy.data.Library
+import io.mirr.shynigsy.data.MediaDetails
+import io.mirr.shynigsy.data.MediaItem
+import io.mirr.shynigsy.data.MediaVersion
+import io.mirr.shynigsy.data.PlaybackSpec
+
+private val Navy = Color(0xFF0B1220)
+private val Panel = Color(0xFF142033)
+private val Mint = Color(0xFF83E3C5)
+private val Muted = Color(0xFFA6B6CB)
+private val ShyniColors = darkColorScheme(
+    primary = Mint,
+    onPrimary = Color(0xFF072A23),
+    primaryContainer = Color(0xFF203B38),
+    secondary = Color(0xFF8EBEFF),
+    background = Navy,
+    surface = Navy,
+    surfaceContainer = Panel,
+    surfaceVariant = Panel,
+    onSurface = Color(0xFFF0F4FA),
+    onSurfaceVariant = Muted,
+    outline = Color(0xFF35465D),
+)
+
+@Composable
+fun ShyniApp(
+    viewModel: AppViewModel,
+    onPlay: (PlaybackSpec) -> Unit,
+) {
+    val state by viewModel.state.collectAsState()
+    var logoutConfirm by rememberSaveable { mutableStateOf(false) }
+    var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
+    var watchOptions by remember { mutableStateOf<MediaItem?>(null) }
+    val onWatchOptions: (MediaItem) -> Unit = { if (canChangeWatchState(it)) watchOptions = it }
+    val detail = state.detailStack.lastOrNull()
+    LaunchedEffect(state.loggedIn) {
+        if (!state.loggedIn) libraryPickerOpen = false
+    }
+    LaunchedEffect(state.loggedIn, state.spoilerUnlocked, watchOptions) {
+        if (!state.loggedIn || (watchOptions?.isSpoiler == true && !state.spoilerUnlocked)) watchOptions = null
+    }
+    LaunchedEffect(state.spoilerUnlocked) {
+        if (state.spoilerUnlocked) libraryPickerOpen = true
+    }
+    LaunchedEffect(state.playback) {
+        state.playback?.let { spec ->
+            onPlay(spec)
+            viewModel.consumePlayback()
+        }
+    }
+    BackHandler(enabled = state.loggedIn && (detail != null || state.library != null)) {
+        viewModel.back()
+    }
+    MaterialTheme(colorScheme = ShyniColors) {
+        Scaffold(
+            containerColor = Navy,
+            topBar = {
+                AppHeader(
+                    loggedIn = state.loggedIn,
+                    title = detail?.item?.title ?: state.library?.title,
+                    userName = state.userName,
+                    onBack = viewModel::back,
+                    onRefresh = { viewModel.refresh() },
+                    onLogout = { logoutConfirm = true },
+                    onLibraries = { libraryPickerOpen = true },
+                )
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when {
+                    !state.loggedIn -> LoginScreen(
+                        initialServer = state.server,
+                        initialUser = state.userName,
+                        busy = state.busy,
+                        error = state.error,
+                        totpChallenge = state.totpChallenge,
+                        onLogin = viewModel::login,
+                        onTotp = viewModel::submitTotp,
+                        onCancelTotp = viewModel::cancelTotp,
+                    )
+                    detail != null -> key(detail.item.libraryId, detail.item.id) { DetailScreen(
+                        detail = detail,
+                        versions = state.versions,
+                        selectedPart = state.selectedPartId,
+                        busy = state.busy,
+                        error = state.error,
+                        viewModel = viewModel,
+                        onWatchOptions = onWatchOptions,
+                    ) }
+                    state.library != null -> key(state.library!!.id) { LibraryScreen(
+                        library = state.library!!,
+                        media = state.items,
+                        total = state.total,
+                        query = state.query,
+                        busy = state.busy,
+                        error = state.error,
+                        viewModel = viewModel,
+                        onWatchOptions = onWatchOptions,
+                    ) }
+                    else -> HomeScreen(
+                        libraries = state.libraries,
+                        recent = state.recentItems,
+                        continuing = state.continueItems,
+                        continueDetails = state.continueDetails,
+                        spoilerUnlocked = state.spoilerUnlocked,
+                        busy = state.busy,
+                        error = state.error,
+                        viewModel = viewModel,
+                        onWatchOptions = onWatchOptions,
+                    )
+                }
+                if (state.busy && state.loggedIn) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                }
+            }
+        }
+        if (logoutConfirm) AlertDialog(
+            onDismissRequest = { logoutConfirm = false },
+            title = { Text("로그아웃") },
+            text = { Text("이 기기에서 로그아웃할까요?") },
+            confirmButton = {
+                TextButton(onClick = { logoutConfirm = false; viewModel.logout() }) { Text("로그아웃") }
+            },
+            dismissButton = { TextButton(onClick = { logoutConfirm = false }) { Text("취소") } },
+        )
+        if (libraryPickerOpen && state.loggedIn) LibraryPicker(
+            libraries = state.libraries,
+            selectedLibraryId = state.library?.id,
+            busy = state.busy,
+            onDismiss = { libraryPickerOpen = false },
+            onSelect = { library -> libraryPickerOpen = false; viewModel.selectLibrary(library) },
+            spoilerAvailable = state.spoilerAvailable,
+            spoilerUnlocked = state.spoilerUnlocked,
+            spoilerBusy = state.spoilerBusy,
+            spoilerError = state.spoilerError,
+            onUnlockSpoiler = {
+                if (state.spoilerPinEnabled) libraryPickerOpen = false
+                viewModel.requestSpoilerUnlock()
+            },
+            onLockSpoiler = viewModel::lockSpoiler,
+        )
+        if (state.spoilerPromptOpen && state.loggedIn) SpoilerPinDialog(
+            busy = state.spoilerBusy, error = state.spoilerError,
+            onDismiss = viewModel::dismissSpoilerUnlock, onUnlock = viewModel::unlockSpoiler,
+        )
+        watchOptions?.takeIf { !it.isSpoiler || state.spoilerUnlocked }?.let { item ->
+            WatchedOptionsDialog(item, onDismiss = { watchOptions = null }, onSetWatched = { watched ->
+                watchOptions = null
+                viewModel.setWatched(item, watched)
+            })
+        }
+    }
+}
+
+@Composable
+private fun AppHeader(
+    loggedIn: Boolean,
+    title: String?,
+    userName: String,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onLogout: () -> Unit,
+    onLibraries: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().statusBarsPadding()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (title != null) IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "뒤로")
+            } else Box(
+                Modifier.padding(horizontal = 10.dp).size(38.dp).clip(RoundedCornerShape(12.dp)).background(Mint),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Rounded.PlayArrow, null, tint = Color(0xFF072A23)) }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title ?: "shyniflex",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (loggedIn) {
+                IconButton(onClick = onLibraries) {
+                    Icon(Icons.Rounded.Folder, "라이브러리")
+                }
+                IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Refresh, "새로고침") }
+                IconButton(onClick = onLogout) {
+                    Surface(color = Panel, shape = CircleShape, modifier = Modifier.size(30.dp)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(userName.take(1).uppercase().ifBlank { "S" }, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.semantics { contentDescription = "로그아웃" })
+                        }
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = Color(0xFF1C2A3D))
+    }
+}
+
+@Composable
+internal fun LoginScreen(
+    initialServer: String,
+    initialUser: String,
+    busy: Boolean,
+    error: String?,
+    totpChallenge: String?,
+    onLogin: (String, String, String) -> Unit,
+    onTotp: (String) -> Unit,
+    onCancelTotp: () -> Unit,
+) {
+    var server by rememberSaveable(initialServer) { mutableStateOf(initialServer) }
+    var user by rememberSaveable(initialUser) { mutableStateOf(initialUser) }
+    // Passwords and one-time codes deliberately stay in memory, outside saved instance state.
+    var password by remember { mutableStateOf("") }
+    var code by remember(totpChallenge) { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    val focus = LocalFocusManager.current
+    fun submitLogin() {
+        focus.clearFocus()
+        onLogin(server.trim(), user.trim(), password)
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item { Spacer(Modifier.height(16.dp)) }
+        item {
+            Surface(color = Color(0xFF1D3837), shape = RoundedCornerShape(24.dp)) {
+                Icon(Icons.Rounded.SmartDisplay, null, tint = Mint, modifier = Modifier.padding(24.dp).size(40.dp))
+            }
+        }
+        item {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (totpChallenge == null) "Shyni에 연결하세요" else "2단계 인증",
+                    style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            }
+        }
+        if (totpChallenge == null) {
+            item {
+                OutlinedTextField(server, { server = it }, label = { Text("서버 주소") },
+                    enabled = !busy,
+                    singleLine = true, modifier = Modifier.fillMaxWidth().testTag("login_server"),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next))
+            }
+            item {
+                OutlinedTextField(user, { user = it }, label = { Text("아이디") }, enabled = !busy,
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next))
+            }
+            item {
+                OutlinedTextField(password, { password = it }, label = { Text("비밀번호") }, enabled = !busy,
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(if (passwordVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                if (passwordVisible) "비밀번호 숨기기" else "비밀번호 표시")
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (!busy && user.isNotBlank() && password.isNotEmpty()) submitLogin() }))
+            }
+        } else item {
+            OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("인증 코드") },
+                enabled = !busy, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (!busy && code.length == 6) { focus.clearFocus(); onTotp(code) } }))
+        }
+        if (error != null) item { ErrorMessage(error) }
+        item {
+            Button(
+                onClick = { if (totpChallenge == null) submitLogin() else { focus.clearFocus(); onTotp(code) } },
+                enabled = !busy && if (totpChallenge == null) server.isNotBlank() && user.isNotBlank() && password.isNotEmpty() else code.length == 6,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Text(if (totpChallenge == null) "로그인" else "인증하고 로그인", fontWeight = FontWeight.Bold)
+            }
+        }
+        if (totpChallenge != null) item { TextButton(onClick = onCancelTotp, enabled = !busy) { Text("로그인 화면으로 돌아가기") } }
+    }
+}
+
+@Composable
+private fun HomeScreen(
+    libraries: List<Library>,
+    recent: List<MediaItem>,
+    continuing: List<MediaItem>,
+    continueDetails: MediaItem?,
+    spoilerUnlocked: Boolean,
+    busy: Boolean,
+    error: String?,
+    viewModel: AppViewModel,
+    onWatchOptions: (MediaItem) -> Unit,
+) {
+    val visibleContinuing = continuing.filter { spoilerUnlocked || !it.isSpoiler }
+    val heroAlignment = if (LocalConfiguration.current.screenWidthDp >= 600) Alignment.CenterEnd else Alignment.Center
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = if (visibleContinuing.isNotEmpty()) 0.dp else 24.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        if (visibleContinuing.isEmpty()) item { SectionTitle("최근 추가됨") }
+        if (visibleContinuing.isNotEmpty()) {
+            item {
+                ContinueWatchingSection(
+                    items = visibleContinuing,
+                    spoilerUnlocked = spoilerUnlocked,
+                    busy = busy,
+                    onResume = viewModel::playContinue,
+                    onSelected = viewModel::selectContinueItem,
+                    selectedDetails = continueDetails,
+                    onWatchOptions = onWatchOptions,
+                    poster = { item, modifier -> Poster(item, viewModel, modifier) },
+                    thumbnail = { item, modifier -> Poster(item, viewModel, modifier,
+                        imageUrl = if (item.type == "episode") item.thumbnail ?: item.backdrop ?: item.poster
+                            else item.backdrop ?: item.poster) },
+                    backdrop = { item, modifier -> Poster(item, viewModel, modifier,
+                        imageUrl = item.backdrop ?: item.poster, imageAlignment = heroAlignment) },
+                )
+            }
+            item { SectionTitle("최근 추가됨") }
+        }
+        if (error != null) item { ErrorMessage(error, Modifier.padding(horizontal = 20.dp)) }
+        if (recent.isEmpty() && error == null) item {
+            EmptyMessage(if (busy) "작품을 불러오는 중입니다" else "최근 추가된 작품이 없습니다",
+                Modifier.padding(horizontal = 20.dp))
+        } else if (recent.isNotEmpty()) {
+            libraries.forEach { library ->
+                val media = recent.filter { it.libraryId == library.id }
+                if (media.isNotEmpty()) {
+                    item(key = "recent-library-title:${library.id}") { SectionTitle(library.title) }
+                    item(key = "recent-library-row:${library.id}") {
+                        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            items(media, key = { "${it.libraryId}:${it.id}" }) { item ->
+                                PosterCard(item, viewModel, modifier = Modifier.width(154.dp), onWatchOptions = onWatchOptions)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryPicker(
+    libraries: List<Library>,
+    selectedLibraryId: Int?,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSelect: (Library) -> Unit,
+    spoilerAvailable: Boolean,
+    spoilerUnlocked: Boolean,
+    spoilerBusy: Boolean,
+    spoilerError: String?,
+    onUnlockSpoiler: () -> Unit,
+    onLockSpoiler: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("라이브러리") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (spoilerAvailable || spoilerUnlocked) OutlinedButton(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
+                enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
+                Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (spoilerUnlocked) "스포일러 라이브러리 잠금" else "스포일러 라이브러리 열기")
+            }
+            if (spoilerBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (spoilerError != null) Text(spoilerError, color = Color(0xFFFFBCCB))
+            if (libraries.isEmpty()) EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
+            else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(libraries, key = { it.id }) { library ->
+                    Card(onClick = { onSelect(library) }, modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(12.dp)) {
+                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Icon(if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder, null, tint = Mint)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(library.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text((if (library.isSpoiler) "비공개 · " else "") + if (library.type == "movie") "영화" else "시리즈", color = Muted,
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (library.id == selectedLibraryId) Icon(Icons.Rounded.Check, "선택됨", tint = Mint)
+                        }
+                    }
+                }
+            }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("닫기") } },
+    )
+}
+
+/** PIN text exists only while this dialog is composed; it never enters saved UI or account state. */
+@Composable
+private fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Unit, onUnlock: (String) -> Unit) {
+    var pin by remember { mutableStateOf("") }
+    fun submit() {
+        if (!busy && pin.isNotBlank()) {
+            val entered = pin
+            pin = ""
+            onUnlock(entered)
+        }
+    }
+    AlertDialog(onDismissRequest = { pin = ""; onDismiss() }, modifier = Modifier.testTag("spoiler-pin-dialog"),
+        title = { Text("스포일러 라이브러리") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("PIN을 입력해 잠금을 해제하세요.")
+                OutlinedTextField(value = pin, onValueChange = { pin = it.take(16) }, enabled = !busy,
+                    label = { Text("PIN") }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    modifier = Modifier.fillMaxWidth().testTag("spoiler-pin"))
+                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (error != null) Text(error, color = Color(0xFFFFBCCB))
+            }
+        },
+        confirmButton = { TextButton(onClick = { submit() }, enabled = !busy && pin.isNotBlank(),
+            modifier = Modifier.testTag("spoiler-unlock")) { Text("잠금 해제") } },
+        dismissButton = { TextButton(onClick = { pin = ""; onDismiss() }) { Text("취소") } },
+    )
+}
+
+@Composable
+private fun LibraryScreen(
+    library: Library,
+    media: List<MediaItem>,
+    total: Int,
+    query: String,
+    busy: Boolean,
+    error: String?,
+    viewModel: AppViewModel,
+    onWatchOptions: (MediaItem) -> Unit,
+) {
+    var searchText by rememberSaveable(library.id, query) { mutableStateOf(query) }
+    val focus = LocalFocusManager.current
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(130.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            OutlinedTextField(searchText, { searchText = it }, label = { Text("제목 검색") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                trailingIcon = { IconButton(onClick = { focus.clearFocus(); viewModel.search(searchText.trim()) }, enabled = !busy) {
+                    Icon(Icons.Rounded.Search, "검색")
+                } },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); viewModel.search(searchText.trim()) }))
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(if (query.isBlank()) "전체 작품" else "‘$query’ 검색 결과", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("${total}개", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (error != null) item(span = { GridItemSpan(maxLineSpan) }) { ErrorMessage(error) }
+        if (media.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+            EmptyMessage(if (busy) "작품을 불러오는 중입니다" else if (query.isBlank()) "표시할 작품이 없습니다" else "검색 결과가 없습니다")
+        }
+        items(media, key = { "${it.libraryId}:${it.id}" }) { item -> PosterCard(item, viewModel, onWatchOptions = onWatchOptions) }
+        if (media.size < total && media.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+            OutlinedButton(onClick = viewModel::loadMore, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text(if (busy) "불러오는 중…" else "더 불러오기 · ${media.size} / $total")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailScreen(
+    detail: MediaDetails,
+    versions: List<MediaVersion>,
+    selectedPart: Int?,
+    busy: Boolean,
+    error: String?,
+    viewModel: AppViewModel,
+    onWatchOptions: (MediaItem) -> Unit,
+) {
+    val item = detail.item
+    var descriptionExpanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                Poster(item, viewModel, Modifier.width(118.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(14.dp))
+                    .combinedClickable(enabled = !busy && canChangeWatchState(item), onClick = {},
+                        onLongClickLabel = "시청 상태 변경", onLongClick = { onWatchOptions(item) }))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Surface(color = Color(0xFF203B38), shape = RoundedCornerShape(7.dp)) {
+                        Text(typeLabel(item), modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            color = Mint, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    if (item.durationMs > 0) Text("${item.durationMs / 60_000}분", style = MaterialTheme.typography.bodyMedium, color = Muted)
+                    if (item.episodeNumber != null) Text(episodeLabel(item), style = MaterialTheme.typography.bodyMedium, color = Muted)
+                    if (!item.watched && item.resumeMs > 0 && item.playable) Text("${timeLabel(item.resumeMs)}까지 시청", style = MaterialTheme.typography.bodySmall, color = Mint)
+                }
+            }
+        }
+        if (error != null) item { ErrorMessage(error) }
+        if (item.playable) {
+            if (versions.isNotEmpty()) item {
+                VersionSelector(versions, selectedPart, enabled = !busy, onSelect = viewModel::selectVersion)
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { viewModel.play(item, item.watched) }, enabled = !busy,
+                        modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Rounded.PlayArrow, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (item.watched) "다시 재생" else if (item.resumeMs > 0) "이어보기 · ${timeLabel(item.resumeMs)}" else "재생", fontWeight = FontWeight.Bold)
+                    }
+                    if (item.resumeMs > 0 && !item.watched) OutlinedButton(onClick = { viewModel.play(item, true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("처음부터 재생")
+                    }
+                    Surface(color = Panel, shape = RoundedCornerShape(14.dp)) {
+                        WatchedSwitch(
+                            checked = item.watched,
+                            enabled = !busy,
+                            onCheckedChange = { viewModel.setWatched(item, it) },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
+                                .semantics { contentDescription = "${item.title} 시청 상태" },
+                        )
+                    }
+                }
+            }
+        }
+        if (item.summary.isNotBlank()) item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("줄거리", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(item.summary, style = MaterialTheme.typography.bodyMedium, color = Muted,
+                    maxLines = if (descriptionExpanded) Int.MAX_VALUE else 5, overflow = TextOverflow.Ellipsis)
+                if (item.summary.length > 160) TextButton(onClick = { descriptionExpanded = !descriptionExpanded }, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (descriptionExpanded) "접기" else "더 보기")
+                }
+            }
+        }
+        if (!item.playable) item {
+            Text(if (item.type == "show") "시즌" else "에피소드", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        if (!item.playable && detail.children.isEmpty()) item {
+            EmptyMessage(if (busy) "목록을 불러오는 중입니다" else "표시할 항목이 없습니다")
+        }
+        items(detail.children, key = { "${it.libraryId}:${it.id}" }) { child ->
+            Card(modifier = Modifier.fillMaxWidth().combinedClickable(enabled = !busy,
+                onClick = { viewModel.openItem(child) }, onLongClickLabel = "시청 상태 변경",
+                onLongClick = if (canChangeWatchState(child)) ({ onWatchOptions(child) }) else null),
+                shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Poster(child, viewModel, Modifier.width(62.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(9.dp)))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(child.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(if (child.type == "episode") episodeLabel(child) else typeLabel(child), color = Muted, style = MaterialTheme.typography.bodySmall)
+                        if (child.durationMs > 0) Text("${child.durationMs / 60_000}분", color = Muted, style = MaterialTheme.typography.bodySmall)
+                        if (!child.watched && child.resumeMs > 0) Text("${timeLabel(child.resumeMs)}까지 시청", color = Mint, style = MaterialTheme.typography.labelSmall)
+                    }
+                    if (child.playable) WatchedSwitch(
+                        checked = child.watched,
+                        enabled = !busy,
+                        onCheckedChange = { viewModel.setWatched(child, it) },
+                        compact = true,
+                        modifier = Modifier.semantics { contentDescription = "${child.title} 시청 상태" },
+                    ) else if (child.watched) Icon(Icons.Rounded.Check, "보았음", tint = Mint)
+                    else Icon(Icons.Rounded.PlayArrow, "${child.title} 상세 보기", tint = Mint)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PosterCard(item: MediaItem, viewModel: AppViewModel, modifier: Modifier = Modifier, showProgress: Boolean = false,
+    onWatchOptions: (MediaItem) -> Unit) {
+    Card(modifier = modifier.combinedClickable(onClick = { viewModel.openItem(item) },
+        onLongClickLabel = "시청 상태 변경", onLongClick = if (canChangeWatchState(item)) ({ onWatchOptions(item) }) else null),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent), shape = RoundedCornerShape(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(12.dp))) {
+                Poster(item, viewModel, Modifier.fillMaxSize())
+                if (item.watched && canChangeWatchState(item)) {
+                    WatchedBadge(Modifier.align(Alignment.TopEnd).padding(7.dp))
+                } else if (showProgress && item.resumeMs > 0) {
+                    Surface(Modifier.align(Alignment.TopEnd).padding(7.dp), color = Navy.copy(alpha = 0.85f), shape = CircleShape) {
+                        Icon(Icons.Rounded.PlayArrow, null, tint = Mint, modifier = Modifier.padding(5.dp).size(18.dp))
+                    }
+                    if (item.durationMs > 0) LinearProgressIndicator(
+                        progress = { (item.resumeMs.toFloat() / item.durationMs).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(4.dp).align(Alignment.BottomCenter),
+                        color = Mint, trackColor = Panel,
+                    )
+                }
+            }
+            Text(item.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium,
+                maxLines = 2, minLines = 2, overflow = TextOverflow.Ellipsis)
+            if (showProgress && !item.watched) Text(if (item.type == "episode") episodeLabel(item) else "${timeLabel(item.resumeMs)}까지 시청",
+                style = MaterialTheme.typography.labelSmall, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+internal fun canChangeWatchState(item: MediaItem) = item.playable || item.type in setOf("show", "tv", "season")
+
+@Composable
+internal fun WatchedOptionsDialog(item: MediaItem, onDismiss: () -> Unit, onSetWatched: (Boolean) -> Unit) {
+    val collection = !item.playable
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(item.showTitle ?: item.title) },
+        text = {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { onSetWatched(true) }, modifier = Modifier.fillMaxWidth().testTag("watched-mark-seen")) {
+                    Text(if (collection) "모든 회차 보았음" else "보았음")
+                }
+                TextButton(onClick = { onSetWatched(false) }, modifier = Modifier.fillMaxWidth().testTag("watched-mark-unseen")) {
+                    Text(if (collection) "모든 회차 보지 않음" else "보지 않음")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("취소") } },
+    )
+}
+
+@Composable
+private fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop, transparentBackground: Boolean = false,
+    imageUrl: String? = item.poster, imageAlignment: Alignment = Alignment.Center) {
+    val context = LocalContext.current
+    val headers = imageUrl?.let(viewModel::posterHeaders).orEmpty()
+    val request = remember(context, imageUrl, headers, item.isSpoiler) {
+        ImageRequest.Builder(context).data(imageUrl).crossfade(true)
+            .memoryCacheKey(viewModel.posterCacheKey(imageUrl.orEmpty()))
+            .diskCacheKey(viewModel.posterCacheKey(imageUrl.orEmpty()))
+            .memoryCachePolicy(if (item.isSpoiler) CachePolicy.DISABLED else CachePolicy.ENABLED)
+            .diskCachePolicy(if (item.isSpoiler) CachePolicy.DISABLED else CachePolicy.ENABLED)
+            .httpHeaders(NetworkHeaders.Builder().apply { headers.forEach { (name, value) -> set(name, value) } }.build())
+            .build()
+    }
+    Box(if (transparentBackground) modifier else modifier.background(Panel), contentAlignment = Alignment.Center) {
+        Icon(Icons.Rounded.Movie, null, tint = Color(0xFF42566D), modifier = Modifier.size(38.dp))
+        AsyncImage(model = request, contentDescription = "${item.title} 포스터",
+            modifier = Modifier.fillMaxSize(), contentScale = contentScale, alignment = imageAlignment)
+    }
+}
+
+@Composable
+private fun VersionSelector(versions: List<MediaVersion>, selected: Int?, enabled: Boolean, onSelect: (Int?) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("재생 파일", style = MaterialTheme.typography.labelLarge, color = Muted)
+        Box {
+            OutlinedButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                Text(versions.firstOrNull { it.partId == selected }?.label ?: "기본 파일", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Rounded.ExpandMore, "재생 파일 선택")
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                DropdownMenuItem(text = { Text("기본 파일") }, onClick = { open = false; onSelect(null) },
+                    trailingIcon = { if (selected == null) Icon(Icons.Rounded.Check, null) })
+                versions.forEach { version ->
+                    DropdownMenuItem(text = { Text(version.label) }, onClick = { open = false; onSelect(version.partId) },
+                        trailingIcon = { if (version.partId == selected) Icon(Icons.Rounded.Check, null) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(title: String) {
+    Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun WatchedBadge(modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, color = Navy.copy(alpha = 0.92f), shape = RoundedCornerShape(8.dp)) {
+        Row(Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Icon(Icons.Rounded.Check, null, tint = Mint, modifier = Modifier.size(14.dp))
+            Text("보았음", color = Mint, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+internal fun WatchedSwitch(
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val label = if (checked) "보았음" else "보지 않았음"
+    if (compact) {
+        Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = if (checked) Mint else Muted)
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
+    } else {
+        Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
+                color = if (checked) Mint else MaterialTheme.colorScheme.onSurface)
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
+    }
+}
+
+@Composable
+private fun EmptyMessage(message: String, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Icon(Icons.Rounded.Movie, null, tint = Muted, modifier = Modifier.size(32.dp))
+        Text(message, color = Muted, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun ErrorMessage(message: String, modifier: Modifier = Modifier) {
+    Surface(modifier.fillMaxWidth(), color = Color(0xFF3B232D), shape = RoundedCornerShape(12.dp)) {
+        Text(message, color = Color(0xFFFFBCCB), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
+    }
+}
+
+private fun typeLabel(item: MediaItem): String = when (item.type) {
+    "movie" -> "영화"
+    "show" -> "시리즈"
+    "season" -> "시즌 ${item.seasonNumber ?: ""}"
+    "episode" -> "에피소드"
+    else -> "미디어"
+}
+
+internal fun episodeLabel(item: MediaItem): String = item.displaySubtitle?.takeIf { it.isNotBlank() } ?: listOfNotNull(
+    item.seasonNumber?.let { "시즌 $it" }, item.episodeNumber?.let { "${it}화" },
+).joinToString(" · ").ifBlank { "에피소드" }
+
+internal fun timeLabel(milliseconds: Long): String {
+    val seconds = (milliseconds / 1_000).coerceAtLeast(0)
+    return if (seconds >= 3_600) "%d:%02d:%02d".format(seconds / 3_600, seconds / 60 % 60, seconds % 60)
+    else "%d:%02d".format(seconds / 60, seconds % 60)
+}

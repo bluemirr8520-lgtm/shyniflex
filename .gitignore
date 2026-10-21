@@ -1,0 +1,42 @@
+/dist/
+/runtime/
+/data/
+/artifacts/
+/outputs/
+/windows-prototype/
+
+# Runtime downloads and generated native libraries are recreated by setup-mpv.ps1.
+/android/runtime-source/
+/android/app/src/main/jniLibs/
+/android/app/src/main/assets/cacert.pem
+/android/local.properties
+
+# Local signing material, credentials and machine-specific caches.
+**/.local/
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+**/build/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+
+# Generated packages, temporary output and editor state.
+*.apk
+*.aab
+*.apks
+*.so
+*.log
+*.hprof
+*.download
+*.user
+*.pdb
+*.iml
+.idea/
+.vscode/
+.DS_Store

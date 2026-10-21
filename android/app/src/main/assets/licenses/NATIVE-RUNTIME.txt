@@ -1,0 +1,61 @@
+Shyni MPV Android native runtime
+
+Source: https://github.com/mpv-android/mpv-android/releases/tag/2026-09-17
+Official asset: app-default-universal-release.apk
+SHA256: c3b505e45b919b767b9867e7f0d16fd823d77bc7c9a6e6b181b80ea60c018a70
+Verified against the GitHub release asset digest before extraction.
+
+Extracted lib/<ABI>/*.so without modification for arm64-v8a, armeabi-v7a and x86_64.
+The matching Kotlin JNI declarations retain the required is.xyz.mpv.MPVLib name.
+The official CA bundle was extracted from assets/cacert.pem.
+
+mpv-android JNI wrapper license: MIT, included as licenses/mpv-android-MIT.txt.
+Matching wrapper sources: https://github.com/mpv-android/mpv-android/tree/2026-09-17
+Full matching source archive is saved in android/runtime-source.
+
+The libmpv and FFmpeg builds contain GPL components. Bundled native libraries
+retain their upstream licenses; the Android application must be distributed
+under compatible terms with corresponding sources and notices when redistributed.
+mpv sources: https://github.com/mpv-player/mpv
+FFmpeg sources: https://github.com/FFmpeg/FFmpeg
+Exact native dependency revisions and build recipes are recorded in the official
+release metadata and matching mpv-android source archive in android/runtime-source.
+
+Official release dependency details:
+#### :information_source: New `allstorage` APK
+
+The `api29` APK has been removed and replaced with `allstorage`, which uses the "manage external storage" permission to allow unrestricted file access without having to downgrade the API level.
+It will stay separate and not be shipped to Google Play.
+
+## Change log
+
+- Fixes:
+  - Fixed freeze/long delay before first TLS connection (@obscenelyvague)
+  - hwdec-related bug fixes
+
+## Full set of build dependencies
+
+* Android NDK r30
+* mbedtls 3.6.7
+* dav1d videolan/dav1d@362bc1138228390a0a521ecf3af18b23c6afeb9e
+* ffmpeg ffmpeg/ffmpeg@094a2f8a2a5e7fa64736e067de224ce28fdf5979
+* libxml2 2.15.4
+* fontconfig 2.18.3
+* freetype 2.14.3
+* fribidi 1.0.16
+* harfbuzz 14.4.0
+* libunibreak 8.0
+* libass libass/libass@b2fe9d8770678a7b5271387d38c20657ebf3429a
+* lua 5.2.4
+* libplacebo haasn/libplacebo@3330a515d62139259c26239014f286e233bd3a5c
+* curl 8.21.0
+* libmpv mpv-player/mpv@0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6
+* mpv-android fdf74f6830c47dbaa8a22ac79726e8303f1db5af
+
+
+### :arrow_down_small: Which APK do I download? :arrow_down_small:
+
+You generally want to get **`arm64-v8a`**. Try `armeabi-v7a` for old devices. Or `x86` otherwise.
+If you are unsure then the `universal` APK will work everywhere.
+
+**Note**: Android TV is supported, but only available on F-Droid or by installing the APK manually using e.g. [Downloader](https://play.google.com/store/apps/details?id=com.esaba.downloader).
