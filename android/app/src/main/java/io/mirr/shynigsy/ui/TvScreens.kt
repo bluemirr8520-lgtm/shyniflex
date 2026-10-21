@@ -280,7 +280,7 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
             }
             if (item.watched && (remaining == null || remaining == 0)) Text("보았음", Modifier.align(Alignment.TopEnd).background(Color(0xDD0B1220)).padding(6.dp),
                 color = MaterialTheme.colorScheme.primary)
-            UnwatchedCountBadge(remaining, Modifier.align(Alignment.TopEnd).padding(6.dp))
+            UnwatchedCountBadge(remaining, Modifier.align(Alignment.TopEnd).padding(2.dp))
             if (!item.watched && item.resumeMs > 0 && item.durationMs > 0) LinearProgressIndicator(
                 progress = { (item.resumeMs.toFloat() / item.durationMs).coerceIn(0f, 1f) },
                 modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth())
@@ -296,11 +296,11 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
 internal fun UnwatchedCountBadge(count: Int?, modifier: Modifier = Modifier) {
     if (count == null || count <= 0) return
     Surface(modifier.semantics { contentDescription = "미시청 ${count}편" }
-        .size(if (count < 100) 28.dp else if (count < 1000) 34.dp else 42.dp),
+        .size(if (count < 100) 20.dp else if (count < 1000) 26.dp else 34.dp),
         shape = CircleShape, color = MaterialTheme.colorScheme.primary,
         contentColor = Color(0xFF08251E), shadowElevation = 2.dp) {
         Box(contentAlignment = Alignment.Center) {
-            Text(count.toString(), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(count.toString(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }

@@ -17,12 +17,36 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.Library
+import io.mirr.shynigsy.data.MediaItem
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 
 class TvNavigationTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun watchedDialogIgnoresOpeningConfirmReleaseAndRequiresFreshSelection() {
+        var selected: Boolean? = null
+        var dismissed = false
+        compose.setContent { MaterialTheme {
+            WatchedOptionsDialog(MediaItem(1, 1, "테스트 시리즈", "show"),
+                onDismiss = { dismissed = true }, onSetWatched = { selected = it })
+        } }
+        compose.onNodeWithTag("watched-cancel").assertIsFocused()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val time = android.os.SystemClock.uptimeMillis()
+        instrumentation.sendKeySync(android.view.KeyEvent(time - 800, time,
+            android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_CENTER, 2))
+        instrumentation.sendKeySync(android.view.KeyEvent(time - 800, time + 1,
+            android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DPAD_CENTER, 0))
+        compose.runOnIdle { assertNull(selected); assertFalse(dismissed) }
+        compose.onNodeWithTag("watched-cancel").performKeyInput { pressKey(Key.DirectionUp) }
+        compose.onNodeWithTag("watched-mark-unseen").assertIsFocused()
+        compose.onNodeWithTag("watched-mark-unseen").performKeyInput { pressKey(Key.DirectionUp) }
+        compose.onNodeWithTag("watched-mark-seen").assertIsFocused()
+        compose.onNodeWithTag("watched-mark-seen").performKeyInput { pressKey(Key.DirectionCenter) }
+        compose.runOnIdle { assertEquals(true, selected); assertFalse(dismissed) }
+    }
 
     @Test fun unwatchedBadgeShowsCountAndHidesZeroOrUnknown() {
         var count by mutableStateOf<Int?>(42)

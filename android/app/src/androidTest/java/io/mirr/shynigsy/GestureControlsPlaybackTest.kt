@@ -49,26 +49,82 @@ class GestureControlsPlaybackTest {
     @Test fun tvResizeUpdatesNativeRenderer() = withFixture(false) { scenario ->
         org.junit.Assume.assumeTrue(instrumentation.targetContext.isTelevision())
         waitFor(scenario, "source ready for resize") { activity ->
-            findView<PlayerView>(activity.findViewById(android.R.id.content))?.player?.playbackState == Player.STATE_READY
+            val video = findView<PlayerView>(activity.findViewById(android.R.id.content))!!
+            if (video.player?.playbackState == Player.STATE_READY) { video.player!!.pause(); video.player!!.volume = 0f }
+            video.player?.playbackState == Player.STATE_READY
         }
         scenario.onActivity { activity ->
-            val video = findView<PlayerView>(activity.findViewById(android.R.id.content))!!
-            repeat(3) {
-                activity.findViewById<View>(R.id.player_resize).performClick()
+            // Use the real synthetic video with a 4:3 display aspect to expose letterboxing.
+            `is`.xyz.mpv.MPVLib.setPropertyDouble("video-aspect-override", 4.0 / 3.0)
+            repeat(6) {
+                if (activity.findViewById<View>(R.id.player_resize).contentDescription.toString() != "화면 맞춤")
+                    activity.findViewById<View>(R.id.player_resize).performClick()
+            }
+            findView<PlayerView>(activity.findViewById(android.R.id.content))!!.hideController()
+        }
+        val widths = linkedMapOf<String, Int>()
+        var screenWidth = 0
+        repeat(6) { index ->
+            Thread.sleep(450)
+            var label = ""
+            scenario.onActivity { activity ->
+                val video = findView<PlayerView>(activity.findViewById(android.R.id.content))!!
+                video.hideController()
+                label = activity.findViewById<View>(R.id.player_resize).contentDescription.toString()
+                assertFalse("Resizing preserves paused playback", video.player!!.playWhenReady)
                 assertEquals(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL, video.resizeMode)
-                when (activity.findViewById<View>(R.id.player_resize).contentDescription.toString()) {
-                    "화면 맞춤" -> {
-                        assertEquals(true, `is`.xyz.mpv.MPVLib.getPropertyBoolean("keepaspect"))
-                        assertEquals(0.0, `is`.xyz.mpv.MPVLib.getPropertyDouble("panscan")!!, .001)
-                    }
-                    "화면 채움" -> {
-                        assertEquals(true, `is`.xyz.mpv.MPVLib.getPropertyBoolean("keepaspect"))
-                        assertEquals(1.0, `is`.xyz.mpv.MPVLib.getPropertyDouble("panscan")!!, .001)
-                    }
-                    "화면 늘림" -> assertEquals(false, `is`.xyz.mpv.MPVLib.getPropertyBoolean("keepaspect"))
-                    else -> fail("Unknown resize mode")
+                android.util.Log.i("ResizeCheck", "$label surface=${`is`.xyz.mpv.MPVLib.getPropertyString("android-surface-size")} " +
+                    "margins=${listOf("ml", "mr", "mt", "mb").map { `is`.xyz.mpv.MPVLib.getPropertyInt("osd-dimensions/$it") }}")
+            }
+            val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+            try {
+                screenWidth = bitmap.width
+                val colored = (0 until bitmap.width).filter { x -> (2..8).any { sample ->
+                    val pixel = bitmap.getPixel(x, bitmap.height * sample / 10)
+                    android.graphics.Color.red(pixel) + android.graphics.Color.green(pixel) + android.graphics.Color.blue(pixel) > 90
+                } }
+                widths[label] = (colored.lastOrNull() ?: 0) - (colored.firstOrNull() ?: 0) + 1
+                val folder = instrumentation.targetContext.getExternalFilesDir("resize-check")!!
+                folder.mkdirs()
+                File(folder, "mode-$index.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            } finally { bitmap.recycle() }
+            scenario.onActivity { it.findViewById<View>(R.id.player_resize).performClick() }
+        }
+        assertTrue("Fit must visibly retain side bars: $widths", widths.getValue("화면 맞춤") < screenWidth * .85)
+        assertTrue("Crop must visibly fill the display: $widths", widths.getValue("화면 채움") > screenWidth * .95)
+        assertTrue("Stretch must visibly fill the display: $widths", widths.getValue("화면 늘림") > screenWidth * .95)
+        assertTrue("110% must visibly enlarge the image: $widths", widths.getValue("확대 110%") > widths.getValue("화면 맞춤") + screenWidth * .03)
+        assertTrue("125% must visibly enlarge it further: $widths", widths.getValue("확대 125%") > widths.getValue("확대 110%") + screenWidth * .03)
+    }
+    @Test fun tvResizePersistsForAnotherVideoAndActivityRecreation() = withFixture(false) { scenario ->
+        org.junit.Assume.assumeTrue(instrumentation.targetContext.isTelevision())
+        waitFor(scenario, "source ready for persistent resize") { activity ->
+            findView<PlayerView>(activity.findViewById(android.R.id.content))?.player?.playbackState == Player.STATE_READY
+        }
+        var nextIntent: Intent? = null
+        scenario.onActivity { activity ->
+            repeat(6) {
+                if (activity.findViewById<View>(R.id.player_resize).contentDescription.toString() != "확대 125%")
+                    activity.findViewById<View>(R.id.player_resize).performClick()
+            }
+            val nextSpec = PlaybackSpec.fromJson(activity.intent.getStringExtra("spec")!!)
+                .copy(title = "다른 영상", itemId = 2)
+            nextIntent = Intent(activity.intent).putExtra("spec", nextSpec.toJson())
+        }
+        scenario.close()
+        ActivityScenario.launchActivityForResult<NativePlayerActivity>(nextIntent!!).use { next ->
+            fun assertSavedScale() {
+                waitFor(next, "saved resize applied to the new output") { activity ->
+                    val video = findView<PlayerView>(activity.findViewById(android.R.id.content))!!
+                    if (video.player?.playbackState == Player.STATE_READY) video.player!!.pause()
+                    video.player?.playbackState == Player.STATE_READY &&
+                        activity.findViewById<View>(R.id.player_resize).contentDescription.toString() == "확대 125%" &&
+                        abs((`is`.xyz.mpv.MPVLib.getPropertyDouble("video-zoom") ?: -1.0) - kotlin.math.log2(1.25)) < .001
                 }
             }
+            assertSavedScale()
+            next.recreate()
+            assertSavedScale()
         }
     }
 
@@ -513,7 +569,7 @@ class GestureControlsPlaybackTest {
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
         val settingKeys = setOf("subtitle_vertical", "subtitle_x", "subtitle_y", "subtitle_size", "subtitle_font",
             "subtitle_horizontal_writing_x", "subtitle_horizontal_writing_y", "subtitle_vertical_writing_x", "subtitle_vertical_writing_y",
-            "playback_speed")
+            "playback_speed", "resize_mode", "resize_scale")
         val oldSettings = settingKeys.associateWith { settings.all[it] }
         val sessions = context.getSharedPreferences("encrypted_sessions", Context.MODE_PRIVATE)
         val server = "https://gesture-controls-test.invalid"

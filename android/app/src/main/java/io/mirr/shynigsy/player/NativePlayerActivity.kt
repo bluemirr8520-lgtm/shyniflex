@@ -102,6 +102,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private var subtitleAppearance = PlexSubtitleAppearance()
     private lateinit var subtitleLoader: SubtitleLoader
     private var resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+    private var resizeScale = 1f
+    private var resizeNotice: Toast? = null
     private var player: MpvPlayer? = null
     private val mpvSubtitleController = MpvSubtitleController { native -> player?.nativeSubtitleVisibility = native }
     private var speed = 1f
@@ -232,6 +234,7 @@ class NativePlayerActivity : AppCompatActivity() {
             .takeIf { it.isFinite() }?.coerceIn(.25f, 4f) ?: 1f
         resizeMode = settings.getInt("resize_mode", AspectRatioFrameLayout.RESIZE_MODE_FIT)
             .takeIf { it in resizeModes } ?: AspectRatioFrameLayout.RESIZE_MODE_FIT
+        resizeScale = if (television) settings.getFloat("resize_scale", 1f).takeIf { it in setOf(1f, 1.1f, 1.25f, 1.5f) } ?: 1f else 1f
         subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", true) ?: true
         externalSubtitleId = if (savedInstanceState != null) savedInstanceState.getInt("externalSubtitle", -1).takeIf { it >= 0 }
             else preferredSubtitle(spec)?.id
@@ -782,13 +785,15 @@ class NativePlayerActivity : AppCompatActivity() {
             when (index) {
                 -1 -> {
                     addRow("배속", speedLabel()) { showSpeed() }
-                    addRow("화면 크기", resizeLabels[resizeModes.indexOf(resizeMode)]) {
+                    addRow("화면 크기", resizeLabel()) {
                         AlertDialog.Builder(this).setTitle("화면 크기")
-                            .setSingleChoiceItems(resizeLabels, resizeModes.indexOf(resizeMode)) { choice, position ->
-                                resizeMode = resizeModes[position]
+                            .setSingleChoiceItems(resizeChoices.map { it.label }.toTypedArray(), resizeChoiceIndex()) { choice, position ->
+                                resizeMode = resizeChoices[position].mode
+                                resizeScale = resizeChoices[position].scale
                                 applyResizeMode()
-                                getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putInt("resize_mode", resizeMode).apply()
+                                saveResizeMode()
                                 choice.dismiss()
+                                showResizeNotice()
                             }.setNegativeButton("닫기", null).show()
                     }
                     addRow("화질", conversionLabel()) { showConversion() }
@@ -803,7 +808,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 0 -> addRow("배속", speedLabel()) { showSpeed() }
                 1 -> {
                     addRow("화질", conversionLabel()) { showConversion() }
-                    addRow("화면 크기", resizeLabels[resizeModes.indexOf(resizeMode)]) {
+                    addRow("화면 크기", resizeLabel()) {
                         cycleResizeMode(); selectTab(1)
                     }
                 }
@@ -1230,6 +1235,21 @@ class NativePlayerActivity : AppCompatActivity() {
     private val resizeModes = listOf(AspectRatioFrameLayout.RESIZE_MODE_FIT,
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM, AspectRatioFrameLayout.RESIZE_MODE_FILL)
     private val resizeLabels = arrayOf("화면 맞춤", "화면 채움", "화면 늘림")
+    private data class ResizeChoice(val mode: Int, val scale: Float, val label: String)
+    private val resizeChoices get() = resizeModes.mapIndexed { index, mode -> ResizeChoice(mode, 1f, resizeLabels[index]) } +
+        if (television) listOf(ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.1f, "확대 110%"),
+            ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.25f, "확대 125%"),
+            ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.5f, "확대 150%")) else emptyList()
+    private fun resizeChoiceIndex() = resizeChoices.indexOfFirst { it.mode == resizeMode && it.scale == resizeScale }.coerceAtLeast(0)
+    private fun resizeLabel() = resizeChoices[resizeChoiceIndex()].label
+    private fun saveResizeMode() {
+        getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putInt("resize_mode", resizeMode)
+            .putFloat("resize_scale", resizeScale).apply()
+    }
+    private fun showResizeNotice() {
+        resizeNotice?.cancel()
+        resizeNotice = Toast.makeText(this, resizeLabel(), Toast.LENGTH_SHORT).also { it.show() }
+    }
 
     private fun applyResizeMode() {
         // Keep the TV output surface at screen size, then let the renderer fit/crop/stretch.
@@ -1237,20 +1257,22 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.resizeMode = if (television) AspectRatioFrameLayout.RESIZE_MODE_FILL else resizeMode
         if (television) player?.setVideoLayout(
             keepAspect = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL,
-            crop = resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM)
+            crop = resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM, zoom = resizeScale)
         val selected = resizeModes.indexOf(resizeMode)
         playerView.findViewById<ImageButton>(R.id.player_resize).apply {
             setImageResource(arrayOf(R.drawable.ic_player_fit, R.drawable.ic_player_zoom,
                 R.drawable.ic_player_fill)[selected])
-            contentDescription = resizeLabels[selected]
-            tooltipText = resizeLabels[selected]
+            contentDescription = resizeLabel()
+            tooltipText = resizeLabel()
         }
     }
 
     private fun cycleResizeMode() {
-        resizeMode = resizeModes[(resizeModes.indexOf(resizeMode) + 1) % resizeModes.size]
+        val choice = resizeChoices[(resizeChoiceIndex() + 1) % resizeChoices.size]
+        resizeMode = choice.mode; resizeScale = choice.scale
         applyResizeMode()
-        getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putInt("resize_mode", resizeMode).apply()
+        saveResizeMode()
+        showResizeNotice()
     }
 
     private fun loadExternalSubtitle(track: SubtitleTrack) {
@@ -1652,6 +1674,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        resizeNotice?.cancel()
         handler.removeCallbacksAndMessages(null); scope.cancel()
         if (::spec.isInitialized) { settleWatchTime(false); if (!isChangingConfigurations) enqueueProgress(if (completed) "completed" else "stopped") }
         releasePlayer(); updates.close(); super.onDestroy()

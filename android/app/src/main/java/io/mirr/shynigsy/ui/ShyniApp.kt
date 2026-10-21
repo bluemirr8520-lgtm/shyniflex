@@ -81,6 +81,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
@@ -762,6 +763,48 @@ internal fun canChangeWatchState(item: MediaItem) = item.playable || item.type i
 @Composable
 internal fun WatchedOptionsDialog(item: MediaItem, onDismiss: () -> Unit, onSetWatched: (Boolean) -> Unit) {
     val collection = !item.playable
+    if (LocalContext.current.isTelevision()) {
+        val cancelFocus = remember { FocusRequester() }
+        var confirmStartedHere by remember { mutableStateOf(false) }
+        androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss,
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.width(300.dp).onPreviewKeyEvent { event ->
+                val key = event.nativeKeyEvent
+                if (key.keyCode !in listOf(android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+                        android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER,
+                        android.view.KeyEvent.KEYCODE_BUTTON_A)) false
+                else when (key.action) {
+                    android.view.KeyEvent.ACTION_DOWN -> {
+                        if (key.repeatCount == 0) confirmStartedHere = true
+                        !confirmStartedHere
+                    }
+                    android.view.KeyEvent.ACTION_UP -> {
+                        val consume = !confirmStartedHere
+                        confirmStartedHere = false
+                        consume
+                    }
+                    else -> true
+                }
+            }, shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(item.showTitle ?: item.title, style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(bottom = 8.dp))
+                    TextButton(onClick = { onSetWatched(true) },
+                        modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("watched-mark-seen")) {
+                        Text(if (collection) "모든 회차 보았음" else "보았음")
+                    }
+                    TextButton(onClick = { onSetWatched(false) },
+                        modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("watched-mark-unseen")) {
+                        Text(if (collection) "모든 회차 보지 않음" else "보지 않음")
+                    }
+                    TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()
+                        .focusRequester(cancelFocus).tvOnlyFocus().testTag("watched-cancel")) { Text("취소") }
+                }
+            }
+            LaunchedEffect(Unit) { cancelFocus.requestFocus() }
+        }
+        return
+    }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(item.showTitle ?: item.title) },
         text = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {

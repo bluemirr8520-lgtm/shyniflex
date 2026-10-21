@@ -89,6 +89,7 @@ class MpvPlayer(
     private var tracks = Tracks.EMPTY
     private var cues = CueGroup.EMPTY_TIME_ZERO
     private var surfaceSize = Size.ZERO
+    private var configuredVideoLayout: Triple<Boolean, Boolean, Float>? = null
     private var firstFrame = false
     private var stopRequested = false
     private var startObserved = false
@@ -539,6 +540,7 @@ class MpvPlayer(
                 // its old local clock with the new request's source offset.
                 if (!isExpectedNativeSource()) return@dispatchNative
                 loaded = true; loading = false; status = Player.STATE_READY
+                configuredVideoLayout?.let { setVideoLayout(it.first, it.second, it.third) }
                 durationMs = sourceDuration(MPVLib.getPropertyDouble("duration")?.times(1000)?.toLong())
                 seekable = if (isServerConverted) durationMs > 0 else MPVLib.getPropertyBoolean("seekable") == true
                 nativePaused = MPVLib.getPropertyBoolean("pause") ?: (!requestedPlay || focusSuppressed)
@@ -603,10 +605,13 @@ class MpvPlayer(
         if (value.surface.isValid) { surfaceSize = Size(value.surfaceFrame.width(), value.surfaceFrame.height()); attach(value.surface) }
     }
     /** MPV owns aspect correction inside its Surface; resizing the host alone cannot stretch video. */
-    fun setVideoLayout(keepAspect: Boolean, crop: Boolean) {
+    fun setVideoLayout(keepAspect: Boolean, crop: Boolean, zoom: Float = 1f) {
+        configuredVideoLayout = Triple(keepAspect, crop, zoom)
         if (!alive) return
+        MPVLib.setPropertyString("video-unscaled", "no")
         MPVLib.setPropertyBoolean("keepaspect", keepAspect)
         MPVLib.setPropertyDouble("panscan", if (crop) 1.0 else 0.0)
+        MPVLib.setPropertyDouble("video-zoom", kotlin.math.ln(zoom.toDouble()) / kotlin.math.ln(2.0))
     }
 
     private fun attach(surface: Surface) {
@@ -615,6 +620,7 @@ class MpvPlayer(
         MPVLib.setPropertyString("vo", "gpu")
         MPVLib.setPropertyBoolean("force-window", true)
         if (surfaceSize.width > 0 && surfaceSize.height > 0) MPVLib.setPropertyString("android-surface-size", "${surfaceSize.width}x${surfaceSize.height}")
+        configuredVideoLayout?.let { setVideoLayout(it.first, it.second, it.third) }
     }
     private fun detach() {
         if (alive && surfaceAttached) {
