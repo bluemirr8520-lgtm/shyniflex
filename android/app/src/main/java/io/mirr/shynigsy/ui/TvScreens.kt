@@ -45,6 +45,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
@@ -78,7 +79,8 @@ internal fun Modifier.tvOnlyFocus(): Modifier = composed {
 @Composable
 internal fun TvAction(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     OutlinedButton(onClick = onClick, enabled = enabled,
-        modifier = modifier.tvFocus().heightIn(min = 52.dp), shape = RoundedCornerShape(12.dp)) {
+        modifier = modifier.tvFocus().heightIn(min = 52.dp), shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = if (LocalContext.current.isTelevision()) 24.dp else 8.dp, vertical = 8.dp)) {
         Text(label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -143,6 +145,7 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
+    val modelIsTelevision = LocalContext.current.isTelevision()
     val continuing = state.continueItems.filter { state.spoilerUnlocked || !it.isSpoiler }
     val recent = state.recentItems.filter { state.spoilerUnlocked || !it.isSpoiler }
     var selectedKey by rememberSaveable { mutableStateOf("") }
@@ -154,7 +157,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     // Run once as content arrives, never steal focus on background refreshes.
     var focusRequested by remember { mutableStateOf(false) }
     LaunchedEffect(all.isNotEmpty()) {
-        if (all.isNotEmpty() && !focusRequested) {
+        if (modelIsTelevision && all.isNotEmpty() && !focusRequested) {
             withFrameNanos { }
             shelfFocus.requestFocus()
             focusRequested = true
@@ -165,7 +168,8 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
         else recent.any { "recent-${it.libraryId}" == key }
     } ?: if (continuing.isNotEmpty()) "continue" else recent.firstOrNull()?.let { "recent-${it.libraryId}" }
     BoxWithConstraints(Modifier.fillMaxSize().testTag("tv-home")) {
-        val heroHeight = (maxHeight - 260.dp).coerceAtLeast(180.dp)
+        val compact = maxWidth < 600.dp
+        val heroHeight = if (compact) 210.dp else (maxHeight - 260.dp).coerceAtLeast(180.dp)
         val scroll = rememberLazyListState()
         val homeScope = rememberCoroutineScope()
         // TV's default focus pivot scrolls an already visible poster upward and clips its hero.
@@ -190,7 +194,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                         0f to Color(0xFF0B1220).copy(alpha = .08f), .58f to Color.Transparent,
                         1f to Color(0xFF0B1220))))
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                        if (hero != null) Column(Modifier.fillMaxWidth(.70f).height(heroHeight)
+                        if (hero != null) Column(Modifier.fillMaxWidth(if (compact) 1f else .70f).height(heroHeight)
                             .padding(start = 24.dp, top = 18.dp, end = 12.dp, bottom = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom)) {
                             Text(hero.showTitle ?: hero.title, style = MaterialTheme.typography.headlineMedium,
@@ -333,18 +337,19 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
     val visibleItems = state.items.filter { state.spoilerUnlocked || !it.isSpoiler }
     val restoreKey = focusedKey?.takeIf { key -> visibleItems.any { tvMediaKey(it) == key } }
         ?: visibleItems.firstOrNull()?.let(::tvMediaKey)
+    val modelIsTelevision = LocalContext.current.isTelevision()
     LaunchedEffect(state.busy, state.items.isNotEmpty()) {
-        if (!state.busy && !focusRequested) {
+        if (modelIsTelevision && !state.busy && !focusRequested) {
             withFrameNanos { }
             initialFocus.requestFocus()
             focusRequested = true
         }
     }
-    LazyVerticalGrid(GridCells.Adaptive(152.dp), Modifier.fillMaxSize().testTag("tv-library"),
-        contentPadding = PaddingValues(horizontal = 40.dp, vertical = 16.dp),
+    LazyVerticalGrid(GridCells.Adaptive(if (modelIsTelevision) 152.dp else 114.dp), Modifier.fillMaxSize().testTag("tv-library"),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TvAction("장르 · ${state.libraryGenre ?: "전체"}", Modifier.weight(1f)
                     .then(if (restoreKey == null) Modifier.focusRequester(initialFocus) else Modifier),
                     enabled = !state.busy) { menu = "genre" }
@@ -423,21 +428,22 @@ internal fun TvDetail(state: AppState, model: AppViewModel, onWatchOptions: (Med
     val primaryModifier = Modifier.then(if (restoreKey == "primary") Modifier.focusRequester(actionFocus) else Modifier)
         .onFocusChanged { if (it.isFocused) focusedKey = "primary" }
     var focusRequested by remember { mutableStateOf(false) }
+    val modelIsTelevision = LocalContext.current.isTelevision()
     LaunchedEffect(state.busy) {
-        if (!state.busy && !focusRequested) { withFrameNanos { }; actionFocus.requestFocus(); focusRequested = true }
+        if (modelIsTelevision && !state.busy && !focusRequested) { withFrameNanos { }; actionFocus.requestFocus(); focusRequested = true }
     }
-    LazyColumn(Modifier.fillMaxSize().testTag("tv-detail"), contentPadding = PaddingValues(horizontal = 40.dp, vertical = 16.dp),
+    LazyColumn(Modifier.fillMaxSize().testTag("tv-detail"), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                Poster(item, model, Modifier.width(156.dp).aspectRatio(2f / 3f))
+                Poster(item, model, Modifier.width(if (LocalConfiguration.current.screenWidthDp < 600) 96.dp else 156.dp).aspectRatio(2f / 3f))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(item.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Text(if (item.playable) continueHeroMetadata(item) else when (item.type) {
                         "season" -> "시즌 ${item.seasonNumber ?: ""}"
                         else -> "시리즈"
                     }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (item.playable) TvAction(if (item.watched) "다시 재생" else if (item.resumeMs > 0) "이어보기 · ${timeLabel(item.resumeMs)}" else "재생",
                             primaryModifier, !state.busy) { model.play(item, item.watched) }
                         if (canChangeWatchState(item)) TvAction("시청 상태", if (item.playable) Modifier else primaryModifier,

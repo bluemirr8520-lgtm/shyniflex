@@ -46,6 +46,12 @@ import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -136,6 +142,8 @@ fun ShyniApp(
 ) {
     val state by viewModel.state.collectAsState()
     val tv = LocalContext.current.isTelevision()
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
     val tvScreens = rememberSaveableStateHolder()
     var logoutConfirm by rememberSaveable { mutableStateOf(false) }
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
@@ -164,11 +172,14 @@ fun ShyniApp(
         Scaffold(
             containerColor = Navy,
             topBar = {
-                if (tv && state.loggedIn) {
+                if (state.loggedIn) {
+                    Column(Modifier.statusBarsPadding()) {
+                    if (!tv) TextButton(onClick = { scope.launch { drawer.open() } }) { Text("☰  메뉴") }
                     if (detail != null || state.library != null) TvHeader(
                     title = detail?.item?.title ?: state.library?.title,
                     onBack = viewModel::back,
                     )
+                    }
                 } else
                 AppHeader(
                     loggedIn = state.loggedIn,
@@ -193,18 +204,21 @@ fun ShyniApp(
                         onTotp = viewModel::submitTotp,
                         onCancelTotp = viewModel::cancelTotp,
                     )
-                    tv -> {
-                        Row(Modifier.fillMaxSize()) {
+                    state.loggedIn -> {
+                        val sidebar: @Composable () -> Unit = {
                         TvSidebar(onLibraries = { libraryPickerOpen = true }, onRefresh = viewModel::refresh,
                             onLogout = { logoutConfirm = true },
                             libraries = state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler },
                             selectedLibraryId = state.library?.id,
                             homeSelected = state.library == null && detail == null,
-                            onHome = viewModel::openHome, onLibrary = viewModel::selectLibrary,
+                            onHome = { viewModel.openHome(); scope.launch { drawer.close() } },
+                            onLibrary = { viewModel.selectLibrary(it); scope.launch { drawer.close() } },
                             showLocked = !state.spoilerUnlocked,
                             spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler,
                             onUpdate = onUpdate)
-                        Box(Modifier.weight(1f).fillMaxSize()) {
+                        }
+                        val content: @Composable () -> Unit = {
+                        Box(Modifier.fillMaxSize()) {
                         val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
                             ?: state.library?.let { "library:${it.id}" } ?: "home"
                         tvScreens.SaveableStateProvider(screenKey) {
@@ -216,40 +230,12 @@ fun ShyniApp(
                         }
                         }
                         }
+                        if (tv) Row(Modifier.fillMaxSize()) { sidebar(); Box(Modifier.weight(1f)) { content() } }
+                        else ModalNavigationDrawer(drawerState = drawer, drawerContent = {
+                            ModalDrawerSheet { sidebar() }
+                        }) { content() }
                     }
-                    detail != null -> key(detail.item.libraryId, detail.item.id) { DetailScreen(
-                        detail = detail,
-                        versions = state.versions,
-                        selectedPart = state.selectedPartId,
-                        busy = state.busy,
-                        error = state.error,
-                        viewModel = viewModel,
-                        onWatchOptions = onWatchOptions,
-                    ) }
-                    state.library != null -> key(state.library!!.id) { LibraryScreen(
-                        library = state.library!!,
-                        media = state.items,
-                        total = state.total,
-                        query = state.query,
-                        busy = state.busy,
-                        error = state.error,
-                        viewModel = viewModel,
-                        onWatchOptions = onWatchOptions,
-                    ) }
-                    else -> HomeScreen(
-                        libraries = state.libraries,
-                        recent = state.recentItems,
-                        continuing = state.continueItems,
-                        continueDetails = state.continueDetails,
-                        continueLoading = state.continueLoading,
-                        continueError = state.continueError,
-                        recentLoading = state.recentLoading,
-                        spoilerUnlocked = state.spoilerUnlocked,
-                        busy = state.busy && !state.homeLoading,
-                        error = state.error,
-                        viewModel = viewModel,
-                        onWatchOptions = onWatchOptions,
-                    )
+
                 }
                 if (state.busy && state.loggedIn) {
                     LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))

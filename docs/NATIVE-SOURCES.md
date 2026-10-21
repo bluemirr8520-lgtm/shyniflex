@@ -1,10 +1,10 @@
 # 네이티브 대응 소스
 
-shyniflex TV 1.0.15-test는 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. Git 저장소에는 앱 소스와 일반 앱 빌드 스크립트를 보관하며, APK에 대응하는 전체 소스는 다음 릴리스 파일에서 제공합니다.
+shyniflex TV 1.0.16-test는 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. Git 저장소에는 앱 소스와 일반 앱 빌드 스크립트를 보관하며, APK에 대응하는 전체 소스는 다음 릴리스 파일에서 제공합니다.
 
-- [APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/tv-1.0.15/shyniflex-tv.apk)
-- [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/tv-1.0.15/shyniflex-corresponding-source.zip)
-- [앱 소스 태그 tv-1.0.15](https://github.com/bluemirr8520-lgtm/shyniflex/tree/tv-1.0.15)
+- [APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/tv-1.0.16/shyniflex-tv.apk)
+- [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/tv-1.0.16/shyniflex-corresponding-source.zip)
+- [앱 소스 태그 tv-1.0.16](https://github.com/bluemirr8520-lgtm/shyniflex/tree/tv-1.0.16)
 
 ## 소스 묶음의 내용
 

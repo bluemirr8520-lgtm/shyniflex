@@ -234,7 +234,7 @@ class NativePlayerActivity : AppCompatActivity() {
             .takeIf { it.isFinite() }?.coerceIn(.25f, 4f) ?: 1f
         resizeMode = settings.getInt("resize_mode", AspectRatioFrameLayout.RESIZE_MODE_FIT)
             .takeIf { it in resizeModes } ?: AspectRatioFrameLayout.RESIZE_MODE_FIT
-        resizeScale = if (television) settings.getFloat("resize_scale", 1f).takeIf { it in setOf(1f, 1.1f, 1.25f, 1.5f) } ?: 1f else 1f
+        resizeScale = settings.getFloat("resize_scale", 1f).takeIf { it in setOf(1f, 1.1f, 1.25f, 1.5f) } ?: 1f
         subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", true) ?: true
         externalSubtitleId = if (savedInstanceState != null) savedInstanceState.getInt("externalSubtitle", -1).takeIf { it >= 0 }
             else preferredSubtitle(spec)?.id
@@ -716,7 +716,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val focusRows = mutableListOf<View>()
         var selectedTab = 0
         panel.addView(tabs, LinearLayout.LayoutParams(-1, dp(48)))
-        if (television) tabs.visibility = View.GONE
+        tabs.visibility = View.GONE
         val scroll = object : ScrollView(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 val limit = (resources.displayMetrics.heightPixels - dp(210)).coerceAtLeast(dp(100))
@@ -754,7 +754,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 text = value; textSize = 14f; setTextColor(0xFF7BE6C6.toInt())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 gravity = Gravity.END
-            }, LinearLayout.LayoutParams(dp(180), -2))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
                 text = "›"; textSize = 24f; setTextColor(0xFF92A5B6.toInt()); gravity = Gravity.END
             }, LinearLayout.LayoutParams(dp(22), -2))
@@ -850,12 +850,12 @@ class NativePlayerActivity : AppCompatActivity() {
             button.setOnClickListener { selectTab(index) }
             if (television) button.setOnFocusChangeListener { _, focused -> if (focused) selectTab(index) }
         }
-        selectTab(if (television) -1 else 0)
+        selectTab(-1)
         dialog.show()
         if (television) focusRows.firstOrNull()?.requestFocus()
         dialog.window?.apply {
             setGravity(if (television) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM)
-            setLayout(if (television) dp(440) else WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(minOf(dp(440), resources.displayMetrics.widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
     }
@@ -1237,9 +1237,9 @@ class NativePlayerActivity : AppCompatActivity() {
     private val resizeLabels = arrayOf("화면 맞춤", "화면 채움", "화면 늘림")
     private data class ResizeChoice(val mode: Int, val scale: Float, val label: String)
     private val resizeChoices get() = resizeModes.mapIndexed { index, mode -> ResizeChoice(mode, 1f, resizeLabels[index]) } +
-        if (television) listOf(ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.1f, "확대 110%"),
+        listOf(ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.1f, "확대 110%"),
             ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.25f, "확대 125%"),
-            ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.5f, "확대 150%")) else emptyList()
+            ResizeChoice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.5f, "확대 150%"))
     private fun resizeChoiceIndex() = resizeChoices.indexOfFirst { it.mode == resizeMode && it.scale == resizeScale }.coerceAtLeast(0)
     private fun resizeLabel() = resizeChoices[resizeChoiceIndex()].label
     private fun saveResizeMode() {
@@ -1254,8 +1254,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun applyResizeMode() {
         // Keep the TV output surface at screen size, then let the renderer fit/crop/stretch.
         // Otherwise MPV letterboxes again inside the already resized Media3 surface.
-        playerView.resizeMode = if (television) AspectRatioFrameLayout.RESIZE_MODE_FILL else resizeMode
-        if (television) player?.setVideoLayout(
+        playerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
+        player?.setVideoLayout(
             keepAspect = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL,
             crop = resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM, zoom = resizeScale)
         val selected = resizeModes.indexOf(resizeMode)

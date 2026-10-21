@@ -1,56 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:gravity="center_vertical"
-        android:background="#BB0B1220" android:paddingStart="8dp" android:paddingEnd="70dp">
-        <Button android:id="@+id/player_back" android:layout_width="68dp" android:layout_height="48dp"
-            android:text="닫기" android:textColor="#FFFFFF" android:backgroundTint="#142536" />
-        <TextView android:id="@+id/player_title" android:layout_width="0dp" android:layout_weight="1"
-            android:layout_height="wrap_content" android:padding="12dp" android:textColor="#FFFFFF"
-            android:textSize="18sp" android:maxLines="1" android:ellipsize="end" />
-        <ImageButton android:id="@+id/player_resize" android:layout_width="48dp" android:layout_height="48dp"
-            android:src="@drawable/ic_player_fit" android:tint="#FFFFFF" android:padding="12dp"
-            android:contentDescription="화면 맞춤" android:background="?android:attr/selectableItemBackgroundBorderless" />
-        <ImageButton android:id="@+id/player_settings" android:layout_width="48dp" android:layout_height="48dp"
-            android:src="@drawable/ic_player_settings" android:tint="#FFFFFF" android:padding="12dp"
-            android:contentDescription="재생 설정" android:background="?android:attr/selectableItemBackgroundBorderless" />
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent">
+  <LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:gravity="center_vertical" android:background="#33000000" android:paddingStart="32dp" android:paddingEnd="32dp">
+    <Button android:id="@+id/player_back" android:layout_width="68dp" android:layout_height="56dp" android:text="닫기" android:textColor="#FFFFFF" android:backgroundTint="#142536" />
+    <TextView android:id="@+id/player_title" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:padding="12dp" android:textColor="#FFFFFF" android:textSize="18sp" android:maxLines="1" android:ellipsize="end" />
+  </LinearLayout>
+  <LinearLayout android:layout_width="match_parent" android:layout_height="136dp" android:layout_gravity="bottom" android:orientation="vertical" android:background="@drawable/tv_player_scrim" android:paddingHorizontal="24dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:gravity="center_vertical">
+      <TextView android:id="@id/exo_position" android:layout_width="66dp" android:layout_height="wrap_content" android:textColor="#FFFFFF" android:textSize="16sp" />
+      <androidx.media3.ui.DefaultTimeBar android:id="@id/exo_progress" android:layout_width="0dp" android:layout_weight="1" android:layout_height="52dp" android:focusable="true" app:played_color="#7BE6C6" app:scrubber_color="#7BE6C6" app:buffered_color="#657888" app:unplayed_color="#30404D" />
+      <TextView android:id="@id/exo_duration" android:layout_width="66dp" android:layout_height="wrap_content" android:gravity="end" android:textColor="#FFFFFF" android:textSize="16sp" />
     </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="104dp" android:layout_gravity="bottom"
-        android:orientation="vertical" android:background="#CC0B1220" android:paddingHorizontal="16dp">
-        <LinearLayout android:layout_width="match_parent" android:layout_height="46dp" android:gravity="center_vertical">
-            <TextView android:id="@id/exo_position" android:layout_width="66dp" android:layout_height="wrap_content"
-                android:textColor="#FFFFFF" android:textSize="14sp" />
-            <androidx.media3.ui.DefaultTimeBar android:id="@id/exo_progress" android:layout_width="0dp"
-                android:layout_weight="1" android:layout_height="40dp" app:played_color="#7BE6C6"
-                app:scrubber_color="#7BE6C6" app:buffered_color="#657888" app:unplayed_color="#30404D" />
-            <TextView android:id="@id/exo_duration" android:layout_width="66dp" android:layout_height="wrap_content"
-                android:gravity="end" android:textColor="#FFFFFF" android:textSize="14sp" />
-        </LinearLayout>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="52dp" android:gravity="center">
-            <Button android:id="@+id/player_speed" android:layout_width="64dp" android:layout_height="48dp"
-                android:text="1×" android:textSize="14sp" android:textColor="#FFFFFF" android:minWidth="0dp"
-                android:paddingHorizontal="4dp" android:contentDescription="배속 설정" android:backgroundTint="#142536" />
-            <ImageButton android:id="@+id/player_previous" android:layout_width="48dp" android:layout_height="48dp"
-                android:src="@android:drawable/ic_media_previous" android:tint="#FFFFFF" android:padding="12dp"
-                android:contentDescription="이전 영상" android:enabled="false" android:alpha="0.35"
-                android:backgroundTint="#142536" />
-            <ImageButton android:id="@id/exo_rew" android:layout_width="48dp" android:layout_height="48dp"
-                android:src="@android:drawable/ic_media_rew" android:tint="#FFFFFF"
-                android:contentDescription="10초 뒤로" android:backgroundTint="#142536" />
-            <ImageButton android:id="@id/exo_play_pause" android:layout_width="56dp" android:layout_height="48dp"
-                android:backgroundTint="#142536" android:contentDescription="재생 또는 일시정지" />
-            <ImageButton android:id="@id/exo_ffwd" android:layout_width="48dp" android:layout_height="48dp"
-                android:src="@android:drawable/ic_media_ff" android:tint="#FFFFFF"
-                android:contentDescription="10초 앞으로" android:backgroundTint="#142536" />
-            <ImageButton android:id="@+id/player_next" android:layout_width="48dp" android:layout_height="48dp"
-                android:src="@android:drawable/ic_media_next" android:tint="#FFFFFF" android:padding="12dp"
-                android:contentDescription="다음 영상" android:enabled="false" android:alpha="0.35"
-                android:backgroundTint="#142536" />
-            <Button android:id="@+id/player_conversion" android:layout_width="72dp" android:layout_height="48dp"
-                android:text="화질" android:textSize="14sp" android:textColor="#FFFFFF" android:minWidth="0dp"
-                android:paddingHorizontal="4dp" android:maxLines="1" android:ellipsize="end"
-                android:contentDescription="화질" android:backgroundTint="#142536" />
-        </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="64dp" android:gravity="center_vertical">
+      <ImageButton android:id="@+id/player_previous" android:layout_width="48dp" android:layout_height="48dp" android:src="@android:drawable/ic_media_previous" android:tint="#FFFFFF" android:padding="10dp" android:contentDescription="이전 영상" android:enabled="false" android:alpha="0.35" android:backgroundTint="#142536" />
+      <ImageButton android:id="@id/exo_rew" android:layout_width="48dp" android:layout_height="48dp" android:src="@android:drawable/ic_media_rew" android:tint="#FFFFFF" android:contentDescription="10초 뒤로" android:backgroundTint="#142536" android:padding="10dp" />
+      <ImageButton android:id="@id/exo_play_pause" android:layout_width="48dp" android:layout_height="48dp" android:backgroundTint="#142536" android:contentDescription="재생 또는 일시정지" android:padding="10dp" />
+      <ImageButton android:id="@id/exo_ffwd" android:layout_width="48dp" android:layout_height="48dp" android:src="@android:drawable/ic_media_ff" android:tint="#FFFFFF" android:contentDescription="10초 앞으로" android:backgroundTint="#142536" android:padding="10dp" />
+      <ImageButton android:id="@+id/player_next" android:layout_width="48dp" android:layout_height="48dp" android:src="@android:drawable/ic_media_next" android:tint="#FFFFFF" android:padding="10dp" android:contentDescription="다음 영상" android:enabled="false" android:alpha="0.35" android:backgroundTint="#142536" />
+      <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+      <Button android:id="@+id/player_speed" android:layout_width="80dp" android:layout_height="56dp" android:text="1×" android:textSize="16sp" android:textColor="#FFFFFF" android:minWidth="0dp" android:paddingHorizontal="4dp" android:contentDescription="배속 설정" android:backgroundTint="#142536" />
+      <Button android:id="@+id/player_conversion" android:layout_width="100dp" android:layout_height="56dp" android:text="화질" android:textSize="16sp" android:textColor="#FFFFFF" android:minWidth="0dp" android:paddingHorizontal="4dp" android:maxLines="1" android:ellipsize="end" android:contentDescription="화질" android:backgroundTint="#142536" />
+      <ImageButton android:id="@+id/player_resize" android:layout_width="48dp" android:layout_height="48dp" android:src="@drawable/ic_player_fit" android:tint="#FFFFFF" android:padding="10dp" android:contentDescription="화면 맞춤" android:background="?android:attr/selectableItemBackgroundBorderless" />
+      <ImageButton android:id="@+id/player_settings" android:layout_width="48dp" android:layout_height="48dp" android:src="@drawable/ic_player_settings" android:tint="#FFFFFF" android:padding="10dp" android:contentDescription="재생 설정" android:background="?android:attr/selectableItemBackgroundBorderless" />
     </LinearLayout>
+  </LinearLayout>
 </FrameLayout>
