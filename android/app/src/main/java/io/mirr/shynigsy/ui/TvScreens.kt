@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -96,7 +97,7 @@ internal fun TvHeader(title: String?, onBack: () -> Unit) {
 internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout: () -> Unit,
     libraries: List<Library> = emptyList(), selectedLibraryId: Int? = null, homeSelected: Boolean = true,
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
-    spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}) {
+    spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {}) {
     Column(Modifier.width(184.dp).fillMaxHeight().background(Color(0xFF0B1018))
         .padding(horizontal = 12.dp, vertical = 14.dp).focusRestorer().focusGroup().testTag("tv-sidebar"),
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -118,6 +119,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
         }
         HorizontalDivider(Modifier.padding(vertical = 6.dp), color = Color(0xFF252B34))
         TvSidebarItem("새로고침", Icons.Rounded.Refresh, false, onRefresh)
+        TvSidebarItem("업데이트", Icons.Rounded.SystemUpdate, false, onUpdate)
         TvSidebarItem("계정", Icons.Rounded.AccountCircle, false, onLogout)
     }
 }
@@ -230,7 +232,24 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
             state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
         }
         }
+        TvHomeClock(Modifier.align(Alignment.TopEnd).padding(horizontal = 24.dp, vertical = 16.dp))
     }
+}
+
+@Composable
+internal fun TvHomeClock(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val formatter = remember(context) { android.text.format.DateFormat.getTimeFormat(context) }
+    val clock by produceState(formatter.format(java.util.Date()), formatter) {
+        while (true) {
+            value = formatter.format(java.util.Date())
+            kotlinx.coroutines.delay(60_000L - System.currentTimeMillis().mod(60_000L))
+        }
+    }
+    Text(clock, modifier.testTag("tv-home-clock").semantics { contentDescription = "현재 시각 $clock" },
+        style = MaterialTheme.typography.titleMedium.copy(shadow = androidx.compose.ui.graphics.Shadow(
+            Color.Black.copy(alpha = .8f), blurRadius = 4f)), color = Color.White,
+        fontWeight = FontWeight.Medium)
 }
 
 @Composable

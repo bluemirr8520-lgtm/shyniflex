@@ -25,6 +25,19 @@ import org.junit.Test
 class TvNavigationTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun homeClockShowsDeviceFormattedCurrentTime() {
+        compose.setContent { MaterialTheme { TvHomeClock() } }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val formatter = android.text.format.DateFormat.getTimeFormat(context)
+        val before = formatter.format(java.util.Date(System.currentTimeMillis() - 60_000))
+        val now = formatter.format(java.util.Date())
+        compose.onNodeWithTag("tv-home-clock").assertExists().assert(
+            SemanticsMatcher("shows the current device time") { node ->
+                node.config[androidx.compose.ui.semantics.SemanticsProperties.Text]
+                    .any { it.text == now || it.text == before }
+            })
+    }
+
     @Test fun watchedDialogIgnoresOpeningConfirmReleaseAndRequiresFreshSelection() {
         var selected: Boolean? = null
         var dismissed = false

@@ -24,9 +24,18 @@ import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import io.mirr.shynigsy.updates.UpdateViewModel
+import io.mirr.shynigsy.updates.UpdateDialog
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppViewModel
+    private lateinit var updates: UpdateViewModel
+    private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (packageManager.canRequestPackageInstalls()) installReadyUpdate()
+        else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.")
+    }
     private var lastCompletionRevision = 0L
     private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data?.getBooleanExtra("return_home", false) == true)
@@ -47,6 +56,7 @@ class MainActivity : ComponentActivity() {
             }.build()
         }
         model = ViewModelProvider(this)[AppViewModel::class.java]
+        updates = ViewModelProvider(this)[UpdateViewModel::class.java]
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaybackCompletionSignals.changes.combine(model.state) { revision, state -> revision to state }
@@ -75,11 +85,41 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
-            ShyniApp(model) { spec ->
+            val updateState by updates.state.collectAsState()
+            ShyniApp(model, onUpdate = { updates.check(manual = true) }) { spec ->
                 playback.launch(Intent(this, NativePlayerActivity::class.java)
                     .putExtra("spec", spec.toJson())
                     .putExtra("server", model.state.value.server))
             }
+            UpdateDialog(updateState, onInstall = ::requestUpdateInstall,
+                onCheck = { updates.check(manual = true) }, onDismiss = updates::dismiss)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::updates.isInitialized) updates.check()
+    }
+
+    private fun requestUpdateInstall() {
+        if (!packageManager.canRequestPackageInstalls()) {
+            try {
+                installPermission.launch(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    android.net.Uri.parse("package:$packageName")))
+            } catch (_: Exception) { updates.installError("TV 설정에서 이 앱의 설치 허용을 켠 뒤 다시 시도해 주세요.") }
+        } else installReadyUpdate()
+    }
+
+    private fun installReadyUpdate() {
+        lifecycleScope.launch {
+            val file = updates.verifiedFile() ?: return@launch
+            try {
+                val uri = androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.updates", file)
+                val installer = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                updates.dismiss()
+                startActivity(installer)
+            } catch (_: Exception) { updates.installError("설치 화면을 열지 못했습니다. TV의 앱 설치 설정을 확인해 주세요.") }
         }
     }
 }

@@ -106,6 +106,20 @@ JDK 17, Android SDK 플랫폼 36, PowerShell, 네트워크 또는 기존 Gradle 
 
 프로젝트 라이선스는 [LICENSE](LICENSE), 구성 요소의 출처는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), 네이티브 소스 복원과 빌드 환경은 [docs/NATIVE-SOURCES.md](docs/NATIVE-SOURCES.md)를 참고하세요. 일반 앱 빌드는 고정된 공식 네이티브 바이너리를 재사용하며, 네이티브 소스에서의 별도 빌드는 Linux 또는 macOS 환경을 사용합니다.
 
+## TV 자동 업데이트
+
+TV 1.0.15-test(빌드 16)는 [TV 릴리스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/tv-1.0.15)의 `shyniflex-tv.apk`로 설치합니다. 기존 TV 미리보기와 같은 `io.mirr.shyniflex.debug` 패키지이며, 같은 서명키로 업데이트하면 계정과 설정을 유지합니다. 기존 정식 앱과는 별도로 설치됩니다.
+
+홈 오른쪽 위에 기기 설정에 맞춘 현재 시각을 표시합니다. 앱이 전면으로 돌아올 때 새 버전을 자동 확인하며, 정상 확인은 6시간, 연결 오류 후 재시도는 15분 간격으로 제한합니다. 새 APK는 자동으로 내려받고 파일 해시·패키지·버전·설치된 앱의 서명을 확인한 뒤 설치 화면을 제공합니다. 사이드 메뉴의 **업데이트**로 즉시 확인할 수도 있습니다. 최초 한 번 이 앱의 설치 허용이 필요하며, 설치는 Android 확인 화면에서 진행합니다. 영상 재생 도중 설치를 강제로 시작하지 않습니다.
+
+다음 배포는 `versionCode`를 올리고 동일한 서명키로 APK를 빌드한 후 아래 스크립트로 공개합니다. 앱은 해당 저장소에 공개된 업데이트 정보에서 자기 패키지의 더 높은 버전만 사용합니다. 서명키나 GitHub 토큰을 저장소에 넣지 마세요. GitHub 인증은 로컬 Git 자격 증명 또는 `GH_TOKEN` 환경 변수를 사용합니다.
+
+```powershell
+.\android\publish-update.ps1 -Tag 'tv-1.0.15' -AndroidSdkPath 'C:\path\to\Android\Sdk' -CorrespondingSourcePath 'C:\path\to\shyniflex-corresponding-source.zip'
+```
+
+스크립트는 APK·업데이트 정보·전체 대응 소스·체크섬을 먼저 비공개 초안에 올린 뒤 릴리스를 공개합니다. 이미 공개된 릴리스는 덮어쓰지 않습니다. 네이티브 라이브러리를 바꾸지 않는 배포는 기존 대응 소스 묶음의 네이티브·JVM 아카이브를 보존하고 `app-source.zip`과 상위 소스 안내·체크섬을 현재 앱 소스로 갱신합니다.
+
 ## 출처
 
 - [MPV 공식 프로젝트](https://github.com/mpv-player/mpv)

@@ -131,6 +131,7 @@ private val ShyniColors = darkColorScheme(
 @Composable
 fun ShyniApp(
     viewModel: AppViewModel,
+    onUpdate: () -> Unit = {},
     onPlay: (PlaybackSpec) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
@@ -201,7 +202,8 @@ fun ShyniApp(
                             homeSelected = state.library == null && detail == null,
                             onHome = viewModel::openHome, onLibrary = viewModel::selectLibrary,
                             showLocked = !state.spoilerUnlocked,
-                            spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler)
+                            spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler,
+                            onUpdate = onUpdate)
                         Box(Modifier.weight(1f).fillMaxSize()) {
                         val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
                             ?: state.library?.let { "library:${it.id}" } ?: "home"
