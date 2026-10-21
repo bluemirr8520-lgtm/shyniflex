@@ -185,7 +185,7 @@ class ShyniClient(
         val active = parts.singleOrNull { it.partId == spec.partId } ?: return PlaybackNeighbors()
         val folder = active.folderKey ?: return PlaybackNeighbors()
         fun navigationItem(item: MediaItem, file: PhysicalPart): MediaItem = item.copy(id = file.metadataId,
-            folderKey = folder, navigationPartId = file.partId, markers = emptyList())
+            folderKey = folder, navigationPartId = file.partId, playbackPartId = file.partId, markers = emptyList())
         val sameItemParts = parts.filter { it.folderKey == folder }
             .sortedWith(compareBy<PhysicalPart> { it.partIndex ?: Int.MAX_VALUE }.thenBy { it.fileName }.thenBy { it.partId })
         val partIndex = sameItemParts.indexOfFirst { it.partId == spec.partId }
@@ -460,7 +460,9 @@ class ShyniClient(
                             val parsed = parseMedia(match, item.libraryId, "episode", result)
                             result = parsed.copy(id = item.id, libraryId = item.libraryId, type = item.type,
                                 viewItemId = item.viewItemId ?: parsed.viewItemId, showId = showId,
-                                poster = item.poster ?: parsed.poster)
+                                poster = item.poster ?: parsed.poster,
+                                playbackPartId = if (parsed.id == item.id &&
+                                    parsed.viewItemId == (item.viewItemId ?: parsed.viewItemId)) parsed.playbackPartId else item.playbackPartId)
                             break
                         }
                         if (batch.size < 100) break
@@ -517,6 +519,7 @@ class ShyniClient(
     private fun ApiException.isEpisodeIdentityFailure(): Boolean {
         if (status !in setOf(400, 404, 409, 422, 500)) return false
         return message?.trim()?.removeSuffix(".")?.trim() in setOf(
+            "에피소드 정체성을 확인할 수 없습니다",
             "에피소드의 정체성을 확인할 수 없습니다",
             "에피소의 정체성을 확인할 수 없습니다",
         )
@@ -524,10 +527,25 @@ class ShyniClient(
 
     /** Available source files supplied by Shyni; this never changes account transcode policy. */
     suspend fun versions(item: MediaItem): List<MediaVersion> {
-        val response = request("/playback/versions", decisionBody(item), spoiler = item.isSpoiler)
+        val response = try {
+            request("/playback/versions", decisionBody(item), spoiler = item.isSpoiler)
+        } catch (error: ApiException) {
+            val knownFile = knownEpisodeFile(item)
+            if (!error.isEpisodeIdentityFailure() || knownFile == null) throw error
+            // This is existing browse metadata, not a grant to stream the file.
+            // Playback still obtains a ticket through the same View's policy checks.
+            return listOf(knownFile)
+        }
         val options = rows(response, "options").mapNotNull(::parseVersion).distinctBy { it.partId }
         if (options.isNotEmpty()) return options
         return listOfNotNull((response as? JSONObject)?.optJSONObject("source_info")?.let(::parseVersion))
+    }
+
+    private fun knownEpisodeFile(item: MediaItem): MediaVersion? {
+        if (item.type != "episode" || item.id <= 0 || item.libraryId <= 0 ||
+            item.viewItemId?.let { it > 0 } != true) return null
+        val partId = (item.navigationPartId ?: item.playbackPartId)?.takeIf { it > 0 } ?: return null
+        return MediaVersion(partId, "원본 파일 $partId", metadataItemId = item.id)
     }
 
     private fun parseVersion(row: JSONObject): MediaVersion? {
@@ -556,7 +574,15 @@ class ShyniClient(
 
     /** Explicit user state is separate from the player's server-judged completion reports. */
     suspend fun setWatched(item: MediaItem, watched: Boolean) {
-        val versionResponse = request("/playback/versions", decisionBody(item), spoiler = item.isSpoiler).objectValue()
+        val versionResponse = try {
+            request("/playback/versions", decisionBody(item), spoiler = item.isSpoiler).objectValue()
+        } catch (error: ApiException) {
+            val knownFile = knownEpisodeFile(item)
+            if (!error.isEpisodeIdentityFailure() || knownFile == null) throw error
+            // The server checks ownership of this exact part in the supplied View.
+            setPartWatched(item, item.id, knownFile.partId, watched)
+            return
+        }
         // A View may expose several physical versions. The watch-state endpoint checks
         // exact part ownership, while its history is canonical across source versions.
         val candidates = rows(versionResponse, "options") + listOfNotNull(versionResponse.optJSONObject("source_info"))
@@ -598,8 +624,12 @@ class ShyniClient(
         val fallback = unambiguous.filter(::eligibleFallback).distinctBy { it.metadataId to it.partId }.singleOrNull()
         val target = exact ?: source ?: fallback
             ?: throw ApiException("시청 상태를 변경할 파일을 찾을 수 없습니다. 목록을 새로고침해 주세요.")
-        val result = request("/continue-watching/${target.metadataId}/watch-state", JSONObject().apply {
-            put("part_id", target.partId); put("watched", watched)
+        setPartWatched(item, target.metadataId, target.partId, watched)
+    }
+
+    private suspend fun setPartWatched(item: MediaItem, metadataId: Int, partId: Int, watched: Boolean) {
+        val result = request("/continue-watching/$metadataId/watch-state", JSONObject().apply {
+            put("part_id", partId); put("watched", watched)
             put("library_view_id", item.libraryId); put("view_item_id", item.viewItemId)
         }, method = "PUT", spoiler = item.isSpoiler).objectValue()
         if (!result.optBoolean("ok") || result.isNull("watched") || result.optBoolean("watched") != watched) {
@@ -663,28 +693,66 @@ class ShyniClient(
     }
 
     suspend fun playback(item: MediaItem, partId: Int? = null): PlaybackSpec {
+        suspend fun <T> stage(label: String, block: suspend () -> T): T = try {
+            block()
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            throw ApiException("재생 준비 · $label: ${error.message ?: "요청을 처리하지 못했습니다."}",
+                (error as? ApiException)?.status ?: 0).apply { initCause(error) }
+        }
         val sessionId = UUID.randomUUID().toString()
         val requestedPart = partId ?: item.navigationPartId
-        val requestBody = decisionBody(item, requestedPart).put("client_session_id", sessionId)
-        // Native decoders handle playback. Do not send an incomplete browser profile:
-        // the server's video/container semantics for an audio-only profile are unknown.
-        val decision = request("/playback/decision", requestBody, spoiler = item.isSpoiler).objectValue()
-        val selected = decision.optJSONObject("selected")
-            ?: throw ApiException(decision.stringOrNull("reason_text") ?: "재생할 수 있는 파일이 없습니다.")
-        val selectedPart = selected.intOrNull("part_id") ?: throw ApiException("재생 파일 정보를 받지 못했습니다.")
-        if (partId == null && item.navigationPartId != null && selectedPart != item.navigationPartId) {
-            throw ApiException("같은 폴더에서 확인한 재생 파일이 변경되었습니다. 목록을 다시 불러오세요.")
+        val recoveryPart = (requestedPart ?: item.playbackPartId)?.takeIf { it > 0 }
+        val canRecoverExactFile = item.type == "episode" && item.id > 0 && item.libraryId > 0 &&
+            item.viewItemId?.let { it > 0 } == true && recoveryPart != null
+        val preparedDecision: Triple<JSONObject, JSONObject, Int>? = stage("재생 방식 확인") {
+            val requestBody = decisionBody(item, requestedPart).put("client_session_id", sessionId)
+            // Native decoders handle playback. Do not send an incomplete browser profile:
+            // the server's video/container semantics for an audio-only profile are unknown.
+            val response = try {
+                request("/playback/decision", requestBody, spoiler = item.isSpoiler).objectValue()
+            } catch (error: ApiException) {
+                if (!canRecoverExactFile || !error.isEpisodeIdentityFailure()) throw error
+                null
+            } ?: return@stage null
+            val source = response.optJSONObject("selected")
+                ?: throw ApiException(response.stringOrNull("reason_text") ?: "재생할 수 있는 파일이 없습니다.")
+            val sourcePart = source.intOrNull("part_id") ?: throw ApiException("재생 파일 정보를 받지 못했습니다.")
+            if (partId == null && item.navigationPartId != null && sourcePart != item.navigationPartId) {
+                throw ApiException("같은 폴더에서 확인한 재생 파일이 변경되었습니다. 목록을 다시 불러오세요.")
+            }
+            Triple(response, source, sourcePart)
         }
-        val context = decision.stringOrNull("playback_context_token")
-        val viewId = decision.intOrNull("library_view_id") ?: item.libraryId
-        val viewItemId = decision.intOrNull("view_item_id") ?: item.viewItemId
-        val contextQuery = contextQuery(context, viewId, viewItemId)
-        val transcode = decision.optJSONObject("transcode")
+        val recovered: Triple<String, Int, Int>? = if (preparedDecision == null) stage("파일 재생 권한 복구") {
+            // The tokenless ticket endpoint independently checks exact part membership,
+            // the current View/private grant, stream policy and concurrent-stream limits.
+            val response = request("/stream-ticket/$recoveryPart?library_view_id=${item.libraryId}&view_item_id=${item.viewItemId}",
+                JSONObject(), spoiler = item.isSpoiler).objectValue()
+            val boundView = response.exactPositiveInt("library_view_id")
+            val boundItem = response.exactPositiveInt("view_item_id")
+            if (boundView == null || boundView != item.libraryId || boundItem == null ||
+                (response.has("part_id") && response.exactPositiveInt("part_id") != recoveryPart)) {
+                throw ApiException("파일 재생 권한의 라이브러리 항목 정보가 일치하지 않습니다.", 403)
+            }
+            val authorizedTicket = response.stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
+            Triple(authorizedTicket, boundView, boundItem)
+        } else null
+        val decision = preparedDecision?.first
+        val selected = preparedDecision?.second
+        val selectedPart = preparedDecision?.third ?: recoveryPart!!
+        val context = decision?.stringOrNull("playback_context_token")
+        val viewId = recovered?.second ?: decision?.intOrNull("library_view_id") ?: item.libraryId
+        val viewItemId = recovered?.third ?: decision?.intOrNull("view_item_id") ?: item.viewItemId
+        val contextParameters = stage("재생 방식 확인") { contextQuery(context, viewId, viewItemId) }
+        val transcode = decision?.optJSONObject("transcode")
         val mode = transcode?.stringOrNull("mode")
-        val ticketPath = if (mode != null) "/playback/transcode-ticket/$selectedPart?$contextQuery&mode=${encode(mode)}"
-            else "/stream-ticket/$selectedPart?$contextQuery"
-        val ticketResponse = request(ticketPath, JSONObject(), spoiler = item.isSpoiler).objectValue()
-        val ticket = ticketResponse.stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
+        val ticketPath = if (mode != null) "/playback/transcode-ticket/$selectedPart?$contextParameters&mode=${encode(mode)}"
+            else "/stream-ticket/$selectedPart?$contextParameters"
+        val ticket = recovered?.first ?: stage("재생 티켓 발급") {
+            request(ticketPath, JSONObject(), spoiler = item.isSpoiler).objectValue()
+                .stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
+        }
         val streamUrl = if (mode != null) {
             val parameters = mutableListOf("ticket=${encode(ticket)}", "mode=${encode(mode)}")
             transcode.intOrNull("max_height")?.let { parameters += "max_height=$it" }
@@ -692,31 +760,49 @@ class ShyniClient(
             absoluteUrl("/transcode/$selectedPart?${parameters.joinToString("&")}")
         } else absoluteUrl("/stream/$selectedPart?ticket=${encode(ticket)}")
         val subtitleTicket = if (mode == null) ticket else {
-            request("/stream-ticket/$selectedPart?$contextQuery", JSONObject(), spoiler = item.isSpoiler).objectValue()
-                .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
+            stage("자막 티켓 발급") {
+                request("/stream-ticket/$selectedPart?$contextParameters", JSONObject(), spoiler = item.isSpoiler).objectValue()
+                    .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
+            }
         }
-        val subs = rows(request("/subtitles/$selectedPart?$contextQuery", spoiler = item.isSpoiler), "subtitles")
-            .mapNotNull { subtitleTrack(it, subtitleTicket, contextQuery) }
-            .map { progressiveSubtitle(it, mode != null) }
-        val progress = progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler), item.id)
-        val duration = selected.optLong("duration_ms").takeIf { it > 0 }
-            ?: (selected.optDouble("duration_sec", 0.0) * 1000).toLong().takeIf { it > 0 }
+        val subs = stage("자막 정보 조회") {
+            rows(request("/subtitles/$selectedPart?$contextParameters", spoiler = item.isSpoiler), "subtitles")
+                .mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
+                .map { progressiveSubtitle(it, mode != null) }
+        }
+        val progress = stage("이어보기 위치 조회") {
+            try {
+                progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler), item.id)
+            } catch (error: ApiException) {
+                // Playback and its scoped ticket are already authorized. A broken
+                // canonical progress identity must not discard that valid stream.
+                // Keep the card's resume/watch state when this optional lookup is unknown.
+                if (!error.isEpisodeIdentityFailure()) throw error
+                null
+            }
+        }
+        val duration = selected?.optLong("duration_ms")?.takeIf { it > 0 }
+            ?: selected?.optDouble("duration_sec", 0.0)?.times(1000)?.toLong()?.takeIf { it > 0 }
             ?: progress?.optLong("duration_ms")?.takeIf { it > 0 } ?: item.durationMs
         val resume = progress?.optLong("position_ms")?.coerceAtLeast(0) ?: item.resumeMs
         return PlaybackSpec(item.title, streamUrl, emptyMap(), item.id, viewId, selectedPart,
             if (progress?.watchedState() ?: item.watched) 0 else resume,
-            duration, subs, sessionId, context, viewItemId, decision.stringOrNull("decision"),
-            decision.optJSONObject("client_playback_hints")?.optBoolean("prefer_software_decode") == true,
-            selectedAudioStreamIndex = decision.indexOrNull("selected_audio_stream_index"),
-            selectedAudioStreamOrdinal = if (mode != null) 0 else decision.indexOrNull("selected_audio_stream_ordinal"),
-            selectedAudioLanguage = decision.stringOrNull("selected_audio_language"),
-            selectedSubtitleId = decision.optJSONObject("subtitle")?.intOrNull("id"),
+            duration, subs, sessionId, context, viewItemId, decision?.stringOrNull("decision") ?: if (recovered != null) "direct_play" else null,
+            decision?.optJSONObject("client_playback_hints")?.optBoolean("prefer_software_decode") == true,
+            selectedAudioStreamIndex = decision?.indexOrNull("selected_audio_stream_index"),
+            selectedAudioStreamOrdinal = if (mode != null) 0 else decision?.indexOrNull("selected_audio_stream_ordinal"),
+            selectedAudioLanguage = decision?.stringOrNull("selected_audio_language"),
+            selectedSubtitleId = decision?.optJSONObject("subtitle")?.intOrNull("id"),
             requestedPartId = requestedPart,
             conversionHeight = if (mode == "video") transcode?.intOrNull("max_height") else null,
             streamStartPositionMs = 0,
             sourceItem = item.copy(libraryId = viewId, viewItemId = viewItemId, durationMs = duration,
                 resumeMs = if (progress?.watchedState() ?: item.watched) 0 else resume, markers = emptyList(),
-                navigationPartId = requestedPart),
+                navigationPartId = requestedPart, playbackPartId = when {
+                    recovered != null -> selectedPart
+                    viewId == item.libraryId && viewItemId == item.viewItemId -> item.playbackPartId
+                    else -> null
+                }),
             markers = PlaybackMarker.parse(JSONArray(item.markers.map { it.asJson() }), duration))
     }
 
@@ -875,6 +961,12 @@ class ShyniClient(
         if (context != null) "playback_context_token=${encode(context)}"
         else "library_view_id=$viewId&view_item_id=${viewItemId ?: throw ApiException("재생 권한 정보를 받지 못했습니다.")}"
 
+    private fun JSONObject.exactPositiveInt(key: String): Int? = runCatching {
+        val raw = opt(key)
+        if (raw !is Number && raw !is String) return@runCatching null
+        java.math.BigDecimal(raw.toString()).intValueExact().takeIf { it > 0 }
+    }.getOrNull()
+
     internal fun parseMedia(row: JSONObject, libraryId: Int, fallbackType: String, previous: MediaItem? = null): MediaItem {
         val type = when (val raw = row.stringOrNull("item_type") ?: row.stringOrNull("type") ?: row.opt("metadata_type")?.toString()) {
             "1", "movie" -> "movie"; "2", "tv", "show" -> "show"; "3", "season" -> "season"
@@ -893,10 +985,21 @@ class ShyniClient(
         val backdrop = row.stringOrNull("art_url") ?: row.stringOrNull("backdrop_url") ?: row.stringOrNull("show_art_url")
         val watched = row.watchedState() ?: previous?.watched ?: false
         val position = if (!row.isNull("position_ms")) row.optLong("position_ms").coerceAtLeast(0) else previous?.resumeMs ?: 0
+        val viewItemId = row.intOrNull("view_item_id") ?: previous?.viewItemId
+        val exactPrevious = previous?.takeIf {
+            it.id == id && it.libraryId == libraryId && it.type == type && it.viewItemId == viewItemId
+        }
+        val hintContextMatches = id > 0 && libraryId > 0 && viewItemId?.let { it > 0 } == true &&
+            (row.isNull("id") || row.exactPositiveInt("id") == id) &&
+            (row.isNull("library_view_id") || row.exactPositiveInt("library_view_id") == libraryId) &&
+            (row.isNull("view_item_id") || row.exactPositiveInt("view_item_id") == viewItemId) &&
+            (row.isNull("metadata_item_id") || row.exactPositiveInt("metadata_item_id") == id)
+        val playbackPart = if (!hintContextMatches || type !in setOf("movie", "episode")) null
+            else if (row.has("part_id")) row.exactPositiveInt("part_id") else exactPrevious?.playbackPartId
         return MediaItem(id, libraryId, title, type, row.stringOrNull("summary") ?: previous?.summary ?: "",
             poster?.let { runCatching { absoluteUrl(it) }.getOrNull() } ?: previous?.poster,
             duration, season ?: previous?.seasonNumber, episode ?: previous?.episodeNumber,
-            row.intOrNull("view_item_id") ?: previous?.viewItemId, row.intOrNull("show_id") ?: previous?.showId,
+            viewItemId, row.intOrNull("show_id") ?: previous?.showId,
             if (watched) 0 else position, watched,
             row.stringOrNull("show_title") ?: previous?.showTitle,
             row.stringOrNull("subtitle") ?: previous?.displaySubtitle,
@@ -904,7 +1007,7 @@ class ShyniClient(
             previous?.isSpoiler == true || row.booleanOrNull("spoiler_enabled") == true,
             if (row.has("markers") && !row.isNull("markers")) PlaybackMarker.parse(row.opt("markers"), duration)
                 else previous?.markers ?: emptyList(), previous?.folderKey, previous?.navigationPartId,
-            thumbnail ?: previous?.thumbnail)
+            thumbnail ?: previous?.thumbnail, playbackPart)
     }
 
     private fun JSONObject.watchedState(): Boolean? = when {

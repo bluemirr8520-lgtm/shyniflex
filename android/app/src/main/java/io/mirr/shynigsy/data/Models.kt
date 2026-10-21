@@ -67,6 +67,7 @@ data class MediaItem(
     val folderKey: String? = null,
     val navigationPartId: Int? = null,
     val thumbnail: String? = null,
+    val playbackPartId: Int? = null,
 ) {
     val playable: Boolean get() = type == "movie" || type == "episode"
 
@@ -82,6 +83,7 @@ data class MediaItem(
         put("markers", JSONArray(markers.map { it.asJson() }))
         put("folderKey", folderKey); put("navigationPartId", navigationPartId)
         put("thumbnail", thumbnail)
+        put("playbackPartId", playbackPartId)
     }
 
     companion object {
@@ -98,6 +100,7 @@ data class MediaItem(
             PlaybackMarker.parse(value.opt("markers"), value.optLong("durationMs")),
             value.stringOrNull("folderKey"), value.intOrNull("navigationPartId"),
             value.stringOrNull("thumbnail"),
+            value.intOrNull("playbackPartId"),
         )
     }
 }

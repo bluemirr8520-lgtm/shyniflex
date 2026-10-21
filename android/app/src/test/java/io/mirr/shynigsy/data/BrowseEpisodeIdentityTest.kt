@@ -59,7 +59,7 @@ class BrowseEpisodeIdentityTest {
 
     @Test fun recognizedIdentityFailureStatusesAndReportedWordingsAllowOnlyTheOptionalHeaderFallback() = runBlocking {
         for (status in listOf(400, 404, 409, 422, 500)) {
-            for (message in listOf(identityMessage, "에피소의 정체성을 확인할 수 없습니다")) {
+            for (message in listOf(identityMessage, "에피소의 정체성을 확인할 수 없습니다", "에피소드 정체성을 확인할 수 없습니다")) {
                 identity(status, message)
                 respond("[]")
                 val details = client.details(show)
@@ -69,7 +69,7 @@ class BrowseEpisodeIdentityTest {
                 assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
             }
         }
-        assertEquals(20, server.requestCount)
+        assertEquals(30, server.requestCount)
     }
 
     @Test fun missingNumericParentShowIdDoesNotGuessFromASeasonTitle() = runBlocking {

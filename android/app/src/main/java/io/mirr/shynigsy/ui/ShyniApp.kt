@@ -228,7 +228,7 @@ fun ShyniApp(
         if (libraryPickerOpen && state.loggedIn) LibraryPicker(
             libraries = state.libraries,
             selectedLibraryId = state.library?.id,
-            busy = state.busy,
+            busy = state.busy && !state.homeLoading,
             onDismiss = { libraryPickerOpen = false },
             onSelect = { library -> libraryPickerOpen = false; viewModel.selectLibrary(library) },
             spoilerAvailable = state.spoilerAvailable,

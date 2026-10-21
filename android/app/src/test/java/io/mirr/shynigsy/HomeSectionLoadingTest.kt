@@ -12,6 +12,57 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeSectionLoadingTest {
+    @Test fun publicSectionsPublishBeforeSupplementalCatalogAndValidationFinish() = runBlocking {
+        withTimeout(30_000) {
+            val supplementalStarted = CompletableDeferred<Unit>()
+            val releaseSupplemental = CompletableDeferred<Unit>()
+            val continuePublished = CompletableDeferred<Unit>()
+            val recentPublished = CompletableDeferred<Unit>()
+            val group = async {
+                loadHomeSections(
+                    loadContinue = { continuePublished.complete(Unit) },
+                    loadRecent = { recentPublished.complete(Unit) },
+                    loadSupplemental = { supplementalStarted.complete(Unit); releaseSupplemental.await() },
+                )
+            }
+
+            supplementalStarted.await()
+            continuePublished.await()
+            recentPublished.await()
+            assertFalse("Optional status/private work must not gate either public section", group.isCompleted)
+            releaseSupplemental.complete(Unit)
+            group.await()
+        }
+    }
+
+    @Test fun expiredSessionFromParallelValidationCancelsBothPublicRequests() = runBlocking {
+        withTimeout(30_000) {
+            val continueStarted = CompletableDeferred<Unit>()
+            val recentStarted = CompletableDeferred<Unit>()
+            var cancelledRequests = 0
+            val caught = runCatching {
+                loadHomeSections(
+                    loadContinue = {
+                        continueStarted.complete(Unit)
+                        try { awaitCancellation() } finally { cancelledRequests++ }
+                    },
+                    loadRecent = {
+                        recentStarted.complete(Unit)
+                        try { awaitCancellation() } finally { cancelledRequests++ }
+                    },
+                    loadSupplemental = {
+                        continueStarted.await(); recentStarted.await()
+                        throw ApiException("fixture expired session", 401)
+                    },
+                )
+            }.exceptionOrNull()
+
+            assertTrue(caught is ApiException)
+            assertEquals(401, (caught as ApiException).status)
+            assertEquals("Expired sessions must stop every pending Home section", 2, cancelledRequests)
+        }
+    }
+
     @Test fun continuePublishesWhileRecentIsPendingAndTheGroupWaitsForBoth() = runBlocking {
         withTimeout(30_000) {
             val recentStarted = CompletableDeferred<Unit>()
@@ -88,22 +139,27 @@ class HomeSectionLoadingTest {
         withTimeout(30_000) {
             val continueStarted = CompletableDeferred<Unit>()
             val recentStarted = CompletableDeferred<Unit>()
+            val supplementalStarted = CompletableDeferred<Unit>()
             val continueResponse = CompletableDeferred<Unit>()
             val recentResponse = CompletableDeferred<Unit>()
+            val supplementalResponse = CompletableDeferred<Unit>()
             var publications = 0
             val parent = launch {
                 loadHomeSections(
                     loadContinue = { continueStarted.complete(Unit); continueResponse.await(); publications++ },
                     loadRecent = { recentStarted.complete(Unit); recentResponse.await(); publications++ },
+                    loadSupplemental = { supplementalStarted.complete(Unit); supplementalResponse.await(); publications++ },
                 )
             }
 
             continueStarted.await()
             recentStarted.await()
+            supplementalStarted.await()
             parent.cancel()
             // Responses arriving after navigation/logout must not revive the load.
             continueResponse.complete(Unit)
             recentResponse.complete(Unit)
+            supplementalResponse.complete(Unit)
             parent.join()
             assertTrue(parent.isCancelled)
             assertEquals(0, publications)

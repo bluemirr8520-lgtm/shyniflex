@@ -1,10 +1,10 @@
 # 네이티브 대응 소스
 
-shyniflex 1.0.12은 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. Git 저장소에는 앱 소스와 일반 앱 빌드 스크립트를 보관하며, APK에 대응하는 전체 소스는 다음 릴리스 파일에서 제공합니다.
+shyniflex 1.0.13은 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. Git 저장소에는 앱 소스와 일반 앱 빌드 스크립트를 보관하며, APK에 대응하는 전체 소스는 다음 릴리스 파일에서 제공합니다.
 
-- [APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.12/shyniflex-1.0.12.apk)
-- [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.12/shyniflex-1.0.12-corresponding-source.zip)
-- [앱 소스 태그 v1.0.12](https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.12)
+- [APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.13/shyniflex-1.0.13.apk)
+- [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.13/shyniflex-1.0.13-corresponding-source.zip)
+- [앱 소스 태그 v1.0.13](https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.13)
 
 ## 소스 묶음의 내용
 

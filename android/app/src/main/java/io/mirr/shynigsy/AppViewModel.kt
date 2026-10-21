@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 data class AppState(
@@ -160,9 +161,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val active = ShyniClient(saved.server, saved.token, deviceId = deviceId)
                 requireHttps(saved.server)
                 client = active
-                val name = active.me()
-                mutableState.update { it.copy(loggedIn = true, server = saved.server, userName = name) }
-                loadHome(active)
+                mutableState.update { it.copy(loggedIn = true, server = saved.server, userName = saved.userName) }
+                loadHome(active, refreshUserName = true)
             }
         }
     }
@@ -260,14 +260,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(totpChallenge = null, busy = false, error = null) }
     }
 
-    private suspend fun loadHome(active: ShyniClient) {
+    private suspend fun loadHome(active: ShyniClient, refreshUserName: Boolean = false) {
         val homeRevision = ++homeRefreshRevision
         val navigationRevision = revision
         val accessRevision = spoilerRevision
         val grantRevision = SpoilerAccessRegistry.changes.value
         val homeAccountToken = active.token
         val previousContinue = mutableState.value.continueItems
+        val previousRecent = mutableState.value.recentItems
         val previousOwnerMatches = continueOwner?.matches(active, homeAccountToken) == true
+        var ordinary: List<Library>? = null
+        // Until its replacement arrives, known private Views still exclude public duplicates.
+        var privateLibraries = mutableState.value.libraries.filter { it.isSpoiler && active.spoilerUnlocked }
+        var publicContinue: HomeContinueLoad? = null
+        var privateContinue: HomeContinueLoad? = if (active.spoilerUnlocked) null else HomeContinueLoad.Success(emptyList())
+        var publicRecent: Pair<List<MediaItem>, String?>? = null
+        var privateRecent: List<MediaItem>? = if (active.spoilerUnlocked) null else emptyList()
         fun canPublishHome(): Boolean {
             // Opening a library must not discard an independent unlock-time Home fetch.
             if (active !== client || active.token != homeAccountToken ||
@@ -282,90 +290,133 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         suspend fun <T> privateCatalog(fallback: T, block: suspend () -> T): T = try { block() }
         catch (cancel: CancellationException) { throw cancel }
-        catch (_: Exception) {
+        catch (error: Exception) {
+            if (error is ApiException && error.status == 401) throw error
             if (canPublishHome() && active.spoilerUnlocked) mutableState.update {
                 it.copy(spoilerError = "비공개 목록을 불러오지 못했습니다. 새로고침해 주세요.")
             }
             fallback
         }
+        fun homeLibraries(): List<Library> {
+            val privateCatalogs = if (active.spoilerUnlocked) privateLibraries else emptyList()
+            val privateIds = privateCatalogs.map { it.id }.toSet()
+            return (ordinary.orEmpty().filterNot { it.id in privateIds } + privateCatalogs).distinctBy { it.id }
+        }
+        fun publishContinue() {
+            val publicLoad = publicContinue ?: return
+            if (ordinary == null || !canPublishHome()) return
+            val unlocked = active.spoilerUnlocked
+            val continueItems = resolveHomeContinueWatching(publicLoad,
+                privateContinue ?: HomeContinueLoad.Failure(transient = true), previousContinue,
+                homeLibraries(), unlocked, sameAccountScope = active === client && mutableState.value.loggedIn,
+                privateGrantUnchanged = accessRevision == spoilerRevision && grantRevision == SpoilerAccessRegistry.changes.value,
+                previousOwnerMatches = previousOwnerMatches)
+            val continueError = homeContinueLoadError(publicLoad, privateContinue ?: HomeContinueLoad.Success(emptyList()))
+            if (selectedContinueIdentity != null && continueItems.none { continueIdentity(it) == selectedContinueIdentity }) {
+                clearContinueSelection(clearCache = false)
+            }
+            continueOwner = HomeContinueOwner(active, homeAccountToken)
+            mutableState.update { state ->
+                val selected = continueItems.firstOrNull { continueIdentity(it) == selectedContinueIdentity }
+                state.copy(continueItems = continueItems, spoilerUnlocked = unlocked,
+                    continueLoading = false, continueError = continueError,
+                    continueDetails = selected?.let { row -> state.continueDetails?.let { continueMetadata(row, it) } },
+                    error = if (navigationRevision == revision && state.library == null && state.detailStack.isEmpty())
+                        listOfNotNull(publicRecent?.second, continueError).distinct().joinToString("\n").ifBlank { null } else state.error)
+            }
+        }
+        fun publishRecent() {
+            val publicLoad = publicRecent ?: return
+            if (ordinary == null || !canPublishHome()) return
+            val retainedPrivate = if (previousOwnerMatches && grantRevision == SpoilerAccessRegistry.changes.value)
+                previousRecent.filter { it.isSpoiler } else emptyList()
+            val rows = visibleContinueWatching(publicLoad.first, privateRecent ?: retainedPrivate,
+                homeLibraries(), active.spoilerUnlocked).map(::collectionWatchState)
+            mutableState.update { state -> state.copy(recentItems = rows, recentLoading = false,
+                error = if (navigationRevision == revision && state.library == null && state.detailStack.isEmpty())
+                    listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error) }
+        }
+        fun publishLibraries() {
+            if (ordinary == null || !canPublishHome()) return
+            mutableState.update { it.copy(libraries = homeLibraries()) }
+            // A new private catalog can disqualify a previously known public View.
+            publishContinue()
+            publishRecent()
+        }
         mutableState.update { it.copy(homeLoading = true, continueLoading = true, continueError = null, recentLoading = true) }
         try {
-            val status = try { active.spoilerStatus() } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (_: Exception) { null }
-            if (!canPublishHome()) return
-            if (status != null) {
-                mutableState.update { it.copy(spoilerAvailable = status.available, spoilerPinEnabled = status.pinEnabled != false,
-                    spoilerUnlocked = active.spoilerUnlocked) }
-                if (active.spoilerUnlocked) scheduleSpoilerExpiry(active)
-            }
-            val ordinary = active.libraries().filterNot { it.isSpoiler }
-            val publicViewIds = ordinary.map { it.id }.toSet()
-            val privateLibraries = if (active.spoilerUnlocked) privateCatalog(emptyList<Library>()) {
-                active.spoilerLibraries().filterNot { it.id in publicViewIds }
-            } else emptyList()
-            if (!canPublishHome()) return
-            val libraries = (ordinary + if (active.spoilerUnlocked) privateLibraries else emptyList()).distinctBy { it.id }
-            mutableState.update { it.copy(libraries = libraries) }
-            loadHomeSections(
-                loadRecent = recentSection@{
-                    val publicResult = try { active.recentlyAdded(ordinary) to null } catch (cancel: CancellationException) {
-                        throw cancel
-                    } catch (error: Exception) {
-                        if (error is ApiException && error.status == 401) throw error
-                        emptyList<MediaItem>() to "최근 추가된 작품을 불러오지 못했습니다."
+            coroutineScope {
+                val publicLibraries = async {
+                    active.libraries().filterNot { it.isSpoiler }.also {
+                        if (canPublishHome()) { ordinary = it; publishLibraries() }
                     }
-                    val privateResult = if (active.spoilerUnlocked && privateLibraries.isNotEmpty())
-                        privateCatalog(emptyList<MediaItem>()) { active.recentlyAdded(privateLibraries) } else emptyList()
-                    if (!canPublishHome()) return@recentSection
-                    mutableState.update { state -> state.copy(
-                        recentItems = (publicResult.first + privateResult)
-                            .filter { active.spoilerUnlocked || !it.isSpoiler }.map(::collectionWatchState),
-                        recentLoading = false,
-                        error = if (navigationRevision == revision && state.library == null && state.detailStack.isEmpty())
-                            listOfNotNull(publicResult.second, state.continueError).distinct().joinToString("\n").ifBlank { null }
-                            else state.error,
-                    ) }
-                },
-                loadContinue = continueSection@{
-                    val (publicContinue, privateContinue) = coroutineScope {
-                        val watching = async {
-                            try { HomeContinueLoad.Success(active.continueWatching()) } catch (cancel: CancellationException) {
-                                throw cancel
-                            } catch (error: Exception) {
-                                failedHomeContinueLoad(error)
+                }
+                loadHomeSections(
+                    loadContinue = {
+                        publicContinue = try { HomeContinueLoad.Success(active.continueWatching()) }
+                        catch (cancel: CancellationException) { throw cancel }
+                        catch (error: Exception) { failedHomeContinueLoad(error) }
+                        publicLibraries.await()
+                        publishContinue()
+                    },
+                    loadRecent = {
+                        val libraries = publicLibraries.await()
+                        publicRecent = try { active.recentlyAdded(libraries) to null }
+                        catch (cancel: CancellationException) { throw cancel }
+                        catch (error: Exception) {
+                            if (error is ApiException && error.status == 401) throw error
+                            emptyList<MediaItem>() to "최근 추가된 작품을 불러오지 못했습니다."
+                        }
+                        publishRecent()
+                    },
+                    loadSupplemental = {
+                        coroutineScope {
+                            launch {
+                                val status = try { withTimeoutOrNull(3_000) { active.spoilerStatus() } }
+                                catch (cancel: CancellationException) { throw cancel }
+                                catch (error: Exception) {
+                                    if (error is ApiException && error.status == 401) throw error
+                                    null
+                                }
+                                if (status != null && canPublishHome()) {
+                                    mutableState.update { it.copy(spoilerAvailable = status.available,
+                                        spoilerPinEnabled = status.pinEnabled != false, spoilerUnlocked = active.spoilerUnlocked) }
+                                    if (active.spoilerUnlocked) scheduleSpoilerExpiry(active)
+                                }
+                            }
+                            if (refreshUserName) launch {
+                                val name = try { withTimeoutOrNull(5_000) { active.me() } }
+                                catch (cancel: CancellationException) { throw cancel }
+                                catch (error: Exception) {
+                                    if (error is ApiException && error.status == 401) throw error
+                                    null
+                                }
+                                if (name != null && canPublishHome()) mutableState.update { it.copy(userName = name) }
+                            }
+                            if (active.spoilerUnlocked) launch {
+                                privateLibraries = privateCatalog(emptyList()) { active.spoilerLibraries() }
+                                publishLibraries()
+                                if (privateLibraries.isEmpty()) {
+                                    privateContinue = HomeContinueLoad.Success(emptyList())
+                                    privateRecent = emptyList()
+                                    publishContinue(); publishRecent()
+                                } else loadHomeSections(
+                                    loadContinue = {
+                                        privateContinue = try { HomeContinueLoad.Success(active.spoilerContinueWatching()) }
+                                        catch (cancel: CancellationException) { throw cancel }
+                                        catch (error: Exception) { failedHomeContinueLoad(error) }
+                                        publishContinue()
+                                    },
+                                    loadRecent = {
+                                        privateRecent = privateCatalog(emptyList()) { active.recentlyAdded(privateLibraries) }
+                                        publishRecent()
+                                    },
+                                )
                             }
                         }
-                        val privateWatching = async {
-                            if (active.spoilerUnlocked && privateLibraries.isNotEmpty()) {
-                                try { HomeContinueLoad.Success(active.spoilerContinueWatching()) }
-                                catch (cancel: CancellationException) { throw cancel }
-                                catch (error: Exception) { failedHomeContinueLoad(error) }
-                            } else HomeContinueLoad.Success(emptyList())
-                        }
-                        watching.await() to privateWatching.await()
-                    }
-                    if (!canPublishHome()) return@continueSection
-                    val unlocked = active.spoilerUnlocked
-                    val continueItems = resolveHomeContinueWatching(publicContinue, privateContinue, previousContinue,
-                        libraries, unlocked, sameAccountScope = active === client && mutableState.value.loggedIn,
-                        privateGrantUnchanged = accessRevision == spoilerRevision && grantRevision == SpoilerAccessRegistry.changes.value,
-                        previousOwnerMatches = previousOwnerMatches)
-                    val continueError = homeContinueLoadError(publicContinue, privateContinue)
-                    if (selectedContinueIdentity != null && continueItems.none { continueIdentity(it) == selectedContinueIdentity }) {
-                        clearContinueSelection(clearCache = false)
-                    }
-                    continueOwner = HomeContinueOwner(active, homeAccountToken)
-                    mutableState.update { state ->
-                        val selected = continueItems.firstOrNull { continueIdentity(it) == selectedContinueIdentity }
-                        state.copy(continueItems = continueItems, spoilerUnlocked = unlocked,
-                            continueLoading = false, continueError = continueError,
-                            continueDetails = selected?.let { row -> state.continueDetails?.let { continueMetadata(row, it) } },
-                            error = if (navigationRevision == revision && state.library == null && state.detailStack.isEmpty())
-                                listOfNotNull(state.error, continueError).distinct().joinToString("\n").ifBlank { null } else state.error)
-                    }
-                },
-            )
+                    },
+                )
+            }
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
@@ -575,7 +626,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setWatched(item: MediaItem, watched: Boolean) {
         val active = client ?: return
-        if ((!item.playable && item.type !in setOf("show", "tv", "season")) || mutableState.value.busy) return
+        val snapshot = mutableState.value
+        if ((!item.playable && item.type !in setOf("show", "tv", "season")) ||
+            (snapshot.busy && !snapshot.homeLoading)) return
         if (item.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         launchRequest {
             val changed = try {
@@ -678,18 +731,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         val snapshot = mutableState.value
         launchRequest {
-            loadHome(active)
-            if (snapshot.detailStack.isNotEmpty()) {
-                val item = snapshot.detailStack.last().item
-                val detail = collectionWatchState(active.details(item))
-                mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail) }
-                if (item.playable) {
-                    val versions = active.versions(item)
-                    mutableState.update { it.copy(versions = versions) }
+            coroutineScope {
+                launch { loadHome(active) }
+                if (snapshot.detailStack.isNotEmpty()) {
+                    val item = snapshot.detailStack.last().item
+                    val detail = collectionWatchState(active.details(item))
+                    mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail) }
+                    if (item.playable) {
+                        val versions = active.versions(item)
+                        mutableState.update { it.copy(versions = versions) }
+                    }
+                } else snapshot.library?.let { library ->
+                    val page = active.items(library, query = snapshot.query)
+                    mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
                 }
-            } else snapshot.library?.let { library ->
-                val page = active.items(library, query = snapshot.query)
-                mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
             }
             afterRefresh?.invoke()
         }

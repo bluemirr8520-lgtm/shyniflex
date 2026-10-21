@@ -71,6 +71,7 @@ class ModelsTest {
     @Test fun olderMediaIntentDefaultsToUnwatched() {
         val item = MediaItem.fromJson("""{"id":10,"libraryId":3,"title":"작품","type":"movie"}""")
         assertEquals(false, item.watched)
+        assertNull(item.playbackPartId)
     }
 
     @Test fun continueEpisodeDisplayMetadataSurvivesRoundtrip() {
@@ -82,7 +83,7 @@ class ModelsTest {
 
     @Test fun navigationAndPrivateContextSurviveWithoutAnyGrantPayload() {
         val source = MediaItem(24, 9, "회차", "episode", showId = 5, seasonNumber = 0,
-            episodeNumber = 4, viewItemId = 601, isSpoiler = true)
+            episodeNumber = 4, viewItemId = 601, isSpoiler = true, playbackPartId = 90)
         val spec = PlaybackSpec("회차", "https://server/stream/90?ticket=part-only", itemId = 24,
             libraryId = 9, partId = 90, sourceItem = source, navigationQuery = "saved query")
         assertEquals(spec, PlaybackSpec.fromJson(spec.toJson()))

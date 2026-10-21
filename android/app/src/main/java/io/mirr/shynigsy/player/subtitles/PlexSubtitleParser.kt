@@ -278,7 +278,7 @@ private fun cleanManualSubtitleText(text: String): String =
         .replace("\\N", "\n")
         .replace("\\n", "\n")
         .replace("\\h", " ")
-        .replace(Regex("""\{\\[^}]*}"""), "")
+        .replace(Regex("""\{\\[^}]*\}"""), "")
         .replace(Regex("(?i)<br\\s*/?>"), "\n")
         .replace(Regex("<[^>]+>"), "")
         .replace("&nbsp;", " ")
