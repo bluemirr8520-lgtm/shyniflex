@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -17,6 +18,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -37,6 +41,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -53,6 +58,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class ContinueWatchingSectionTest {
     @get:Rule val screen = createComposeRule()
+    private lateinit var inputModeManager: InputModeManager
 
     @Test fun heroFillsTheSectionAndEpisodeThumbnailsHaveCaptionsBelowThem() {
         val items = episodes(3)
@@ -108,7 +114,7 @@ class ContinueWatchingSectionTest {
         render(items, onResume = { resumed = it }, selectedDetails = details)
         screen.onNodeWithTag(ROW).performScrollTo()
         screen.onNodeWithTag(ROW).performScrollToIndex(1)
-        screen.onNodeWithTag(itemTag(items[1])).performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        focusPoster(items[1])
         settle()
         screen.onNodeWithTag(REMAINING, useUnmergedTree = true).assertTextEquals("30분 남음")
         val range = screen.onNodeWithTag(PROGRESS, useUnmergedTree = true).fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo]
@@ -121,7 +127,10 @@ class ContinueWatchingSectionTest {
                 child.left >= pill.left && child.right <= pill.right && child.top >= pill.top && child.bottom <= pill.bottom)
         }
         assertTrue("The progress and remaining label are inline", progressBounds.right <= remainingBounds.left)
-        screen.onNodeWithTag(RESUME).performScrollTo().performClick()
+        screen.onNodeWithTag(RESUME).performScrollTo()
+        settle()
+        assertHero(details.value!!)
+        screen.onNodeWithTag(RESUME).performClick()
         screen.runOnIdle { assertEquals("Metadata cannot change the playback source or resume position", items[1], resumed) }
     }
 
@@ -154,6 +163,135 @@ class ContinueWatchingSectionTest {
         screen.runOnIdle { assertEquals("Idle time must not start playback", 0, resumes) }
     }
 
+    @Test fun heroSwipesChangeArtworkAndSelectionWhilePlayUsesTheExactSelectedSource() {
+        val items = episodes(3)
+        val details = mutableStateOf<MediaItem?>(null)
+        var selected: MediaItem? = null
+        var resumed: MediaItem? = null
+        render(items, onSelected = { selected = it }, onResume = { resumed = it }, selectedDetails = details)
+        screen.onNodeWithTag(backdropTag(items[0]), useUnmergedTree = true).assertIsDisplayed()
+
+        screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
+        settle()
+        assertHero(items[1])
+        screen.onNodeWithTag(backdropTag(items[0]), useUnmergedTree = true).assertDoesNotExist()
+        screen.onNodeWithTag(backdropTag(items[1]), useUnmergedTree = true).assertIsDisplayed()
+        screen.onNodeWithTag(itemTag(items[1])).assertIsSelected()
+        screen.runOnIdle {
+            assertEquals(items[1], selected)
+            assertNull("Swiping the background selects a work without playing it", resumed)
+            details.value = items[1].copy(resumeMs = 1, summary = "스와이프로 선택한 작품의 상세 소개")
+        }
+        settle()
+        screen.onNodeWithTag(RESUME).performClick()
+        screen.runOnIdle {
+            assertEquals("Descriptive metadata must not replace the source/resume snapshot", items[1], resumed)
+            resumed = null
+        }
+
+        screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
+        settle()
+        assertHero(items[0])
+        screen.onNodeWithTag(backdropTag(items[0]), useUnmergedTree = true).assertIsDisplayed()
+        screen.onNodeWithTag(backdropTag(items[1]), useUnmergedTree = true).assertDoesNotExist()
+        screen.runOnIdle {
+            assertEquals(items[0], selected)
+            assertNull("The reverse swipe must not trigger the play button", resumed)
+        }
+    }
+
+    @Test fun heroSwipesStopAtBothEndsAndTheShelfCannotUndoTheLastSelection() {
+        val items = episodes(3)
+        val selections = mutableListOf<MediaItem>()
+        var resumes = 0
+        render(items, onSelected = { selections.add(it) }, onResume = { resumes++ })
+        screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
+        settle()
+        assertHero(items.first())
+        repeat(items.lastIndex) {
+            screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
+            settle()
+        }
+        assertHero(items.last())
+        screen.onNodeWithTag(itemTag(items.last())).assertIsSelected()
+        val atEnd = screen.runOnIdle { selections.size }
+        screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
+        settle()
+        // The row may have an earlier firstVisibleItemIndex when its last card is selected.
+        screen.mainClock.advanceTimeBy(1_200)
+        screen.waitForIdle()
+        assertHero(items.last())
+        screen.onNodeWithTag(backdropTag(items.last()), useUnmergedTree = true).assertIsDisplayed()
+        screen.runOnIdle { assertEquals("The final work does not wrap to the first", atEnd, selections.size) }
+
+        repeat(items.lastIndex) {
+            screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
+            settle()
+        }
+        val atStart = screen.runOnIdle { selections.size }
+        screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
+        settle()
+        assertHero(items.first())
+        screen.runOnIdle {
+            assertEquals("The first work does not wrap to the final work", atStart, selections.size)
+            assertEquals(0, resumes)
+        }
+    }
+
+    @Test fun verticalHeroScrollAndBusyHorizontalSwipeDoNotSelectOrResume() {
+        val items = episodes(3)
+        val busy = mutableStateOf(false)
+        var selected: MediaItem? = null
+        var resumes = 0
+        render(items, onSelected = { selected = it }, onResume = { resumes++ }, busy = busy, scrollTail = true)
+        val before = screen.onNodeWithTag(CONTENT).fetchSemanticsNode()
+            .config[SemanticsProperties.VerticalScrollAxisRange].value()
+        screen.onNodeWithTag(HERO).performTouchInput { swipeUp(durationMillis = 300) }
+        settle()
+        val after = screen.onNodeWithTag(CONTENT).fetchSemanticsNode()
+            .config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertTrue("A vertical gesture belongs to the surrounding Home scroll", after > before)
+        screen.runOnIdle { assertEquals(items.first(), selected); assertEquals(0, resumes); busy.value = true }
+        screen.onNodeWithTag(HERO).performScrollTo()
+        settle()
+        screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
+        settle()
+        assertHero(items.first())
+        screen.runOnIdle { assertEquals(items.first(), selected); assertEquals(0, resumes) }
+    }
+
+    @Test fun heroSwipesSkipLockedPrivateWorksAndRelockDropsASwipedPrivateHero() {
+        val items = episodes(3)
+        val publicFirst = items[0]
+        val hidden = items[1].copy(isSpoiler = true, summary = "스와이프 비공개 상세 소개")
+        val publicLast = items[2]
+        val unlocked = mutableStateOf(false)
+        val details = mutableStateOf<MediaItem?>(hidden)
+        var resumes = 0
+        render(listOf(publicFirst, hidden, publicLast), spoilerUnlocked = unlocked,
+            selectedDetails = details, onResume = { resumes++ })
+        screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
+        settle()
+        assertHero(publicLast)
+        screen.onNodeWithTag(backdropTag(hidden), useUnmergedTree = true).assertDoesNotExist()
+
+        screen.runOnIdle { unlocked.value = true }
+        settle()
+        screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
+        settle()
+        assertHero(hidden)
+        screen.onNodeWithTag(backdropTag(hidden), useUnmergedTree = true).assertIsDisplayed()
+        screen.runOnIdle { unlocked.value = false }
+        settle()
+        assertHero(publicFirst)
+        screen.onNodeWithTag(backdropTag(hidden), useUnmergedTree = true).assertDoesNotExist()
+        screen.onNodeWithTag(itemTag(hidden)).assertDoesNotExist()
+        screen.runOnIdle { details.value = hidden.copy(summary = "재잠금 뒤 도착한 비공개 소개") }
+        settle()
+        assertHero(publicFirst)
+        screen.runOnIdle { assertEquals("Selection and revocation do not start playback", 0, resumes) }
+    }
+
     @Test fun posterRowStopsAtBothEndsWithoutWrappingOrVirtualPages() {
         val items = episodes(20)
         render(items)
@@ -165,8 +303,13 @@ class ContinueWatchingSectionTest {
         settle()
         val afterEnd = screen.onNodeWithTag(itemTag(items.last())).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertEquals("Swiping after the last poster stays at the last poster", last.left, afterEnd.left, 1f)
-        val range = screen.onNodeWithTag(ROW).fetchSemanticsNode().config[SemanticsProperties.HorizontalScrollAxisRange]
-        assertTrue("Scroll range is bounded by the real media list", range.maxValue() <= items.size + 1f)
+        val rowSemantics = screen.onNodeWithTag(ROW).fetchSemanticsNode().config
+        val range = rowSemantics[SemanticsProperties.HorizontalScrollAxisRange]
+        val collection = rowSemantics[SemanticsProperties.CollectionInfo]
+        assertEquals(1, collection.rowCount)
+        assertEquals("The collection contains only the real media items", items.size, collection.columnCount)
+        assertTrue("The real list exposes a finite scroll range", range.maxValue().isFinite())
+        assertEquals("The last card reaches the actual scroll boundary", range.maxValue(), range.value(), .01f)
 
         screen.onNodeWithTag(ROW).performScrollToIndex(0)
         settle()
@@ -186,9 +329,7 @@ class ContinueWatchingSectionTest {
         screen.onNodeWithTag(ROW).performScrollTo()
         screen.onNodeWithTag(ROW).performScrollToIndex(1)
         settle()
-        screen.onNodeWithTag(itemTag(items[1])).performSemanticsAction(SemanticsActions.RequestFocus) { request ->
-            assertTrue("A TV user can focus the poster", request())
-        }
+        focusPoster(items[1])
         settle()
         assertHero(items[1])
         screen.onNodeWithTag(itemTag(items[1])).assertIsSelected()
@@ -206,7 +347,7 @@ class ContinueWatchingSectionTest {
         render(items, selectedDetails = details)
         screen.onNodeWithTag(SUMMARY, useUnmergedTree = true).assertTextEquals("첫 작품 상세 줄거리")
         screen.onNodeWithTag(ROW).performScrollTo()
-        screen.onNodeWithTag(itemTag(items[1])).performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        focusPoster(items[1])
         settle()
         screen.runOnIdle { details.value = items.first().copy(summary = "뒤늦게 도착한 다른 작품의 정보") }
         settle()
@@ -265,7 +406,7 @@ class ContinueWatchingSectionTest {
         val details = mutableStateOf<MediaItem?>(privateItem)
         render(listOf(publicItem, privateItem), selectedDetails = details, spoilerUnlocked = unlocked)
         screen.onNodeWithTag(ROW).performScrollTo()
-        screen.onNodeWithTag(itemTag(privateItem)).performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        focusPoster(privateItem)
         settle()
         assertHero(privateItem)
 
@@ -320,7 +461,11 @@ class ContinueWatchingSectionTest {
         render(listOf(item), onResume = { resumed = it })
         screen.mainClock.advanceTimeBy(30_000)
         screen.waitForIdle()
+        screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
+        screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
+        settle()
         assertHero(item)
+        screen.runOnIdle { assertNull("A single-work hero has no swipe destination", resumed) }
         screen.onNodeWithTag(ROW).performScrollTo()
         settle()
         screen.onAllNodesWithTag(itemTag(item)).assertCountEquals(1)
@@ -328,6 +473,7 @@ class ContinueWatchingSectionTest {
         screen.runOnIdle { assertEquals(item, resumed) }
     }
 
+    @Suppress("DEPRECATION")
     private fun render(
         items: List<MediaItem>,
         onResume: (MediaItem) -> Unit = {},
@@ -336,23 +482,29 @@ class ContinueWatchingSectionTest {
         onWatchOptions: (MediaItem) -> Unit = {},
         spoilerUnlocked: State<Boolean>? = null,
         busy: State<Boolean>? = null,
+        scrollTail: Boolean = false,
     ) {
+        // Input mode is device-wide; a preceding TV case must not leave this
+        // synthetic touch fixture in keyboard mode with focus-driven scrolling.
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
         screen.mainClock.autoAdvance = false
         screen.setContent {
+            inputModeManager = LocalInputModeManager.current
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF83E3C5), background = Color(0xFF0B1220),
                 surface = Color(0xFF0B1220), surfaceContainer = Color(0xFF142033), onSurface = Color(0xFFF0F4FA),
                 onSurfaceVariant = Color(0xFFA6B6CB))) {
-                Column(Modifier.fillMaxSize().background(Color(0xFF0B1220)).verticalScroll(rememberScrollState())) {
+                Column(Modifier.fillMaxSize().background(Color(0xFF0B1220)).verticalScroll(rememberScrollState()).testTag(CONTENT)) {
                     Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag(HOST)) {
                         ContinueWatchingSection(items = items, busy = busy?.value ?: false, onResume = onResume,
                             poster = { item, modifier -> SyntheticArtwork(item, modifier, backdrop = false) },
-                            backdrop = { item, modifier -> SyntheticArtwork(item, modifier, backdrop = true) },
+                            backdrop = { item, modifier -> SyntheticArtwork(item, modifier.testTag(backdropTag(item)), backdrop = true) },
                             thumbnail = { item, modifier -> Box(modifier) {
                                 SyntheticArtwork(item, Modifier.fillMaxSize().testTag("continue-thumbnail-slot-${item.id}"), backdrop = false)
                             } },
                             onSelected = onSelected, selectedDetails = selectedDetails?.value, onWatchOptions = onWatchOptions,
                             spoilerUnlocked = spoilerUnlocked?.value ?: false)
                     }
+                    if (scrollTail) Box(Modifier.fillMaxWidth().height(1_000.dp))
                 }
             }
         }
@@ -362,6 +514,18 @@ class ContinueWatchingSectionTest {
     private fun assertHero(item: MediaItem) {
         screen.onNodeWithTag(TITLE, useUnmergedTree = true).assertTextEquals(item.showTitle ?: item.title)
         screen.onNodeWithTag(SUMMARY, useUnmergedTree = true).assertTextEquals(item.summary)
+    }
+
+    private fun focusPoster(item: MediaItem) {
+        // SystemDefined clickables intentionally reject keyboard focus in touch mode.
+        // Explicitly simulate the keyboard/D-pad input used by the TV behavior under test.
+        screen.runOnIdle {
+            assertTrue("The TV fixture can enter keyboard input mode", inputModeManager.requestInputMode(InputMode.Keyboard))
+        }
+        settle()
+        screen.onNodeWithTag(itemTag(item)).performSemanticsAction(SemanticsActions.RequestFocus) { request ->
+            assertTrue("A TV user can focus the poster", request())
+        }
     }
 
     private fun rowScrollPosition() = screen.onNodeWithTag(ROW).fetchSemanticsNode()
@@ -395,9 +559,11 @@ class ContinueWatchingSectionTest {
     private fun itemTag(item: MediaItem) = "continue-item-${item.id}"
     private fun episodeTag(item: MediaItem) = "continue-episode-${item.id}"
     private fun posterTag(item: MediaItem) = "continue-poster-${item.id}"
+    private fun backdropTag(item: MediaItem) = "continue-backdrop-${item.libraryId}-${item.id}-${item.viewItemId}-${item.isSpoiler}"
 
     private companion object {
         const val HOST = "continue-test-host"
+        const val CONTENT = "continue-test-scroll-content"
         const val SECTION = "continue-watching-section"
         const val HERO = "continue-watching-hero"
         const val ROW = "continue-watching-row"

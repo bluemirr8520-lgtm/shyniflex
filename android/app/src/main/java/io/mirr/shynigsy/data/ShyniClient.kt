@@ -785,8 +785,9 @@ class ShyniClient(
             ?: selected?.optDouble("duration_sec", 0.0)?.times(1000)?.toLong()?.takeIf { it > 0 }
             ?: progress?.optLong("duration_ms")?.takeIf { it > 0 } ?: item.durationMs
         val resume = progress?.optLong("position_ms")?.coerceAtLeast(0) ?: item.resumeMs
+        val effectiveResume = if ((progress?.watchedState() ?: item.watched) || (duration > 0 && resume >= duration)) 0L else resume
         return PlaybackSpec(item.title, streamUrl, emptyMap(), item.id, viewId, selectedPart,
-            if (progress?.watchedState() ?: item.watched) 0 else resume,
+            effectiveResume,
             duration, subs, sessionId, context, viewItemId, decision?.stringOrNull("decision") ?: if (recovered != null) "direct_play" else null,
             decision?.optJSONObject("client_playback_hints")?.optBoolean("prefer_software_decode") == true,
             selectedAudioStreamIndex = decision?.indexOrNull("selected_audio_stream_index"),
@@ -797,7 +798,7 @@ class ShyniClient(
             conversionHeight = if (mode == "video") transcode?.intOrNull("max_height") else null,
             streamStartPositionMs = 0,
             sourceItem = item.copy(libraryId = viewId, viewItemId = viewItemId, durationMs = duration,
-                resumeMs = if (progress?.watchedState() ?: item.watched) 0 else resume, markers = emptyList(),
+                resumeMs = effectiveResume, markers = emptyList(),
                 navigationPartId = requestedPart, playbackPartId = when {
                     recovered != null -> selectedPart
                     viewId == item.libraryId && viewItemId == item.viewItemId -> item.playbackPartId
@@ -930,19 +931,22 @@ class ShyniClient(
         )
     }
 
-    suspend fun saveProgress(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String, watchedMs: Long? = null) {
+    suspend fun saveProgress(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String, watchedMs: Long? = null,
+        completionEligible: Boolean? = null) {
         require(state in setOf("playing", "paused", "stopped", "completed", "completed_candidate", "buffering")) { "올바르지 않은 재생 상태입니다." }
-        val body = progressBody(spec, positionMs, durationMs, state, watchedMs)
+        val body = progressBody(spec, positionMs, durationMs, state, watchedMs, completionEligible)
         request("/playback/progress", body, spoiler = spec.sourceItem?.isSpoiler == true)
     }
 
-    internal fun progressBody(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String, watchedMs: Long?): JSONObject =
+    internal fun progressBody(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String, watchedMs: Long?,
+        completionEligible: Boolean? = null): JSONObject =
         JSONObject().apply {
             put("part_id", spec.partId); put("metadata_item_id", spec.itemId)
             put("library_view_id", spec.libraryId); put("view_item_id", spec.viewItemId)
             put("playback_context_token", spec.progressToken); put("client_session_id", spec.sessionId)
             put("position_ms", positionMs.coerceAtLeast(0)); put("duration_ms", durationMs.takeIf { it > 0 })
             put("state", if (state == "completed") "completed_candidate" else state)
+            completionEligible?.let { put("completion_eligible", it) }
             put("device_id", deviceId); put("decision", spec.decision)
             put("delivery_mode", "server_proxy"); watchedMs?.let { put("watched_ms", it.coerceAtLeast(0)) }
         }

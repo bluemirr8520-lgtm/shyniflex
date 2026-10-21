@@ -110,6 +110,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private val watchedConfirmed = ConcurrentHashMap.newKeySet<String>()
     private val watchedQueued = ConcurrentHashMap.newKeySet<String>()
     private val watchedAttemptAt = mutableMapOf<String, Long>()
+    private val completionGates = mutableMapOf<String, PlaybackCompletionGate>()
     private var visible = false
     private var exiting = false
     private var refreshing = false
@@ -144,7 +145,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private data class ProgressUpdate(val spec: PlaybackSpec, val position: Long, val duration: Long,
         val state: String, val watched: Long, val acknowledgement: CompletableDeferred<Boolean>? = null,
-        val thresholdAttempt: Boolean = false)
+        val thresholdAttempt: Boolean = false, val completionEligible: Boolean = false)
 
     private data class ConversionRestore(val spec: PlaybackSpec, val position: Long, val playing: Boolean,
         val subtitle: SubtitleTrack?, val audio: PlaybackTrackPreference?, val text: PlaybackTrackPreference?,
@@ -165,7 +166,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 updateSegmentSkipButton()
                 settleWatchTime(visible && active.isPlaying)
                 if (!gestures.isSeekGestureActive && active.playbackState == Player.STATE_READY &&
-                    reachedWatchedThreshold(lastPosition, lastDuration)) {
+                    completionGate().eligible) {
                     val key = watchedKey(spec)
                     val now = SystemClock.elapsedRealtime()
                     if (key !in watchedConfirmed && key !in watchedQueued && now - (watchedAttemptAt[key] ?: Long.MIN_VALUE / 2) >= 5_000) {
@@ -247,7 +248,8 @@ class NativePlayerActivity : AppCompatActivity() {
                             var committed = true
                             try {
                                 retryPlaybackProgress {
-                                    client.saveProgress(update.spec, update.position, update.duration, update.state, update.watched)
+                                    client.saveProgress(update.spec, update.position, update.duration, update.state, update.watched,
+                                        completionEligible = update.completionEligible)
                                 }
                                 // Natural EOF leaves immediately. The final progress
                                 // may commit after Home's first refresh, even if the
@@ -260,7 +262,7 @@ class NativePlayerActivity : AppCompatActivity() {
                             }
                             // The server recalculates completion on every progress
                             // write. Preserve this viewing's existing 95% behavior.
-                            if (key in watchedReached) {
+                            if (update.completionEligible) {
                                 try {
                                     retryPlaybackProgress {
                                         client.markPlaybackWatched(update.spec.copy(durationMs = update.duration))
@@ -319,7 +321,7 @@ class NativePlayerActivity : AppCompatActivity() {
         gestures = Media3GestureView(this).apply {
             onControllerToggle = { if (playerView.isControllerFullyVisible) playerView.hideController() else playerView.showController() }
             onLockedTap = ::showUnlockControl
-            onSeekCommitted = { target -> pendingSeek = target; lastPosition = target; updateSubtitleText() }
+            onSeekCommitted = { target -> completionGate().seek(target); pendingSeek = target; lastPosition = target; updateSubtitleText() }
             onSeekSettled = { target -> pendingSeek = null; lastPosition = target; updateSubtitleText(); enqueueProgress(if (player?.isPlaying == true) "playing" else "paused") }
             onGestureActive = { active ->
                 playerGestureActive = active
@@ -428,6 +430,7 @@ class NativePlayerActivity : AppCompatActivity() {
         activeSkipMarker = null; segmentSkipButton.visibility = View.GONE
         playerView.hideController(); hideLockControl()
         lastPosition = marker.endMs; pendingSeek = marker.endMs
+        completionGate().seek(marker.endMs)
         subtitleOverlay.subtitleText = ""
         active.seekTo(marker.endMs)
         updateSubtitleText()
@@ -460,6 +463,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun preparePlayback(autoStart: Boolean) {
         prepared = false
         releasePlayer()
+        completionGate().seek(lastPosition)
         completed = false; prepared = false; errorPanel.visibility = View.GONE
         val created = MpvPlayer(this, client.playbackHeaders(spec), preferSoftwareDecode = spec.preferSoftwareDecode,
             serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
@@ -519,6 +523,7 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (player !== created) return
+                if (!isPlaying) capturePosition()
                 settleWatchTime(visible && isPlaying)
                 if (prepared && !isPlaying && !gestures.isSeekGestureActive && !refreshing && !exiting) enqueueProgress("paused")
             }
@@ -543,6 +548,7 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                 if (player !== created) return
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) completionGate().seek(newPosition.positionMs)
                 if (reason == Player.DISCONTINUITY_REASON_SEEK && !gestures.isSeekGestureActive) {
                     lastPosition = newPosition.positionMs.coerceAtLeast(0)
                     pendingSeek = null
@@ -1345,8 +1351,11 @@ class NativePlayerActivity : AppCompatActivity() {
         val active = player ?: return
         if (completed) return
         pendingSeek?.let { lastPosition = it; return }
-        if (!gestures.isSeekGestureActive && prepared) lastPosition = active.currentPosition.coerceAtLeast(0)
         if (active.duration != C.TIME_UNSET && active.duration > 0) lastDuration = active.duration
+        if (!gestures.isSeekGestureActive && prepared) {
+            lastPosition = active.currentPosition.coerceAtLeast(0)
+            completionGate().observe(lastPosition, lastDuration, watchingSince != null || (visible && active.isPlaying))
+        }
     }
 
     private fun settleWatchTime(running: Boolean) {
@@ -1363,12 +1372,16 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun watchedKey(value: PlaybackSpec) = "${value.libraryId}:${value.itemId}:${value.viewItemId}"
 
+    private fun completionGate(): PlaybackCompletionGate = completionGates.getOrPut(watchedKey(spec)) {
+        PlaybackCompletionGate(lastPosition, watchedKey(spec) in watchedReached)
+    }
+
     private fun submitProgress(update: ProgressUpdate): Boolean {
         val key = watchedKey(update.spec)
-        val reached = update.state == "completed" || reachedWatchedThreshold(update.position, update.duration)
+        val reached = completionGates[key]?.eligible == true || key in watchedReached
         if (reached) watchedReached.add(key)
         val firstThreshold = reached && key !in watchedConfirmed && watchedQueued.add(key)
-        val accepted = updates.submit(update.copy(thresholdAttempt = firstThreshold),
+        val accepted = updates.submit(update.copy(thresholdAttempt = firstThreshold, completionEligible = reached),
             important = firstThreshold || update.acknowledgement != null || update.state in setOf("stopped", "completed"))
         if (!accepted && firstThreshold) watchedQueued.remove(key)
         return accepted
@@ -1376,6 +1389,8 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun finishPlaybackToHome() {
         if (exiting || endingToHome || isDestroyed) return
+        capturePosition()
+        completionGate().finish()
         endingToHome = true; exiting = true; completed = true; resumeWhenVisible = false
         settleWatchTime(false)
         if (lastDuration > 0) lastPosition = lastDuration
@@ -1425,7 +1440,7 @@ class NativePlayerActivity : AppCompatActivity() {
         gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
         exiting = true; resumeWhenVisible = false
         handler.removeCallbacks(ticker)
-        settleWatchTime(false); capturePosition()
+        capturePosition(); settleWatchTime(false)
         val acknowledgement = CompletableDeferred<Boolean>()
         val sent = prepared && ::spec.isInitialized && submitProgress(ProgressUpdate(
             spec, lastPosition, lastDuration, if (completed) "completed" else "stopped", watchedMs, acknowledgement))
@@ -1459,7 +1474,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 conversionResumeWhenVisible ?: gestures.playWhenReadyBeforeSeek ?: player?.playWhenReady ?: false
             gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
             pendingSeek?.let { target -> player?.seekTo(target) }
-            settleWatchTime(false); enqueueProgress(if (completed) "completed" else if (exiting) "stopped" else "paused")
+            capturePosition(); settleWatchTime(false); enqueueProgress(if (completed) "completed" else if (exiting) "stopped" else "paused")
             player?.pause()
         }
         super.onPause()
@@ -1470,7 +1485,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (::spec.isInitialized) {
             capturePosition(); outState.putString("spec", spec.toJson()); outState.putLong("position", lastPosition)
             outState.putLong("duration", lastDuration); outState.putLong("watched", watchedMs); outState.putFloat("speed", speed)
-            outState.putStringArrayList("watchedReached", ArrayList(watchedReached))
+            outState.putStringArrayList("watchedReached", ArrayList(watchedReached + completionGates.filterValues { it.eligible }.keys))
             outState.putBoolean("playing", conversionResumeWhenVisible ?: if (visible) gestures.playWhenReadyBeforeSeek ?: player?.playWhenReady ?: resumeWhenVisible else resumeWhenVisible)
             outState.putBoolean("subtitles", subtitlesEnabled); outState.putInt("externalSubtitle", externalSubtitleId ?: -1)
             outState.putInt("embeddedSubtitle", embeddedServerSubtitleId ?: -1)

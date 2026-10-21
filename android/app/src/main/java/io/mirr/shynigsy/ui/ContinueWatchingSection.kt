@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -41,6 +43,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -50,7 +54,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -62,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.mirr.shynigsy.data.MediaItem
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 /** A finite, manually browsed shelf with details for the selected title. */
 @Composable
@@ -83,9 +91,33 @@ internal fun ContinueWatchingSection(
     var selectedKey by rememberSaveable { mutableStateOf(continueIdentity(visibleItems.first())) }
     val selectedItem = visibleItems.firstOrNull { continueIdentity(it) == selectedKey } ?: visibleItems.first()
     val row = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val swipeThreshold = with(LocalDensity.current) { 48.dp.toPx() }
+    val swipeItems by rememberUpdatedState(visibleItems)
+    val swipeEnabled by rememberUpdatedState(!busy)
+    val visibleKeys = visibleItems.map(::continueIdentity)
     val dragging by row.interactionSource.collectIsDraggedAsState()
     var touchBrowsing by remember { mutableStateOf(false) }
     fun select(item: MediaItem) { selectedKey = continueIdentity(item) }
+
+    fun startHeroSwipe() {
+        touchBrowsing = false
+        focusManager.clearFocus()
+        scope.launch { row.stopScroll() }
+    }
+    fun swipeHero(direction: Int) {
+        scope.launch {
+            row.stopScroll()
+            if (!swipeEnabled || swipeItems.size < 2) return@launch
+            val current = swipeItems.indexOfFirst { continueIdentity(it) == selectedKey }.coerceAtLeast(0)
+            val next = (current + direction).coerceIn(0, swipeItems.lastIndex)
+            if (next == current) return@launch
+            touchBrowsing = false
+            select(swipeItems[next])
+            row.animateScrollToItem(next)
+        }
+    }
 
     LaunchedEffect(visibleItems.map(::continueIdentity)) {
         if (visibleItems.none { continueIdentity(it) == selectedKey }) select(visibleItems.first())
@@ -96,7 +128,7 @@ internal fun ContinueWatchingSection(
         if (dragging) {
             touchBrowsing = true
             snapshotFlow { row.firstVisibleItemIndex }.distinctUntilChanged().collect { index ->
-            visibleItems.getOrNull(index)?.let(::select)
+                if (touchBrowsing) visibleItems.getOrNull(index)?.let(::select)
             }
         }
     }
@@ -123,7 +155,26 @@ internal fun ContinueWatchingSection(
         } else if (wide) (screenHeight * .20f).dp.coerceIn(110.dp, 150.dp) else 118.dp
         val heroProgress = continuePlaybackProgress(hero.durationMs, selectedItem.resumeMs)
         Column(Modifier.fillMaxWidth()) {
-                Box(Modifier.fillMaxWidth().height(heroHeight).testTag("continue-watching-hero")) {
+                Box(Modifier.fillMaxWidth().height(heroHeight).testTag("continue-watching-hero")
+                    .pointerInput(visibleKeys, busy, swipeThreshold) {
+                        if (busy || visibleKeys.size < 2) return@pointerInput
+                        var horizontalDrag = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { horizontalDrag = 0f; startHeroSwipe() },
+                            onDragCancel = { horizontalDrag = 0f },
+                            onDragEnd = {
+                                when {
+                                    horizontalDrag <= -swipeThreshold -> swipeHero(1)
+                                    horizontalDrag >= swipeThreshold -> swipeHero(-1)
+                                }
+                                horizontalDrag = 0f
+                            },
+                            onHorizontalDrag = { change, amount ->
+                                change.consume()
+                                horizontalDrag += amount
+                            },
+                        )
+                    }) {
                     backdrop(hero, Modifier.matchParentSize())
                     if (wide) Box(Modifier.matchParentSize().background(Brush.horizontalGradient(
                         listOf(background.copy(alpha = .94f), background.copy(alpha = .72f), background.copy(alpha = .12f)))))
