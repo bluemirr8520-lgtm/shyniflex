@@ -41,6 +41,8 @@ data class AppState(
     val libraryYear: Int? = null,
     val libraryGenres: List<String> = emptyList(),
     val libraryYears: List<Int> = emptyList(),
+    val libraryContentType: LibraryContentType = LibraryContentType.MOVIES,
+    val libraryWatchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL,
     val detailStack: List<MediaDetails> = emptyList(),
     val versions: List<MediaVersion> = emptyList(),
     val selectedPartId: Int? = null,
@@ -58,6 +60,14 @@ data class AppState(
 /** A first launch has no server; only a user's previously saved address can restore one. */
 internal fun initialServerAddress(savedAddress: String?, sessionAddress: String?): String =
     savedAddress?.takeIf { it.isNotBlank() } ?: sessionAddress?.takeIf { it.isNotBlank() } ?: ""
+
+/** Prefer the ordinary first season; specials remain selectable without a detour. */
+internal fun initialEpisodeSeason(seasons: List<MediaItem>): MediaItem? {
+    val available = seasons.filter { it.episodeCount != 0 }.ifEmpty { seasons }
+    return available.firstOrNull { it.seasonNumber == 1 }
+        ?: available.filter { (it.seasonNumber ?: -1) > 0 }.minByOrNull { it.seasonNumber!! }
+        ?: available.firstOrNull()
+}
 
 /** A version chosen in one detail screen must never select a different item's file. */
 internal fun selectedVersionForPlayback(state: AppState, item: MediaItem): Int? {
@@ -89,7 +99,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         items = if (privateScreen) emptyList() else state.items.filterNot { it.isSpoiler },
         total = if (privateScreen) 0 else state.total,
         detailStack = if (privateScreen) emptyList() else state.detailStack.map { detail ->
-            detail.copy(children = detail.children.filterNot { it.isSpoiler })
+            detail.copy(children = detail.children.filterNot { it.isSpoiler }, seasons = detail.seasons.filterNot { it.isSpoiler })
         },
         versions = if (privateScreen) emptyList() else state.versions,
         selectedPartId = if (privateScreen) null else state.selectedPartId,
@@ -135,7 +145,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun collectionWatchState(details: MediaDetails) = details.copy(item = collectionWatchState(details.item),
-        children = details.children.map(::collectionWatchState))
+        children = details.children.map(::collectionWatchState), seasons = details.seasons.map(::collectionWatchState))
 
     private fun invalidateCollectionWatch(episode: MediaItem) {
         if (episode.type != "episode") return
@@ -586,6 +596,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (library.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         mutableState.update { it.copy(library = library, items = emptyList(), total = 0,
             query = "", librarySort = LibrarySort.TITLE_ASC, libraryGenre = null, libraryYear = null,
+            libraryContentType = LibraryContentType.defaultFor(library), libraryWatchFilter = LibraryWatchFilter.ALL,
             libraryGenres = emptyList(), libraryYears = emptyList(), detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
         launchRequest {
             val page = active.items(library)
@@ -600,7 +611,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val library = snapshot.library ?: return
         if (snapshot.busy || snapshot.items.size >= snapshot.total) return
         launchRequest {
-            val page = active.items(library, snapshot.items.size, snapshot.query, snapshot.librarySort, snapshot.libraryGenre, snapshot.libraryYear)
+            val page = active.items(library, snapshot.items.size, snapshot.query, snapshot.librarySort, snapshot.libraryGenre, snapshot.libraryYear,
+                snapshot.libraryContentType, snapshot.libraryWatchFilter)
             mutableState.update { it.copy(items = (snapshot.items + page.items).map(::collectionWatchState).distinctBy { item -> item.id },
                 total = if (page.items.isEmpty()) snapshot.items.size else page.total) }
         }
@@ -608,22 +620,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun search(query: String) {
         val active = client ?: return
-        val library = mutableState.value.library ?: return
+        val snapshot = mutableState.value
+        val library = snapshot.library ?: return
         mutableState.update { it.copy(query = query, items = emptyList(), total = 0) }
         launchRequest {
-            val page = active.items(library, query = query)
-            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+            val page = active.items(library, query = query, sort = snapshot.librarySort,
+                genre = snapshot.libraryGenre, year = snapshot.libraryYear,
+                contentType = snapshot.libraryContentType, watchFilter = snapshot.libraryWatchFilter)
+            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
+                libraryGenres = page.genres, libraryYears = page.years) }
         }
     }
 
     fun setLibraryOptions(sort: LibrarySort = mutableState.value.librarySort,
-        genre: String? = mutableState.value.libraryGenre, year: Int? = mutableState.value.libraryYear) {
+        genre: String? = mutableState.value.libraryGenre, year: Int? = mutableState.value.libraryYear,
+        contentType: LibraryContentType = mutableState.value.libraryContentType,
+        watchFilter: LibraryWatchFilter = mutableState.value.libraryWatchFilter) {
         val active = client ?: return
-        val library = mutableState.value.library ?: return
+        val snapshot = mutableState.value
+        val library = snapshot.library ?: return
+        if (contentType !in LibraryContentType.availableFor(library)) return
         mutableState.update { it.copy(librarySort = sort, libraryGenre = genre, libraryYear = year,
-            query = "", items = emptyList(), total = 0) }
+            libraryContentType = contentType, libraryWatchFilter = watchFilter, items = emptyList(), total = 0) }
         launchRequest {
-            val page = active.items(library, sort = sort, genre = genre, year = year)
+            val page = active.items(library, query = snapshot.query, sort = sort, genre = genre, year = year,
+                contentType = contentType, watchFilter = watchFilter)
             mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
                 libraryGenres = page.genres, libraryYears = page.years) }
         }
@@ -635,11 +656,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(detailStack = it.detailStack + MediaDetails(item),
             versions = emptyList(), selectedPartId = null) }
         launchRequest {
-            val detail = collectionWatchState(active.details(item))
+            val detail = collectionWatchState(episodeListDetails(active, active.details(item)))
             mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail) }
             if (detail.item.playable) {
                 val versions = active.versions(detail.item)
                 mutableState.update { it.copy(versions = versions) }
+            }
+        }
+    }
+
+    private suspend fun episodeListDetails(active: ShyniClient, details: MediaDetails): MediaDetails {
+        if (details.item.type !in setOf("show", "tv")) return details
+        val seasons = details.children.filter { it.type == "season" }
+        val selected = initialEpisodeSeason(seasons)
+        val episodes = selected?.let { active.details(it).children }.orEmpty()
+        return details.copy(children = episodes, seasons = seasons, selectedSeasonId = selected?.id)
+    }
+
+    fun selectSeason(season: MediaItem) {
+        val active = client ?: return
+        val snapshot = mutableState.value
+        val detail = snapshot.detailStack.lastOrNull() ?: return
+        val selected = detail.seasons.firstOrNull { it.id == season.id && it.libraryId == season.libraryId &&
+            it.viewItemId == season.viewItemId && it.isSpoiler == season.isSpoiler } ?: return
+        if (detail.selectedSeasonId == selected.id || detail.item.type !in setOf("show", "tv")) return
+        if (selected.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
+        launchRequest {
+            val episodes = active.details(selected).children.map(::collectionWatchState)
+            mutableState.update { state ->
+                val current = state.detailStack.lastOrNull()
+                if (current != null && current.item == detail.item) state.copy(detailStack = state.detailStack.dropLast(1) +
+                    current.copy(children = episodes, selectedSeasonId = selected.id)) else state
             }
         }
     }
@@ -698,7 +745,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     state.copy(items = state.items.map(::updated), recentItems = state.recentItems.map(::updated),
                         continueItems = state.continueItems.filterNot(::affected),
                         detailStack = state.detailStack.map { detail ->
-                            detail.copy(item = updated(detail.item), children = detail.children.map(::updated))
+                            detail.copy(item = updated(detail.item), children = detail.children.map(::updated), seasons = detail.seasons.map(::updated))
                         })
                 }
             }
@@ -774,7 +821,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 launch { loadHome(active) }
                 if (snapshot.detailStack.isNotEmpty()) {
                     val item = snapshot.detailStack.last().item
-                    val detail = collectionWatchState(active.details(item))
+                    var detail = active.details(item)
+                    if (item.type in setOf("show", "tv")) {
+                        val selectedId = snapshot.detailStack.last().selectedSeasonId
+                        val seasons = detail.children.filter { it.type == "season" }
+                        val selected = seasons.firstOrNull { it.id == selectedId } ?: initialEpisodeSeason(seasons)
+                        detail = detail.copy(children = selected?.let { active.details(it).children }.orEmpty(),
+                            seasons = seasons, selectedSeasonId = selected?.id)
+                    }
+                    detail = collectionWatchState(detail)
                     mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail) }
                     if (item.playable) {
                         val versions = active.versions(item)
@@ -782,7 +837,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } else snapshot.library?.let { library ->
                     val page = active.items(library, query = snapshot.query, sort = snapshot.librarySort,
-                        genre = snapshot.libraryGenre, year = snapshot.libraryYear)
+                        genre = snapshot.libraryGenre, year = snapshot.libraryYear,
+                        contentType = snapshot.libraryContentType, watchFilter = snapshot.libraryWatchFilter)
                     mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
                         libraryGenres = page.genres, libraryYears = page.years) }
                 }

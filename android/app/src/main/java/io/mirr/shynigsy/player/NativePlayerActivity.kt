@@ -703,19 +703,19 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun showSettings() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(12))
+            setPadding(dp(16), dp(8), dp(16), dp(8))
             setBackgroundColor(0xFF14202D.toInt())
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         panel.addView(TextView(this).apply {
-            text = "재생 설정"; textSize = 18f; setTextColor(Color.WHITE)
-            setPadding(dp(4), dp(4), dp(4), dp(12))
+            text = "재생 설정"; textSize = 16f; setTextColor(Color.WHITE)
+            setPadding(dp(4), dp(4), dp(4), dp(8))
         }, LinearLayout.LayoutParams(-1, -2))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val focusRows = mutableListOf<View>()
         var selectedTab = 0
-        panel.addView(tabs, LinearLayout.LayoutParams(-1, dp(48)))
+        panel.addView(tabs, LinearLayout.LayoutParams(-1, dp(44)))
         tabs.visibility = View.GONE
         val scroll = object : ScrollView(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -731,10 +731,10 @@ class NativePlayerActivity : AppCompatActivity() {
         val dialog = AlertDialog.Builder(this).setView(panel).create()
         val close = Button(this).apply {
             id = View.generateViewId()
-            text = "닫기"; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
+            text = "닫기"; textSize = 14f; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { dialog.dismiss() }
         }
-        panel.addView(close, LinearLayout.LayoutParams(-1, dp(48)))
+        panel.addView(close, LinearLayout.LayoutParams(-1, dp(44)))
 
         fun addRow(label: String, value: String = "", action: () -> Unit) {
             val row = LinearLayout(this).apply {
@@ -748,17 +748,18 @@ class NativePlayerActivity : AppCompatActivity() {
                 setOnClickListener { dialog.dismiss(); action() }
             }
             row.addView(TextView(this).apply {
-                text = label; textSize = 16f; setTextColor(Color.WHITE)
+                text = label; textSize = 14f; setTextColor(Color.WHITE)
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
-                text = value; textSize = 14f; setTextColor(0xFF7BE6C6.toInt())
+                text = value; textSize = 12f; setTextColor(0xFF7BE6C6.toInt())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 gravity = Gravity.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
-                text = "›"; textSize = 24f; setTextColor(0xFF92A5B6.toInt()); gravity = Gravity.END
-            }, LinearLayout.LayoutParams(dp(22), -2))
-            rows.addView(row, LinearLayout.LayoutParams(-1, dp(52)))
+                text = "›"; textSize = 18f; setTextColor(0xFF92A5B6.toInt()); gravity = Gravity.END
+            }, LinearLayout.LayoutParams(dp(18), -2))
+            rows.addView(row, LinearLayout.LayoutParams(-1, dp(44)))
             focusRows.add(row)
             rows.addView(View(this).apply { setBackgroundColor(0xFF30404D.toInt()) },
                 LinearLayout.LayoutParams(-1, dp(1)))
@@ -768,7 +769,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val buttons = titles.map { title ->
             Button(this).apply {
                 id = View.generateViewId()
-                text = title; textSize = 15f; isAllCaps = false
+                text = title; textSize = 13f; isAllCaps = false
                 setPadding(0, 0, 0, 0)
             }.also { tabs.addView(it, LinearLayout.LayoutParams(0, -1, 1f)) }
         }
@@ -855,7 +856,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (television) focusRows.firstOrNull()?.requestFocus()
         dialog.window?.apply {
             setGravity(if (television) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM)
-            setLayout(minOf(dp(440), resources.displayMetrics.widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(minOf(dp(360), resources.displayMetrics.widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
     }

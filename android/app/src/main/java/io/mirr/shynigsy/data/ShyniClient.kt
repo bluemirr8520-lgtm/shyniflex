@@ -380,24 +380,65 @@ class ShyniClient(
 
     /** Movies/shows are full arrays in beta4; paginate them locally, never fake API offsets. */
     suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort = LibrarySort.TITLE_ASC,
-        genre: String? = null, year: Int? = null): MediaPage {
+        genre: String? = null, year: Int? = null,
+        contentType: LibraryContentType = LibraryContentType.defaultFor(library),
+        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL): MediaPage {
         val normalizedQuery = query.trim()
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
-        val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$sort"
+        if (contentType !in LibraryContentType.availableFor(library)) throw ApiException("이 라이브러리에서 지원하지 않는 표시 종류입니다.")
+        val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$sort:$contentType:$watchFilter"
         val cached = browseCache[key]?.takeIf { System.currentTimeMillis() - it.at < 60_000 && offset > 0 }
         val page = cached ?: run {
-            val path = if (normalizedQuery.isEmpty())
-                "/libraries/${library.id}/${if (library.type == "tv") "shows" else "movies"}?${sort.query(library)}"
-            else "/libraries/${library.id}/search?q=${encode(normalizedQuery)}&limit=200&metadata_type=${if (library.type == "tv") "2" else "1"}"
-            val value = request(path, spoiler = library.isSpoiler)
-            val parsed = rows(value, "items", "results").map { parseMedia(it, library.id, if (library.type == "tv") "show" else "movie").copy(isSpoiler = library.isSpoiler) }
-            // The beta4 search route caps results at 200 and has no offset or
-            // total contract. Expose exactly the available set to the UI.
-            CachedItems(System.currentTimeMillis(), parsed, parsed.size).also { browseCache[key] = it }
+            val parsed = browseCatalog(library, contentType, sort, normalizedQuery)
+            val watched = if (watchFilter == LibraryWatchFilter.ALL) parsed else {
+                if (contentType in setOf(LibraryContentType.MOVIES, LibraryContentType.EPISODES)) withProgress(parsed)
+                else {
+                    // Library-wide episodes are an existing authorized View route.
+                    // One full set avoids a request for every show or season.
+                    val episodes = withProgress(browseCatalog(library, LibraryContentType.EPISODES, LibrarySort.TITLE_ASC, "", inheritFacets = false))
+                    val byView = episodes.filter { it.viewItemId != null }.groupBy { it.viewItemId }
+                    val byShow = episodes.filter { it.showId != null }.groupBy { it.showId }
+                    parsed.map { item ->
+                        val related = if (item.viewItemId != null) byView[item.viewItemId].orEmpty()
+                            else byShow[if (contentType == LibraryContentType.SEASONS) item.showId else item.id].orEmpty()
+                        aggregateWatchState(item, if (contentType == LibraryContentType.SEASONS) related.filter {
+                            item.seasonNumber != null && it.seasonNumber == item.seasonNumber
+                        } else related)
+                    }
+                }
+            }
+            if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+            CachedItems(System.currentTimeMillis(), watched, watched.size).also { browseCache[key] = it }
         }
-        val filtered = filteredCatalog(page.items, genre, year)
+        val filtered = filteredCatalog(page.items, genre, year, watchFilter)
         val start = offset.coerceIn(0, filtered.items.size)
-        return filtered.copy(items = withProgress(filtered.items.drop(start).take(PAGE_SIZE)))
+        val visible = filtered.items.drop(start).take(PAGE_SIZE)
+        return filtered.copy(items = if (watchFilter == LibraryWatchFilter.ALL) withProgress(visible) else visible)
+    }
+
+    private suspend fun browseCatalog(library: Library, contentType: LibraryContentType, sort: LibrarySort,
+        query: String, inheritFacets: Boolean = true): List<MediaItem> {
+        val nested = contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)
+        val path = if (query.isNotEmpty() && !nested)
+            "/libraries/${library.id}/search?q=${encode(query)}&limit=200&metadata_type=${if (contentType == LibraryContentType.SHOWS) "2" else "1"}"
+        else "/libraries/${library.id}/${contentType.route}?${sort.query(library, contentType)}"
+        val parsed = rows(request(path, spoiler = library.isSpoiler, responseLimit = 16L * 1024 * 1024), "items", "results")
+            .filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
+            .map { parseMedia(it, library.id, contentType.itemType).copy(isSpoiler = library.isSpoiler) }
+        val enriched = if (nested && inheritFacets && parsed.isNotEmpty()) {
+            val shows = browseCatalog(library, LibraryContentType.SHOWS, LibrarySort.TITLE_ASC, "")
+            val byView = shows.filter { it.viewItemId != null }.associateBy { it.viewItemId }
+            val byId = shows.associateBy { it.id }
+            parsed.map { item ->
+                val show = if (item.viewItemId != null) byView[item.viewItemId] else byId[item.showId]
+                item.copy(year = item.year ?: show?.year, genres = item.genres.ifEmpty { show?.genres.orEmpty() })
+            }
+        } else parsed
+        val matching = if (query.isNotEmpty() && nested) enriched.filter {
+            it.title.contains(query, ignoreCase = true) || it.showTitle?.contains(query, ignoreCase = true) == true
+        } else enriched
+        // Search exposes only the server's available <=200 results; no guessed total.
+        return sortedCatalog(matching, sort, contentType, query.isNotEmpty())
     }
 
     suspend fun details(item: MediaItem): MediaDetails = when (item.type) {
@@ -554,6 +595,7 @@ class ShyniClient(
                     ids.forEach { unavailable += Triple(viewId, privateCatalog, it) }
                     return@batch
                 }
+                if (value !is JSONObject && value !is JSONArray) throw ApiException("시청 기록 응답 형식이 올바르지 않습니다.")
                 ids.forEach { id -> progressFor(value, id)?.let { updates[Triple(viewId, privateCatalog, id)] = it } }
             }
         }
@@ -566,6 +608,11 @@ class ShyniClient(
                     watched = watched,
                     resumeMs = if (watched) 0 else progress?.optLong("position_ms")?.coerceAtLeast(0) ?: 0,
                     durationMs = item.durationMs.takeIf { it > 0 } ?: progress?.optLong("duration_ms")?.coerceAtLeast(0) ?: 0,
+                    watchState = when {
+                        watched -> MediaWatchState.WATCHED
+                        (progress?.optLong("position_ms") ?: 0) > 0 -> MediaWatchState.IN_PROGRESS
+                        else -> MediaWatchState.UNWATCHED
+                    },
                 )
             }
         }
@@ -1034,7 +1081,8 @@ class ShyniClient(
         }
         val id = row.intOrNull("id") ?: row.intOrNull("metadata_item_id") ?: previous?.id
             ?: throw ApiException("서버의 미디어 항목 정보가 올바르지 않습니다.")
-        val season = row.numberOrNull("season_number") ?: if (type == "season") row.numberOrNull("index_") else null
+        val season = row.numberOrNull("season_number") ?: if (type == "season")
+            row.numberOrNull("logical_season_no") ?: row.numberOrNull("base_season_no") ?: row.numberOrNull("index_") else null
         val episode = row.numberOrNull("episode_number") ?: if (type == "episode") row.numberOrNull("index_") else null
         val duration = row.optLong("duration_ms").takeIf { it > 0 }
             ?: (row.optDouble("duration_sec", 0.0) * 1000).toLong().takeIf { it > 0 } ?: previous?.durationMs ?: 0
@@ -1068,7 +1116,13 @@ class ShyniClient(
             if (row.has("markers") && !row.isNull("markers")) PlaybackMarker.parse(row.opt("markers"), duration)
                 else previous?.markers ?: emptyList(), previous?.folderKey, previous?.navigationPartId,
             thumbnail ?: previous?.thumbnail, playbackPart,
-            mediaYear(row) ?: previous?.year, mediaGenres(row).ifEmpty { previous?.genres.orEmpty() })
+            mediaYear(row) ?: previous?.year, mediaGenres(row).ifEmpty { previous?.genres.orEmpty() },
+            when {
+                watched -> MediaWatchState.WATCHED
+                !row.isNull("position_ms") && position > 0 -> MediaWatchState.IN_PROGRESS
+                !row.isNull("position_ms") || row.watchedState() == false -> MediaWatchState.UNWATCHED
+                else -> previous?.watchState
+            }, row.numberOrNull("episode_count")?.takeIf { it >= 0 } ?: previous?.episodeCount)
     }
 
     private fun JSONObject.watchedState(): Boolean? = when {

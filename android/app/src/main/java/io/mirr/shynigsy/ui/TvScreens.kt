@@ -44,6 +44,7 @@ import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -58,6 +59,8 @@ import io.mirr.shynigsy.AppViewModel
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.LibrarySort
+import io.mirr.shynigsy.data.LibraryContentType
+import io.mirr.shynigsy.data.LibraryWatchFilter
 import io.mirr.shynigsy.data.Library
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
@@ -68,8 +71,8 @@ internal fun Modifier.tvFocus(): Modifier = composed {
     var focused by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
     this.onFocusChanged { focused = it.hasFocus }
-        .border(3.dp, if (focused) accent else Color.Transparent, RoundedCornerShape(12.dp))
-        .background(if (focused) accent.copy(alpha = .14f) else Color.Transparent, RoundedCornerShape(12.dp))
+        .border(2.dp, if (focused) accent else Color.Transparent, RectangleShape)
+        .background(if (focused) accent.copy(alpha = .14f) else Color.Transparent, RectangleShape)
 }
 
 internal fun Modifier.tvOnlyFocus(): Modifier = composed {
@@ -79,18 +82,17 @@ internal fun Modifier.tvOnlyFocus(): Modifier = composed {
 @Composable
 internal fun TvAction(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     OutlinedButton(onClick = onClick, enabled = enabled,
-        modifier = modifier.tvFocus().heightIn(min = 52.dp), shape = RoundedCornerShape(12.dp),
-        contentPadding = PaddingValues(horizontal = if (LocalContext.current.isTelevision()) 24.dp else 8.dp, vertical = 8.dp)) {
-        Text(label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        modifier = modifier.tvFocus().heightIn(min = 40.dp), shape = RectangleShape,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 @Composable
-internal fun TvHeader(title: String?, onBack: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (title != null) TvAction("뒤로", onClick = onBack)
-        Text(title ?: "shyniflex", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall,
+internal fun TvHeader(title: String?) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(title ?: "shyniflex", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -100,15 +102,15 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
     libraries: List<Library> = emptyList(), selectedLibraryId: Int? = null, homeSelected: Boolean = true,
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
     spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {}) {
-    Column(Modifier.width(184.dp).fillMaxHeight().background(Color(0xFF0B1018))
-        .padding(horizontal = 12.dp, vertical = 14.dp).focusRestorer().focusGroup().testTag("tv-sidebar"),
-        verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("shyniflex", Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-            style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Column(Modifier.width(156.dp).fillMaxHeight().background(Color(0xFF0B1018))
+        .padding(horizontal = 8.dp, vertical = 8.dp).focusRestorer().focusGroup().testTag("tv-sidebar"),
+        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("shyniflex", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome)
-        Text("라이브러리", Modifier.padding(start = 12.dp, top = 16.dp, bottom = 6.dp),
+        Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
             style = MaterialTheme.typography.labelMedium, color = Color(0xFF929BA9))
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             items(libraries, key = { it.id }) { library ->
                 TvSidebarItem(library.title,
                     if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder,
@@ -130,12 +132,12 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
 private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val foreground = if (focused) Color(0xFF101318) else if (selected) Color.White else Color(0xFFB3BAC6)
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)
-        .onFocusChanged { focused = it.isFocused }, shape = RoundedCornerShape(24.dp),
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp)
+        .onFocusChanged { focused = it.isFocused }, shape = RectangleShape,
         color = if (focused) Color.White else if (selected) Color(0xFF30353E) else Color.Transparent) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(icon, null, Modifier.size(20.dp), tint = foreground)
+        Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(icon, null, Modifier.size(18.dp), tint = foreground)
             Text(label, color = foreground, style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -349,22 +351,25 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TvAction("장르 · ${state.libraryGenre ?: "전체"}", Modifier.weight(1f)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                TvAction("${state.libraryWatchFilter.label} ▾", Modifier
                     .then(if (restoreKey == null) Modifier.focusRequester(initialFocus) else Modifier),
-                    enabled = !state.busy) { menu = "genre" }
-                TvAction("제작 연도 · ${state.libraryYear?.toString() ?: "전체"}", Modifier.weight(1f),
-                    enabled = !state.busy) { menu = "year" }
-                TvAction("정렬 · ${state.librarySort.label}", Modifier.weight(1f), enabled = !state.busy) { menu = "sort" }
+                    enabled = !state.busy) { menu = "watch" }
+                if (state.library?.type == "tv") TvAction("${state.libraryContentType.label} ▾",
+                    enabled = !state.busy) { menu = "content" }
+                val filterCount = listOf(state.libraryGenre, state.libraryYear).count { it != null }
+                TvAction(if (filterCount == 0) "필터 ▾" else "필터 · $filterCount ▾", enabled = !state.busy) { menu = "filter" }
+                TvAction("${state.librarySort.label} ▾", enabled = !state.busy) { menu = "sort" }
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("${state.total}개", style = MaterialTheme.typography.titleMedium)
-                if (state.libraryGenre != null || state.libraryYear != null) TvAction("필터 초기화", enabled = !state.busy) {
+                if (state.libraryGenre != null || state.libraryYear != null || state.libraryWatchFilter != LibraryWatchFilter.ALL)
+                    TextButton(enabled = !state.busy, modifier = Modifier.tvOnlyFocus(), onClick = {
                     focusedKey = null
-                    model.setLibraryOptions(genre = null, year = null)
-                }
+                    model.setLibraryOptions(genre = null, year = null, watchFilter = LibraryWatchFilter.ALL)
+                }) { Text("필터 초기화") }
             }
         }
         if (state.error != null) item(span = { GridItemSpan(maxLineSpan) }) { Text(state.error, color = MaterialTheme.colorScheme.error) }
@@ -382,6 +387,23 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         }
     }
     when (menu) {
+        "watch" -> TvOptionDialog("시청 상태", LibraryWatchFilter.entries.map { it.name to it.label },
+            state.libraryWatchFilter.name, { menu = null }) { value ->
+            menu = null; focusedKey = null; model.setLibraryOptions(watchFilter = LibraryWatchFilter.valueOf(value))
+        }
+        "content" -> TvOptionDialog("표시 항목", LibraryContentType.entries.filter { it != LibraryContentType.MOVIES }.map { it.name to it.label },
+            state.libraryContentType.name, { menu = null }) { value ->
+            menu = null; focusedKey = null; model.setLibraryOptions(contentType = LibraryContentType.valueOf(value))
+        }
+        "filter" -> AlertDialog(onDismissRequest = { menu = null }, title = { Text("필터") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                TvAction("장르 · ${state.libraryGenre ?: "전체"}", Modifier.fillMaxWidth()) { menu = "genre" }
+                TvAction("연도 · ${state.libraryYear?.toString() ?: "전체"}", Modifier.fillMaxWidth()) { menu = "year" }
+                if (state.libraryGenre != null || state.libraryYear != null) TextButton(onClick = {
+                    menu = null; focusedKey = null; model.setLibraryOptions(genre = null, year = null)
+                }, modifier = Modifier.tvOnlyFocus()) { Text("장르·연도 초기화") }
+            }
+        }, confirmButton = { TvAction("닫기", onClick = { menu = null }) })
         "genre" -> TvOptionDialog("장르", listOf("" to "전체") + state.libraryGenres.map { it to it },
             state.libraryGenre.orEmpty(), { menu = null }) { value ->
             menu = null; focusedKey = null; model.setLibraryOptions(genre = value.ifBlank { null })
@@ -419,62 +441,7 @@ private fun TvOptionDialog(title: String, options: List<Pair<String, String>>, s
 
 @Composable
 internal fun TvDetail(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
-    val detail = state.detailStack.last()
-    val item = detail.item
-    var summaryOpen by remember { mutableStateOf(false) }
-    val actionFocus = remember { FocusRequester() }
-    var focusedKey by rememberSaveable { mutableStateOf("primary") }
-    val restoreKey = focusedKey.takeIf { key -> detail.children.any { tvMediaKey(it) == key } } ?: "primary"
-    val primaryModifier = Modifier.then(if (restoreKey == "primary") Modifier.focusRequester(actionFocus) else Modifier)
-        .onFocusChanged { if (it.isFocused) focusedKey = "primary" }
-    var focusRequested by remember { mutableStateOf(false) }
-    val modelIsTelevision = LocalContext.current.isTelevision()
-    LaunchedEffect(state.busy) {
-        if (modelIsTelevision && !state.busy && !focusRequested) { withFrameNanos { }; actionFocus.requestFocus(); focusRequested = true }
-    }
-    LazyColumn(Modifier.fillMaxSize().testTag("tv-detail"), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                Poster(item, model, Modifier.width(if (LocalConfiguration.current.screenWidthDp < 600) 96.dp else 156.dp).aspectRatio(2f / 3f))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(item.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text(if (item.playable) continueHeroMetadata(item) else when (item.type) {
-                        "season" -> "시즌 ${item.seasonNumber ?: ""}"
-                        else -> "시리즈"
-                    }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (item.playable) TvAction(if (item.watched) "다시 재생" else if (item.resumeMs > 0) "이어보기 · ${timeLabel(item.resumeMs)}" else "재생",
-                            primaryModifier, !state.busy) { model.play(item, item.watched) }
-                        if (canChangeWatchState(item)) TvAction("시청 상태", if (item.playable) Modifier else primaryModifier,
-                            !state.busy) { onWatchOptions(item) }
-                    }
-                    if (item.playable && item.resumeMs > 0 && !item.watched) TvAction("처음부터 재생", enabled = !state.busy) { model.play(item, true) }
-                    if (item.playable && state.versions.isNotEmpty()) VersionSelector(state.versions, state.selectedPartId, !state.busy, model::selectVersion)
-                }
-            }
-        }
-        if (state.error != null) item { Text(state.error, color = MaterialTheme.colorScheme.error) }
-        if (item.summary.isNotBlank()) item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(item.summary, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                TvAction("줄거리 전체 보기") {
-                    summaryOpen = true
-                }
-            }
-        }
-        if (detail.children.isNotEmpty()) item {
-            Text(if (item.type == "show") "시즌" else "에피소드", style = MaterialTheme.typography.titleLarge)
-        }
-        items(detail.children, key = ::tvMediaKey) { child ->
-            TvAction((if (child.watched) "✓ " else "") + (if (child.type == "episode") "${episodeLabel(child)} · " else "") + child.title,
-                Modifier.fillMaxWidth().then(if (tvMediaKey(child) == restoreKey) Modifier.focusRequester(actionFocus) else Modifier)
-                    .onFocusChanged { if (it.isFocused) focusedKey = tvMediaKey(child) },
-                !state.busy) { model.openItem(child) }
-        }
-        if (!item.playable && detail.children.isEmpty()) item { Text(if (state.busy) "목록을 불러오는 중입니다" else "표시할 항목이 없습니다") }
-    }
-    if (summaryOpen) TvSummaryDialog(item.title, item.summary) { summaryOpen = false }
+    CompactDetailScreen(state, model, onWatchOptions)
 }
 
 @Composable

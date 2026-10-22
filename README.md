@@ -2,6 +2,10 @@
 
 MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태블릿·Android TV에서 사용하며 Android 8.0 이상을 지원합니다. 첫 로그인 화면의 서버 주소는 빈칸이며 사용자가 직접 입력합니다.
 
+현재 작업 빌드는 **1.0.17**(빌드 18)입니다. 라이브러리는 전체·미시청·시청 중·보았음, TV 쇼·시즌·에피소드, 장르·연도와 정렬을 조합할 수 있습니다. 메뉴는 작은 사각형으로 표시하며, 시리즈 포스터에서 첫 시즌의 썸네일 회차 목록을 바로 열고 같은 화면에서 시즌을 바꿉니다. 작품 안의 **해상도** 폴더로 원본 4K·1080p·720p 등의 버전을 선택하며, 이 분류는 서버 파일을 이동하지 않습니다. 같은 해상도의 파일이 여러 개면 서버가 정한 우선 버전을 사용합니다.
+
+이 작업 빌드의 APK와 `shyniflex-1.0.17-corresponding-source.zip`은 함께 제공합니다. 아래 GitHub 링크는 기존 공개 릴리스입니다.
+
 공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
 
 - [shyniflex 1.0.14 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.14/shyniflex-1.0.14.apk)

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "All 14 primary and 7 recursive native source archives collected and SHA-256 verified.",
-  "application_release": "1.0.14",
+  "application_release": "1.0.17",
   "runtime_release": "2026-09-17",
   "evidence": [
     "android/runtime-source/release.json: body Full set of build dependencies",
@@ -380,9 +380,9 @@
     }
   ],
   "application_source": {
-    "tag": "v1.0.14",
     "repository": "https://github.com/bluemirr8520-lgtm/shyniflex",
-    "source_asset": "shyniflex-1.0.14-corresponding-source.zip"
+    "source_asset": "shyniflex-1.0.17-corresponding-source.zip",
+    "branch": "codex/compact-library-browsing"
   },
   "native_library_hashes": [
     {

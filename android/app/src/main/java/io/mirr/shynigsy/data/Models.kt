@@ -70,6 +70,8 @@ data class MediaItem(
     val playbackPartId: Int? = null,
     val year: Int? = null,
     val genres: List<String> = emptyList(),
+    val watchState: MediaWatchState? = null,
+    val episodeCount: Int? = null,
 ) {
     val playable: Boolean get() = type == "movie" || type == "episode"
 
@@ -87,6 +89,7 @@ data class MediaItem(
         put("thumbnail", thumbnail)
         put("playbackPartId", playbackPartId)
         put("year", year); put("genres", JSONArray(genres))
+        put("watchState", watchState?.name); put("episodeCount", episodeCount)
     }
 
     companion object {
@@ -106,13 +109,16 @@ data class MediaItem(
             value.intOrNull("playbackPartId"),
             value.intOrNull("year"),
             value.optJSONArray("genres")?.let { rows -> (0 until rows.length()).map { rows.getString(it) } }.orEmpty(),
+            value.stringOrNull("watchState")?.let { runCatching { MediaWatchState.valueOf(it) }.getOrNull() },
+            value.indexOrNull("episodeCount"),
         )
     }
 }
 
 data class MediaPage(val items: List<MediaItem>, val total: Int,
     val genres: List<String> = emptyList(), val years: List<Int> = emptyList())
-data class MediaDetails(val item: MediaItem, val children: List<MediaItem> = emptyList())
+data class MediaDetails(val item: MediaItem, val children: List<MediaItem> = emptyList(),
+    val seasons: List<MediaItem> = emptyList(), val selectedSeasonId: Int? = null)
 data class MediaVersion(
     val partId: Int,
     val label: String,

@@ -12,10 +12,10 @@ The official CA bundle was extracted from assets/cacert.pem.
 mpv-android JNI wrapper license: MIT, included as licenses/mpv-android-MIT.txt.
 Matching wrapper sources: https://github.com/mpv-android/mpv-android/tree/2026-09-17
 
-Corresponding source for shyniflex TV 1.0.16-test:
-https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/tv-1.0.16/shyniflex-corresponding-source.zip
-Application source tag:
-https://github.com/bluemirr8520-lgtm/shyniflex/tree/tv-1.0.16
+Corresponding source for shyniflex 1.0.17:
+shyniflex-1.0.17-corresponding-source.zip, supplied alongside this APK.
+The complete application sources for this build are in app-source.zip inside
+that bundle. Application repository: https://github.com/bluemirr8520-lgtm/shyniflex
 
 The corresponding-source ZIP contains app-source.zip for this release, the
 matching mpv-android wrapper/build recipes, all 14 primary native dependencies,

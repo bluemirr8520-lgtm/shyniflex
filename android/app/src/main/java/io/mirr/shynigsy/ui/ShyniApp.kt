@@ -168,16 +168,20 @@ fun ShyniApp(
     BackHandler(enabled = state.loggedIn && (detail != null || state.library != null)) {
         viewModel.back()
     }
-    MaterialTheme(colorScheme = ShyniColors) {
+    MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
         Scaffold(
             containerColor = Navy,
             topBar = {
                 if (state.loggedIn) {
                     Column(Modifier.statusBarsPadding()) {
-                    if (!tv) TextButton(onClick = { scope.launch { drawer.open() } }) { Text("☰  메뉴") }
-                    if (detail != null || state.library != null) TvHeader(
-                    title = detail?.item?.title ?: state.library?.title,
-                    onBack = viewModel::back,
+                    if (!tv) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { scope.launch { drawer.open() } },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) { Text("☰  메뉴") }
+                        Text(detail?.item?.title ?: state.library?.title ?: "shyniflex", Modifier.weight(1f).padding(start = 8.dp),
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    else if (detail != null || state.library != null) TvHeader(
+                        title = detail?.item?.title ?: state.library?.title,
                     )
                     }
                 } else
@@ -295,9 +299,7 @@ private fun AppHeader(
             Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (title != null) IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "뒤로")
-            } else Box(
+            Box(
                 Modifier.padding(horizontal = 10.dp).size(38.dp).clip(RoundedCornerShape(12.dp)).background(Mint),
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Rounded.PlayArrow, null, tint = Color(0xFF072A23)) }
@@ -648,7 +650,7 @@ private fun DetailScreen(
         if (error != null) item { ErrorMessage(error) }
         if (item.playable) {
             if (versions.isNotEmpty()) item {
-                VersionSelector(versions, selectedPart, enabled = !busy, onSelect = viewModel::selectVersion)
+                ResolutionFolderSelector(versions, selectedPart, enabled = !busy, onSelect = viewModel::selectVersion)
             }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -827,28 +829,6 @@ internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier
         Icon(Icons.Rounded.Movie, null, tint = Color(0xFF42566D), modifier = Modifier.size(38.dp))
         AsyncImage(model = request, contentDescription = "${item.title} 포스터",
             modifier = Modifier.fillMaxSize(), contentScale = contentScale, alignment = imageAlignment)
-    }
-}
-
-@Composable
-internal fun VersionSelector(versions: List<MediaVersion>, selected: Int?, enabled: Boolean, onSelect: (Int?) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("재생 파일", style = MaterialTheme.typography.labelLarge, color = Muted)
-        Box {
-            OutlinedButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().tvOnlyFocus()) {
-                Text(versions.firstOrNull { it.partId == selected }?.label ?: "기본 파일", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Icon(Icons.Rounded.ExpandMore, "재생 파일 선택")
-            }
-            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                DropdownMenuItem(text = { Text("기본 파일") }, onClick = { open = false; onSelect(null) },
-                    trailingIcon = { if (selected == null) Icon(Icons.Rounded.Check, null) })
-                versions.forEach { version ->
-                    DropdownMenuItem(text = { Text(version.label) }, onClick = { open = false; onSelect(version.partId) },
-                        trailingIcon = { if (version.partId == selected) Icon(Icons.Rounded.Check, null) })
-                }
-            }
-        }
     }
 }
 
