@@ -10,8 +10,10 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ArrayAdapter
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -91,6 +93,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private lateinit var subtitleOverlay: PlexSubtitleOverlayView
     private var subtitleTimeline: SubtitleTimeline? = null
     private var subtitleJob: Job? = null
+    private var subtitleDialog: AlertDialog? = null
     private var subtitleSelectionRevision = 0
     private var externalSubtitleId: Int? = null
     private var embeddedServerSubtitleId: Int? = null
@@ -337,6 +340,9 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.findViewById<ImageButton>(R.id.player_resize).setOnClickListener { cycleResizeMode() }
         playerView.findViewById<Button>(R.id.player_speed).setOnClickListener { showSpeed() }
         playerView.findViewById<Button>(R.id.player_conversion).setOnClickListener { showConversion() }
+        playerView.findViewById<ImageButton>(R.id.player_subtitles).setOnClickListener {
+            if (it.isEnabled && it.isShown) showTracks(C.TRACK_TYPE_TEXT)
+        }
         playerView.findViewById<ImageButton>(R.id.player_previous).setOnClickListener { switchNeighbor(false) }
         playerView.findViewById<ImageButton>(R.id.player_next).setOnClickListener { switchNeighbor(true) }
         updatePlaybackButtons()
@@ -349,6 +355,7 @@ class NativePlayerActivity : AppCompatActivity() {
             onGestureActive = { active ->
                 playerGestureActive = active
                 if (active) {
+                    subtitleDialog?.dismiss()
                     if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
                     playerView.hideController()
                     hideLockControl()
@@ -378,6 +385,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 contentDescription = if (gestures.locked) "화면 잠금 해제" else "화면 잠금"
                 playerView.useController = !gestures.locked
                 if (gestures.locked) {
+                    subtitleDialog?.dismiss()
                     playerView.hideController()
                     showUnlockControl()
                 } else playerView.showController()
@@ -400,6 +408,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (visibility == View.VISIBLE) playerView.hideController()
             } else lockButton.visibility = if (!television && visibility == View.VISIBLE) View.VISIBLE else View.GONE
             updateSegmentSkipButton()
+            updateSubtitleButton()
         })
         gestures.controllerVisible = playerView.isControllerFullyVisible
         errorText = TextView(this).apply { textSize = 16f; setTextColor(Color.WHITE); gravity = Gravity.CENTER }
@@ -416,7 +425,7 @@ class NativePlayerActivity : AppCompatActivity() {
             lockButton.visibility = View.GONE
             playerView.controllerShowTimeoutMs = 6000
             listOf(R.id.player_back, R.id.player_resize, R.id.player_settings, R.id.player_speed,
-                R.id.player_conversion, R.id.player_previous, R.id.player_next,
+                R.id.player_conversion, R.id.player_subtitles, R.id.player_previous, R.id.player_next,
                 androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_play_pause,
                 androidx.media3.ui.R.id.exo_ffwd).forEach { id ->
                 playerView.findViewById<View>(id)?.apply {
@@ -862,6 +871,11 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun selectedTrackLabel(type: Int): String {
+        if (type == C.TRACK_TYPE_TEXT) {
+            if (!subtitlesEnabled) return "끔"
+            spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) }
+                ?.let { return it.label }
+        }
         val format = player?.currentTracks?.groups?.firstNotNullOfOrNull { group ->
             if (group.type != type) null else (0 until group.length)
                 .firstOrNull { group.isTrackSelected(it) }?.let(group::getTrackFormat)
@@ -875,7 +889,22 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun showTracks(type: Int) {
         val active = player ?: return
+        if (type == C.TRACK_TYPE_TEXT && (exiting || refreshing || navigationLoading || conversionLoading ||
+                playerGestureActive || gestures.locked || closeLockedSpoilerPlayback())) return
         val choices = mutableListOf<TrackChoice>()
+        val nativeText = if (type == C.TRACK_TYPE_TEXT) active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }.flatMap { group ->
+            (0 until group.length).filter { group.isTrackSupported(it) }.map { group to it }
+        } else emptyList()
+        val nativeIds = nativeText.mapNotNull { (group, index) -> group.getTrackFormat(index).id }.toSet()
+        // Converted responses can renumber their streams. Only the original file
+        // and an exact FFmpeg stream-index mapping establish a duplicate track.
+        val aliases = if (type == C.TRACK_TYPE_TEXT && !spec.isServerConversion) spec.subtitles
+            .filter { it.isEmbedded }.mapNotNull { track ->
+                track.streamIndex?.takeIf { it >= 0 }?.let(active::subtitleTrackIdForStreamIndex)
+                    ?.takeIf { it in nativeIds }?.let { track.id to it }
+            }.toMap() else emptyMap()
+        val selectedNativeIds = nativeText.filter { (group, index) -> group.isTrackSelected(index) }
+            .mapNotNull { (group, index) -> group.getTrackFormat(index).id }.toSet()
         if (type == C.TRACK_TYPE_TEXT) {
             choices += TrackChoice("자막 끄기", !subtitlesEnabled) {
                 subtitlesEnabled = false; clearExternalSubtitle()
@@ -883,19 +912,31 @@ class NativePlayerActivity : AppCompatActivity() {
                 playerView.subtitleView?.visibility = View.GONE
             }
             spec.subtitles.forEach { track ->
-                choices += TrackChoice(track.label, subtitlesEnabled && (embeddedServerSubtitleId ?: externalSubtitleId) == track.id) { selectServerSubtitle(track) }
+                val selectedId = embeddedServerSubtitleId ?: externalSubtitleId
+                val selected = subtitlesEnabled && (selectedId == track.id ||
+                    (selectedId == null && aliases[track.id]?.let { it in selectedNativeIds } == true))
+                choices += TrackChoice(subtitleMenuLabel(track.label, track.language, track.format ?: track.mimeType,
+                    if (track.isEmbedded) "서버 내장" else "서버 외부", track.forced == true, track.sdh == true), selected) {
+                    selectServerSubtitle(track)
+                }
             }
         }
         active.currentTracks.groups.filter { it.type == type }.forEach { group ->
             for (index in 0 until group.length) {
                 if (!group.isTrackSupported(index)) continue
                 val format = group.getTrackFormat(index)
+                if (type == C.TRACK_TYPE_TEXT && format.id != null && format.id in aliases.values) continue
                 val language = when (format.language?.lowercase(Locale.ROOT)?.substringBefore('-')) {
                     "ko", "kor" -> "한국어"; "en", "eng" -> "영어"; "ja", "jpn" -> "일본어"; null, "und" -> null; else -> format.language
                 }
-                val label = listOfNotNull(format.label, language, if (type == C.TRACK_TYPE_AUDIO) format.codecs ?: format.sampleMimeType?.substringAfter('/') else null)
+                val label = if (type == C.TRACK_TYPE_TEXT) subtitleMenuLabel(format.label, format.language,
+                    format.codecs ?: format.sampleMimeType, "영상 내장",
+                    format.selectionFlags and C.SELECTION_FLAG_FORCED != 0,
+                    format.roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND != 0)
+                else listOfNotNull(format.label, language, format.codecs ?: format.sampleMimeType?.substringAfter('/'))
                     .filter { it.isNotBlank() }.distinct().joinToString(" · ").ifBlank { "트랙 ${choices.size + 1}" }
-                choices += TrackChoice(label, group.isTrackSelected(index) && (type != C.TRACK_TYPE_TEXT || (externalSubtitleId == null && embeddedServerSubtitleId == null))) {
+                choices += TrackChoice(label, group.isTrackSelected(index) && (type != C.TRACK_TYPE_TEXT ||
+                    (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null))) {
                     if (type == C.TRACK_TYPE_TEXT) {
                         subtitlesEnabled = true; externalSubtitleId = null; clearExternalSubtitle()
                         playerView.subtitleView?.setCues(emptyList())
@@ -908,9 +949,48 @@ class NativePlayerActivity : AppCompatActivity() {
             }
         }
         if (choices.isEmpty()) { toast("선택할 수 있는 트랙이 없습니다."); return }
-        AlertDialog.Builder(this).setTitle(if (type == C.TRACK_TYPE_AUDIO) "오디오 트랙" else "자막 선택")
-            .setSingleChoiceItems(choices.map { it.label }.toTypedArray(), choices.indexOfFirst { it.selected }) { dialog, index -> choices[index].apply(); dialog.dismiss() }
-            .setNegativeButton("취소", null).show()
+        val selected = choices.indexOfFirst { it.selected }
+        val choose = android.content.DialogInterface.OnClickListener { dialog, index ->
+            if (player === active && !exiting && (type != C.TRACK_TYPE_TEXT ||
+                    (!gestures.locked && !playerGestureActive && !refreshing && !conversionLoading &&
+                        !navigationLoading && !closeLockedSpoilerPlayback()))) {
+                if (type == C.TRACK_TYPE_TEXT) pendingTextPreference = null
+                choices[index].apply()
+            }
+            dialog.dismiss()
+        }
+        val builder = AlertDialog.Builder(this).setTitle(if (type == C.TRACK_TYPE_AUDIO) "오디오 트랙" else "자막 선택")
+            .setNegativeButton("취소", null)
+        if (type != C.TRACK_TYPE_TEXT) {
+            builder.setSingleChoiceItems(choices.map { it.label }.toTypedArray(), selected, choose).show()
+            return
+        }
+        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_single_choice, choices.map { it.label }) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                super.getView(position, convertView, parent).apply {
+                    (this as TextView).apply {
+                        textSize = 13f; minHeight = dp(48); setSingleLine(false); maxLines = 3
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        setTextColor(Color.WHITE); setPadding(dp(12), dp(4), dp(12), dp(4))
+                    }
+                }
+        }
+        subtitleDialog?.dismiss()
+        val dialog = builder.setSingleChoiceItems(adapter, selected, choose).create()
+        subtitleDialog = dialog
+        dialog.setOnDismissListener { if (subtitleDialog === dialog) subtitleDialog = null }
+        dialog.show()
+        dialog.findViewById<TextView>(androidx.appcompat.R.id.alertTitle)?.apply {
+            textSize = 16f; setTextColor(Color.WHITE)
+        }
+        dialog.listView.setSelection(selected.coerceAtLeast(0))
+        if (television) dialog.listView.requestFocus()
+        dialog.window?.apply {
+            setLayout(minOf(dp(360), resources.displayMetrics.widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT)
+            setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF14202D.toInt()); cornerRadius = dp(3).toFloat()
+            })
+        }
     }
 
     private fun showSpeed() {
@@ -1092,6 +1172,20 @@ class NativePlayerActivity : AppCompatActivity() {
             isEnabled = !conversionLoading && !refreshing
         }
         updateNavigationButtons()
+        updateSubtitleButton()
+    }
+
+    private fun updateSubtitleButton() {
+        if (!::playerView.isInitialized) return
+        val controllerVisible = if (::gestures.isInitialized) gestures.controllerVisible else playerView.isControllerFullyVisible
+        val available = controllerVisible && !playerGestureActive &&
+            (!::gestures.isInitialized || !gestures.locked) && !exiting && !refreshing &&
+            !conversionLoading && !navigationLoading
+        playerView.findViewById<ImageButton>(R.id.player_subtitles).apply {
+            visibility = if (available) View.VISIBLE else View.INVISIBLE
+            isEnabled = available && player != null
+            tooltipText = "자막 선택"
+        }
     }
 
     private fun showConversion() {
@@ -1602,6 +1696,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        subtitleDialog?.dismiss(); subtitleDialog = null
         playerGestureActive = false
         if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
         if (::subtitleOverlay.isInitialized) subtitleOverlay.subtitleText = ""

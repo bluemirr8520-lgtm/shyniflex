@@ -148,18 +148,16 @@ class NativeSubtitlePlaybackTest {
                 verifyResizeIconCycleAndPersistence(scenario)
 
                 scenario.onActivity { activity ->
-                    activity.findViewById<ImageButton>(R.id.player_settings).performClick()
+                    findView<PlayerView>(activity.findViewById(android.R.id.content))!!.showController()
+                    val button = activity.findViewById<ImageButton>(R.id.player_subtitles)
+                    assertTrue(button.isShown && button.isEnabled)
+                    assertEquals("자막 선택", button.contentDescription.toString())
+                    assertTrue("The subtitle shortcut must open its list directly", button.performClick())
                 }
                 instrumentation.waitForIdleSync()
-                val subtitleTab = instrumentation.uiAutomation.rootInActiveWindow
-                    ?.findAccessibilityNodeInfosByText("자막")
-                    ?.firstOrNull { it.text?.toString() == "자막" && it.isClickable }
-                assertNotNull("Playback settings must expose the subtitle tab", subtitleTab)
-                assertTrue("The subtitle settings tab must be selectable",
-                    subtitleTab!!.performAction(AccessibilityNodeInfo.ACTION_CLICK))
-                instrumentation.waitForIdleSync()
-                Thread.sleep(200)
-                captureScreenshot("native-settings-screen.png")
+                assertTrue("The direct list must always offer subtitle off", subtitleChoices().any { it.first == "자막 끄기" })
+                captureScreenshot("native-subtitle-menu-screen.png")
+                instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             }
         } finally {
             subtitlePrefs.edit().apply {
@@ -237,6 +235,52 @@ class NativeSubtitlePlaybackTest {
                     assertEquals("The fixture must expose both Korean tracks and the English track: $diagnostics", 3, nativeTextTracks)
                     assertTrue("MPV must select the normal Korean track, not forced-only or English: $diagnostics", selectedFullKorean)
                     assertEquals("The first full Korean caption must render within five seconds: $diagnostics", MULTIPLE_FIXTURE_TEXT, text)
+                    fun openSubtitleMenu() {
+                        scenario.onActivity { activity ->
+                            findView<PlayerView>(activity.findViewById(android.R.id.content))!!.showController()
+                            assertTrue(activity.findViewById<View>(R.id.player_subtitles).performClick())
+                        }
+                        instrumentation.waitForIdleSync()
+                    }
+                    var audioId: String? = null
+                    scenario.onActivity { activity ->
+                        val active = findView<PlayerView>(activity.findViewById(android.R.id.content))!!.player!!
+                        audioId = active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                            .firstNotNullOfOrNull { group -> (0 until group.length).firstOrNull { group.isTrackSelected(it) }
+                                ?.let { group.getTrackFormat(it).id } }
+                    }
+                    openSubtitleMenu()
+                    val fullKorean = "한국어 · SRT · 서버 내장"
+                    assertEquals("An exact native alias must appear once, while both Korean tracks remain distinct",
+                        listOf("자막 끄기", "$fullKorean · 강제", fullKorean, "영어 · SRT · 서버 내장"), subtitleChoices().map { it.first })
+                    assertEquals(listOf(fullKorean), subtitleChoices().filter { it.second }.map { it.first })
+                    assertTrue(clickSubtitleChoice("자막 끄기"))
+                    scenario.onActivity { activity ->
+                        val content = activity.findViewById<View>(android.R.id.content)
+                        val active = findView<PlayerView>(content)!!.player!!
+                        assertTrue(active.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT))
+                        assertEquals("", findView<PlexSubtitleOverlayView>(content)!!.subtitleText)
+                        assertFalse(active.playWhenReady)
+                    }
+                    openSubtitleMenu()
+                    assertEquals(listOf("자막 끄기"), subtitleChoices().filter { it.second }.map { it.first })
+                    assertTrue(clickSubtitleChoice(fullKorean))
+                    var restored = false
+                    val restoreDeadline = SystemClock.elapsedRealtime() + 5_000
+                    while (!restored && SystemClock.elapsedRealtime() < restoreDeadline) {
+                        scenario.onActivity { activity ->
+                            val content = activity.findViewById<View>(android.R.id.content)
+                            val active = findView<PlayerView>(content)!!.player!!
+                            restored = findView<PlexSubtitleOverlayView>(content)!!.subtitleText == MULTIPLE_FIXTURE_TEXT
+                            assertFalse("Subtitle changes must preserve pause", active.playWhenReady)
+                            val currentAudio = active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                                .firstNotNullOfOrNull { group -> (0 until group.length).firstOrNull { group.isTrackSelected(it) }
+                                    ?.let { group.getTrackFormat(it).id } }
+                            assertEquals("Subtitle changes must preserve audio selection", audioId, currentAudio)
+                        }
+                        if (!restored) Thread.sleep(50)
+                    }
+                    assertTrue("Reselecting the full Korean subtitle must restore its cue while paused", restored)
                     probe.assertNoExtraction()
                 }
             }
@@ -244,6 +288,30 @@ class NativeSubtitlePlaybackTest {
             store.clear(server)
             clip.delete()
         }
+    }
+
+    private fun subtitleChoices(): List<Pair<String, Boolean>> {
+        val root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow ?: return emptyList()
+        val choices = mutableListOf<Pair<String, Boolean>>()
+        fun collect(node: AccessibilityNodeInfo) {
+            if (node.isCheckable && !node.text.isNullOrBlank()) choices += node.text.toString() to node.isChecked
+            for (index in 0 until node.childCount) node.getChild(index)?.let { child ->
+                try { collect(child) } finally { child.recycle() }
+            }
+        }
+        try { collect(root) } finally { root.recycle() }
+        return choices
+    }
+
+    private fun clickSubtitleChoice(label: String): Boolean {
+        val root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow ?: return false
+        val nodes = root.findAccessibilityNodeInfosByText(label)
+        try {
+            val node = nodes.firstOrNull { it.text?.toString() == label } ?: return false
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            val parent = node.parent ?: return false
+            return try { parent.performAction(AccessibilityNodeInfo.ACTION_CLICK) } finally { parent.recycle() }
+        } finally { nodes.forEach(AccessibilityNodeInfo::recycle); root.recycle() }
     }
 
     private fun verifyResizeIconCycleAndPersistence(scenario: ActivityScenario<NativePlayerActivity>) {

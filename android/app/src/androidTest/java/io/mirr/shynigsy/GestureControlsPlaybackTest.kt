@@ -22,6 +22,7 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.media3.common.Player
+import androidx.media3.common.C
 import androidx.media3.ui.PlayerView
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
@@ -329,6 +330,37 @@ class GestureControlsPlaybackTest {
         assertHidden(scenario, "The side skip feedback must not reveal controller buttons")
     }
 
+    @Test fun directSubtitleButtonOffersOffWithoutTracksAndPreservesAudioAndPause() = withFixture(false) { scenario ->
+        var video: PlayerView? = null
+        var selectedAudio: String? = null
+        waitFor(scenario, "paused source ready for direct subtitle selection") { activity ->
+            video = findView(activity.findViewById(android.R.id.content))
+            val active = video?.player
+            if (active?.playbackState == Player.STATE_READY) {
+                active.pause()
+                selectedAudio = active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    .firstNotNullOfOrNull { group -> (0 until group.length).firstOrNull { group.isTrackSelected(it) }
+                        ?.let { group.getTrackFormat(it).id } }
+            }
+            active?.playbackState == Player.STATE_READY && !active.playWhenReady
+        }
+        scenario.onActivity { video!!.showController() }
+        tapThroughActivityRoot(scenario, R.id.player_subtitles)
+        waitForWindow("direct shortcut opens the subtitle list even without subtitle tracks") {
+            activeWindowChoiceLabels() == listOf("자막 끄기")
+        }
+        assertTrue(clickWindowText("자막 끄기"))
+        scenario.onActivity {
+            val active = video!!.player!!
+            assertTrue(active.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT))
+            assertFalse("Subtitle selection must preserve paused playback", active.playWhenReady)
+            val audio = active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                .firstNotNullOfOrNull { group -> (0 until group.length).firstOrNull { group.isTrackSelected(it) }
+                    ?.let { group.getTrackFormat(it).id } }
+            assertEquals("Subtitle selection must preserve the selected audio track", selectedAudio, audio)
+        }
+    }
+
     @Test fun skipGesturesKeepControlsHiddenAndOnlySingleTapShowsThem() = withFixture(false) { scenario ->
         var view: PlayerView? = null
         var gesture: Media3GestureView? = null
@@ -369,6 +401,9 @@ class GestureControlsPlaybackTest {
             assertFalse("A skip gesture hides controls while the finger is still down", nativeView.isControllerFullyVisible)
             assertFalse("A skip gesture also hides the lock button while the finger is still down",
                 nativeView.rootView.findViewById<View>(R.id.player_lock).isShown)
+            assertFalse("A skip gesture immediately hides subtitle selection",
+                nativeView.findViewById<View>(R.id.player_subtitles).isShown)
+            assertFalse(nativeView.findViewById<View>(R.id.player_subtitles).isEnabled)
         }
         waitFor(scenario, "visible controls hide during a skip gesture") { !nativeView.isControllerFullyVisible }
         waitFor(scenario, "second swipe settles") { !overlay.isSeekGestureActive }
@@ -645,6 +680,8 @@ class GestureControlsPlaybackTest {
         assertFalse(message, activity.findViewById<View>(R.id.player_lock).isShown)
         assertFalse(message, activity.findViewById<View>(R.id.player_previous).isShown)
         assertFalse(message, activity.findViewById<View>(R.id.player_next).isShown)
+        assertFalse(message, activity.findViewById<View>(R.id.player_subtitles).isShown)
+        assertFalse(message, activity.findViewById<View>(R.id.player_subtitles).isEnabled)
     }
 
     private fun assertPlaybackControlsHidden(scenario: ActivityScenario<NativePlayerActivity>, message: String) = scenario.onActivity { activity ->
@@ -653,6 +690,8 @@ class GestureControlsPlaybackTest {
         assertFalse(message, playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause).isShown)
         assertFalse(message, activity.findViewById<View>(R.id.player_previous).isShown)
         assertFalse(message, activity.findViewById<View>(R.id.player_next).isShown)
+        assertFalse(message, activity.findViewById<View>(R.id.player_subtitles).isShown)
+        assertFalse(message, activity.findViewById<View>(R.id.player_subtitles).isEnabled)
     }
 
     private fun assertLocalNavigationVisibleAndDisabled(scenario: ActivityScenario<NativePlayerActivity>) =
@@ -662,6 +701,12 @@ class GestureControlsPlaybackTest {
                 assertTrue("A single tap reveals both media navigation icons", icon.isShown)
                 assertFalse("A local fixture without a source catalog must not enable neighbor navigation", icon.isEnabled)
             }
+            val subtitle = activity.findViewById<View>(R.id.player_subtitles)
+            assertTrue("A single tap reveals direct subtitle selection", subtitle.isShown)
+            assertTrue("Subtitle off must remain selectable for a file without subtitles", subtitle.isEnabled)
+            assertEquals("자막 선택", subtitle.contentDescription.toString())
+            assertEquals((48 * activity.resources.displayMetrics.density).roundToInt(), subtitle.height)
+            if (activity.isTelevision()) assertTrue("TV remote navigation must include subtitle selection", subtitle.isFocusable)
         }
 
     /** Dispatch through the real root so the button must win hit testing above the gesture layer. */
