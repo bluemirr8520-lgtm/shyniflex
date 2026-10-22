@@ -1286,8 +1286,9 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitleJob = scope.launch {
             try {
                 val cues = subtitleLoader.load(track)
+                val timeline = withContext(Dispatchers.Default) { SubtitleTimeline(cues) }
                 if (revision == subtitleSelectionRevision && !exiting) {
-                    subtitleTimeline = SubtitleTimeline(cues); updateSubtitleText()
+                    subtitleTimeline = timeline; updateSubtitleText()
                     Log.i("ShyniFlixSubtitle", "downloaded id=${track.id} cues=${cues.size}")
                 }
             } catch (_: kotlinx.coroutines.CancellationException) {

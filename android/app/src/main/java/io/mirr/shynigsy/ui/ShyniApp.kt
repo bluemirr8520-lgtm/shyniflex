@@ -821,9 +821,10 @@ internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier
     val context = LocalContext.current
     val headers = imageUrl?.let(viewModel::posterHeaders).orEmpty()
     val request = remember(context, imageUrl, headers, item.isSpoiler) {
+        val cacheKey = viewModel.posterCacheKey(imageUrl.orEmpty())
         ImageRequest.Builder(context).data(imageUrl).crossfade(true)
-            .memoryCacheKey(viewModel.posterCacheKey(imageUrl.orEmpty()))
-            .diskCacheKey(viewModel.posterCacheKey(imageUrl.orEmpty()))
+            .memoryCacheKey(cacheKey)
+            .diskCacheKey(cacheKey)
             .memoryCachePolicy(if (item.isSpoiler) CachePolicy.DISABLED else CachePolicy.ENABLED)
             .diskCachePolicy(if (item.isSpoiler) CachePolicy.DISABLED else CachePolicy.ENABLED)
             .httpHeaders(NetworkHeaders.Builder().apply { headers.forEach { (name, value) -> set(name, value) } }.build())

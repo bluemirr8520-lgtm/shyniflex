@@ -30,16 +30,27 @@ internal fun releaseAsset(release: JSONObject, name: String): UpdateAsset {
     return UpdateAsset(name, url.toString(), size)
 }
 
-internal fun updateCandidate(release: JSONObject, manifest: JSONObject, packageName: String, installed: Long): UpdateCandidate? {
+internal fun updateCandidate(release: JSONObject, manifest: JSONObject, packageName: String, installed: Long,
+    supportedAbis: List<String> = emptyList()): UpdateCandidate? {
     require(manifest.getInt("schema") == 1)
     val entry = manifest.getJSONObject("packages").optJSONObject(packageName) ?: return null
     val code = java.math.BigDecimal(entry.get("versionCode").toString()).longValueExact()
     require(code > 0)
     if (code <= installed) return null
     val name = entry.getString("versionName").also { require(it.isNotBlank() && it.length <= 64) }
-    val hash = entry.getString("sha256").lowercase(java.util.Locale.ROOT)
-    require(Regex("[0-9a-f]{64}").matches(hash))
-    val asset = releaseAsset(release, entry.getString("asset"))
-    require(asset.name.endsWith(".apk"))
+    fun payload(value: JSONObject): Pair<UpdateAsset, String> {
+        val hash = value.getString("sha256").lowercase(java.util.Locale.ROOT)
+        require(Regex("[0-9a-f]{64}").matches(hash))
+        val asset = releaseAsset(release, value.getString("asset"))
+        require(asset.name.endsWith(".apk"))
+        return asset to hash
+    }
+    // Keep a valid universal entry for previously shipped schema-1 clients.
+    val universal = payload(entry)
+    val variants = if (entry.isNull("variants")) null else entry.getJSONObject("variants")
+    val abi = supportedAbis.firstOrNull { it.isNotBlank() && variants?.has(it) == true }
+    // Missing device variants fall back to universal. A present matching variant
+    // must pass the same release-asset checks; malformed entries fail closed.
+    val (asset, hash) = if (abi == null) universal else payload(requireNotNull(variants).getJSONObject(abi))
     return UpdateCandidate(packageName, code, name, hash, asset)
 }

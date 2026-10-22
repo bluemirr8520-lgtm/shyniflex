@@ -41,7 +41,7 @@ internal class GitHubUpdates(private val context: Context) {
                 require(value.isSuccessful)
                 JSONObject(limitedBody(value, 256 * 1024))
             }
-            updateCandidate(release, data, context.packageName, installed)?.let(candidates::add)
+            updateCandidate(release, data, context.packageName, installed, Build.SUPPORTED_ABIS.toList())?.let(candidates::add)
         }
         candidates.maxByOrNull { it.versionCode }
     }

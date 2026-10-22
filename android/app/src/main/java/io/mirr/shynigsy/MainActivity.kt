@@ -24,6 +24,8 @@ import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import io.mirr.shynigsy.updates.UpdateViewModel
@@ -72,8 +74,8 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                model.state.collect { state ->
-                    if (state.spoilerUnlocked || state.spoilerPromptOpen) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                model.state.map { it.spoilerUnlocked || it.spoilerPromptOpen }.distinctUntilChanged().collect { secure ->
+                    if (secure) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                     else window.decorView.postOnAnimation {
                         window.decorView.postOnAnimation {
                             val current = model.state.value

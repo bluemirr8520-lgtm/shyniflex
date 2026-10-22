@@ -12,6 +12,11 @@ val releaseProperties = Properties().apply {
     val source = File(signingRoot, ".local/release.properties")
     if (source.exists()) source.inputStream().use { load(it) }
 }
+// A per-device APK carries only its native runtime; the default remains universal.
+val runtimeAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+val targetAbi = providers.gradleProperty("shyniflexTargetAbi").orNull
+require(targetAbi == null || targetAbi in runtimeAbis) { "Unsupported shyniflexTargetAbi" }
+
 android {
     namespace = "io.mirr.shynigsy"
     compileSdk = 36
@@ -22,7 +27,7 @@ android {
         versionCode = 19
         versionName = "1.0.18"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
     }
     signingConfigs {
         create("shyniflexRelease") {

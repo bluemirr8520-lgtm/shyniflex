@@ -149,18 +149,26 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
 @Composable
 internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
     val modelIsTelevision = LocalContext.current.isTelevision()
-    val continuing = state.continueItems.filter { state.spoilerUnlocked || !it.isSpoiler }
-    val recent = state.recentItems.filter { state.spoilerUnlocked || !it.isSpoiler }
+    val continuing = remember(state.continueItems, state.spoilerUnlocked) {
+        state.continueItems.filter { state.spoilerUnlocked || !it.isSpoiler }
+    }
+    val recent = remember(state.recentItems, state.spoilerUnlocked) {
+        state.recentItems.filter { state.spoilerUnlocked || !it.isSpoiler }
+    }
+    val libraries = remember(state.libraries, state.spoilerUnlocked) {
+        state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler }
+    }
+    val recentByLibrary = remember(recent) { recent.groupBy { it.libraryId } }
     var selectedKey by rememberSaveable { mutableStateOf("") }
     var selectedShelf by rememberSaveable { mutableStateOf("continue") }
-    val all = continuing + recent
+    val hasMedia = continuing.isNotEmpty() || recent.isNotEmpty()
     val heroItem = continuing.firstOrNull { tvMediaKey(it) == selectedKey } ?: continuing.firstOrNull()
     val hero = state.continueDetails?.takeIf { heroItem != null && tvMediaKey(it) == tvMediaKey(heroItem) } ?: heroItem
     val shelfFocus = remember { FocusRequester() }
     // Run once as content arrives, never steal focus on background refreshes.
     var focusRequested by remember { mutableStateOf(false) }
-    LaunchedEffect(all.isNotEmpty()) {
-        if (modelIsTelevision && all.isNotEmpty() && !focusRequested) {
+    LaunchedEffect(hasMedia) {
+        if (modelIsTelevision && hasMedia && !focusRequested) {
             withFrameNanos { }
             shelfFocus.requestFocus()
             focusRequested = true
@@ -168,7 +176,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     }
     val restoreShelf = selectedShelf.takeIf { key ->
         if (key == "continue") continuing.isNotEmpty()
-        else recent.any { "recent-${it.libraryId}" == key }
+        else recentByLibrary.keys.any { "recent-$it" == key }
     } ?: if (continuing.isNotEmpty()) "continue" else recent.firstOrNull()?.let { "recent-${it.libraryId}" }
     BoxWithConstraints(Modifier.fillMaxSize().testTag("tv-home")) {
         val compact = maxWidth < 600.dp
@@ -227,8 +235,8 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                     }
                 }
             }
-            state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler }.forEach { library ->
-                val media = recent.filter { it.libraryId == library.id }
+            libraries.forEach { library ->
+                val media = recentByLibrary[library.id].orEmpty()
                 if (media.isNotEmpty()) item(key = "recent-${library.id}") {
                     TvShelf("최근 추가됨 · ${library.title}", media, model, onWatchOptions,
                         modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus) else Modifier,
@@ -264,13 +272,14 @@ private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
     onWatchOptions: (MediaItem) -> Unit, modifier: Modifier = Modifier,
     onSelect: (MediaItem) -> Unit, onClick: (MediaItem) -> Unit, wide: Boolean = false, restoreKey: String = "") {
     val fallback = remember { FocusRequester() }
+    val hasRestoreKey = remember(media, restoreKey) { media.any { tvMediaKey(it) == restoreKey } }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         LazyRow(modifier.focusRestorer(fallback).focusGroup(), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(media, key = ::tvMediaKey) { item ->
                 TvMediaCard(item, model, Modifier.width(if (wide) 200.dp else 114.dp)
-                    .then(if (tvMediaKey(item) == restoreKey || (media.none { tvMediaKey(it) == restoreKey } && item == media.first())) Modifier.focusRequester(fallback) else Modifier),
+                    .then(if (tvMediaKey(item) == restoreKey || (!hasRestoreKey && item == media.first())) Modifier.focusRequester(fallback) else Modifier),
                     wide = wide, onSelect = { onSelect(item) }, onClick = { onClick(item) },
                     onWatchOptions = { onWatchOptions(item) })
             }
@@ -285,7 +294,10 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
     val countRevision by remember(model) { model.state.map { it.seriesCountRevision }.distinctUntilChanged() }.collectAsState(0)
     val remaining by produceState<Int?>(null, item, countRevision) {
         value = null
-        if (item.type in setOf("show", "tv", "season")) value = model.seriesUnwatchedCount(item)
+        if (item.type in setOf("show", "tv", "season")) {
+            kotlinx.coroutines.delay(250)
+            value = model.seriesUnwatchedCount(item)
+        }
     }
     Column(modifier.tvFocus().onFocusChanged { focused = it.isFocused; if (it.isFocused) onSelect() }
         .onPreviewKeyEvent { event ->
@@ -337,13 +349,18 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
     var menu by remember { mutableStateOf<String?>(null) }
     val initialFocus = remember { FocusRequester() }
     var focusRequested by remember { mutableStateOf(false) }
-    val visibleItems = state.items.filter { state.spoilerUnlocked || !it.isSpoiler }
+    val visibleItems = remember(state.items, state.spoilerUnlocked) {
+        state.items.filter { state.spoilerUnlocked || !it.isSpoiler }
+    }
+    val visibleItemKeys = remember(state.items, state.spoilerUnlocked) {
+        visibleItems.mapTo(HashSet<String>(visibleItems.size), ::tvMediaKey)
+    }
     val grid = rememberLazyGridState()
     LibraryAutoLoad(grid, listOf(state.library?.id, state.libraryBrowseRevision, state.query,
         state.librarySort, state.libraryGenre, state.libraryYear, state.libraryContentType,
         state.libraryWatchFilter, state.spoilerUnlocked), state.items.size, visibleItems.size,
         state.total, state.busy, state.error != null, model::loadMore)
-    val restoreKey = focusedKey?.takeIf { key -> visibleItems.any { tvMediaKey(it) == key } }
+    val restoreKey = focusedKey?.takeIf { it in visibleItemKeys }
         ?: visibleItems.firstOrNull()?.let(::tvMediaKey)
     val modelIsTelevision = LocalContext.current.isTelevision()
     LaunchedEffect(state.busy, state.items.isNotEmpty()) {

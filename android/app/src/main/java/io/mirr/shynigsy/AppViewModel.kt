@@ -877,11 +877,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun posterHeaders(url: String): Map<String, String> = client?.headersFor(url) ?: emptyMap()
 
+    private var posterAccountDigest: Pair<String, String>? = null
+
     fun posterCacheKey(url: String): String {
         val scope = client?.token.orEmpty()
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(scope.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val digest = posterAccountDigest?.takeIf { it.first == scope }?.second
+            ?: java.security.MessageDigest.getInstance("SHA-256")
+                .digest(scope.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+                .also { posterAccountDigest = scope to it }
         return "$digest:$url"
     }
 }

@@ -1,6 +1,11 @@
 package io.mirr.shynigsy.data
 
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -50,18 +55,36 @@ class ShyniClient(
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
     private data class CachedItems(val at: Long, val items: List<MediaItem>, val total: Int)
     private val browseCache = ConcurrentHashMap<String, CachedItems>()
+    private val browseCacheGeneration = java.util.concurrent.atomic.AtomicLong()
+    @Synchronized private fun clearBrowseCache() {
+        browseCacheGeneration.incrementAndGet()
+        browseCache.clear()
+    }
+    @Synchronized private fun cacheBrowsePage(key: String, generation: Long, page: CachedItems): CachedItems {
+        if (generation != browseCacheGeneration.get()) throw CancellationException("목록 요청이 종료되었습니다.")
+        browseCache[key] = page
+        return page
+    }
     private data class CachedMediaInfo(val at: Long, val data: JSONObject)
     private val mediaInfoCache = ConcurrentHashMap<String, CachedMediaInfo>()
     private val seriesCountSlots = Semaphore(2)
     private val seriesCountGeneration = java.util.concurrent.atomic.AtomicLong()
     private val seriesCounts = ConcurrentHashMap<String, Pair<Long, Int>>()
     fun invalidateSeriesCounts() { seriesCountGeneration.incrementAndGet(); seriesCounts.clear() }
-    var token: String? = token
-        set(value) { if (field != value) { clearSpoilerGrant(); browseCache.clear(); mediaInfoCache.clear() }; field = value }
+    @Volatile var token: String? = token
+        set(value) { if (field != value) clearSpoilerGrant(); field = value }
 
-    private fun spoilerKey(): String = java.security.MessageDigest.getInstance("SHA-256")
-        .digest((origin.toString() + "\u0000" + token.orEmpty() + "\u0000" + deviceId).toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+    @Volatile private var spoilerIdentityCache: Pair<String?, String>? = null
+
+    private fun spoilerKey(): String {
+        val currentToken = token
+        spoilerIdentityCache?.takeIf { it.first == currentToken }?.let { return it.second }
+        val identity = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((origin.toString() + "\u0000" + currentToken.orEmpty() + "\u0000" + deviceId).toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        spoilerIdentityCache = currentToken to identity
+        return identity
+    }
 
     private fun spoilerGrant(): SpoilerAccessRegistry.Grant? =
         if (token.isNullOrBlank()) null else SpoilerAccessRegistry.get(spoilerKey())
@@ -69,7 +92,7 @@ class ShyniClient(
     val spoilerUnlocked: Boolean get() = spoilerGrant() != null
     val spoilerExpiresAtMs: Long get() = spoilerGrant()?.expiresAtMs ?: 0
 
-    fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); browseCache.clear(); mediaInfoCache.clear(); invalidateSeriesCounts() }
+    fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); clearBrowseCache(); mediaInfoCache.clear(); invalidateSeriesCounts() }
 
     fun absoluteUrl(path: String): String = resolve(path).toString()
 
@@ -109,7 +132,7 @@ class ShyniClient(
             throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.")
         }
         SpoilerAccessRegistry.put(identity, grant, seconds)
-        browseCache.clear()
+        clearBrowseCache()
         return parseSpoilerStatus(json).copy(available = true, unlocked = true)
     }
 
@@ -348,7 +371,7 @@ class ShyniClient(
     }
 
     /** Each public View supplies its own recent row, in the library picker's order. */
-    suspend fun recentlyAdded(libraries: List<Library>): List<MediaItem> {
+    suspend fun recentlyAdded(libraries: List<Library>): List<MediaItem> = withContext(Dispatchers.Default) {
         val requests = Semaphore(3)
         val recent = coroutineScope {
             libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }.distinctBy { it.id }.map { library ->
@@ -359,7 +382,7 @@ class ShyniClient(
                     // Both routes return a full, already sorted array. Cap locally;
                     // neither an offset nor a server-side limit is part of their contract.
                     val value = requests.withPermit { request(path, responseLimit = 16L * 1024 * 1024, spoiler = library.isSpoiler) }
-                    rows(value, "items", "results").asSequence()
+                    rowSequence(value, "items", "results")
                         .filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
                         .take(RECENT_ITEMS_PER_LIBRARY)
                         .map { row ->
@@ -375,14 +398,15 @@ class ShyniClient(
                 }
             }.awaitAll().flatten()
         }
-        return withProgress(recent)
+        withProgress(recent)
     }
 
     /** Movies/shows are full arrays in beta4; paginate them locally, never fake API offsets. */
     suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort = LibrarySort.TITLE_ASC,
         genre: String? = null, year: Int? = null,
         contentType: LibraryContentType = LibraryContentType.defaultFor(library),
-        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL): MediaPage {
+        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL): MediaPage = withContext(Dispatchers.Default) {
+        val generation = browseCacheGeneration.get()
         val normalizedQuery = query.trim()
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
         if (contentType !in LibraryContentType.availableFor(library)) throw ApiException("이 라이브러리에서 지원하지 않는 표시 종류입니다.")
@@ -409,12 +433,13 @@ class ShyniClient(
                 }
             }
             if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
-            CachedItems(System.currentTimeMillis(), watched, watched.size).also { browseCache[key] = it }
+            currentCoroutineContext().ensureActive()
+            cacheBrowsePage(key, generation, CachedItems(System.currentTimeMillis(), watched, watched.size))
         }
         val filtered = filteredCatalog(page.items, genre, year, watchFilter)
         val start = offset.coerceIn(0, filtered.items.size)
-        val visible = filtered.items.drop(start).take(PAGE_SIZE)
-        return filtered.copy(items = if (watchFilter == LibraryWatchFilter.ALL) withProgress(visible) else visible)
+        val visible = filtered.items.subList(start, minOf(start + PAGE_SIZE, filtered.items.size)).toList()
+        filtered.copy(items = if (watchFilter == LibraryWatchFilter.ALL) withProgress(visible) else visible)
     }
 
     private suspend fun browseCatalog(library: Library, contentType: LibraryContentType, sort: LibrarySort,
@@ -739,7 +764,7 @@ class ShyniClient(
         if (!result.optBoolean("ok") || result.isNull("watched") || result.optBoolean("watched") != watched) {
             throw ApiException("시청 상태 변경을 확인하지 못했습니다. 새로고침해 주세요.")
         }
-        browseCache.clear()
+        clearBrowseCache()
     }
 
     /** Explicit completion uses the actual part's metadata ID, not a merged View's representative. */
@@ -755,7 +780,7 @@ class ShyniClient(
         if (!result.optBoolean("ok") || result.booleanOrNull("watched") != true) {
             throw ApiException("시청 완료 저장을 확인하지 못했습니다.")
         }
-        browseCache.clear()
+        clearBrowseCache()
     }
 
     /** There is no public bulk endpoint: preflight all targets before bounded, per-episode writes. */
@@ -1229,14 +1254,16 @@ class ShyniClient(
 
     private fun Any.objectValue(): JSONObject = this as? JSONObject ?: throw ApiException("서버 응답 형식이 올바르지 않습니다.")
     private fun JSONObject.numberOrNull(key: String): Int? = if (isNull(key)) null else optInt(key).takeIf { it >= 0 }
-    private fun rows(value: Any, vararg keys: String): List<JSONObject> {
+    private fun rows(value: Any, vararg keys: String): List<JSONObject> = rowSequence(value, *keys).toList()
+
+    private fun rowSequence(value: Any, vararg keys: String): Sequence<JSONObject> {
         val array = when (value) {
             is JSONArray -> value
             is JSONObject -> (keys.asSequence() + sequenceOf("items", "results"))
                 .mapNotNull { value.optJSONArray(it) }.firstOrNull() ?: JSONArray()
             else -> JSONArray()
         }
-        return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+        return (0 until array.length()).asSequence().mapNotNull { array.optJSONObject(it) }
     }
 
     companion object {
