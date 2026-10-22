@@ -53,6 +53,7 @@ class ShyniClient(
     private val client = httpClient.newBuilder()
         .followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
+    private val singleAttemptClient by lazy { client.newBuilder().retryOnConnectionFailure(false).build() }
     private data class CachedItems(val at: Long, val items: List<MediaItem>, val total: Int)
     private val browseCache = ConcurrentHashMap<String, CachedItems>()
     private val browseCacheGeneration = java.util.concurrent.atomic.AtomicLong()
@@ -91,6 +92,10 @@ class ShyniClient(
 
     val spoilerUnlocked: Boolean get() = spoilerGrant() != null
     val spoilerExpiresAtMs: Long get() = spoilerGrant()?.expiresAtMs ?: 0
+    val spoilerRemainingMs: Long get() = if (token.isNullOrBlank()) 0 else SpoilerAccessRegistry.remainingMs(spoilerKey())
+    val spoilerLifetimeMs: Long get() = spoilerGrant()?.lifetimeMs ?: 0
+    val spoilerPlaybackReauthenticationFailed: Boolean get() =
+        !token.isNullOrBlank() && SpoilerAccessRegistry.failedReauthentication(spoilerKey())
 
     fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); clearBrowseCache(); mediaInfoCache.clear(); invalidateSeriesCounts() }
 
@@ -122,18 +127,110 @@ class ShyniClient(
             throw ApiException("스포일러 PIN을 입력해 주세요.")
         }
         val identity = spoilerKey()
-        val generation = SpoilerAccessRegistry.changes.value
-        val json = request("/spoiler/client/unlock", JSONObject().put("pin", value)).objectValue()
-        val grant = json.stringOrNull("token")?.takeIf { it.startsWith("spc_") && it.length <= 256 && !it.contains('\n') && !it.contains('\r') }
-            ?: throw ApiException("서버의 스포일러 표시 권한을 받지 못했습니다.")
-        val seconds = json.optLong("expires_in").takeIf { it > 0 }
-            ?: throw ApiException("스포일러 표시 권한의 만료 정보를 받지 못했습니다.")
-        if (identity != spoilerKey() || generation != SpoilerAccessRegistry.changes.value) {
-            throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.")
+        val unlock = SpoilerAccessRegistry.beginUnlock(identity)
+        val started = SpoilerAccessRegistry.started()
+        val pinChars = value.toCharArray()
+        try {
+            val json = request("/spoiler/client/unlock", JSONObject().put("pin", value)).objectValue()
+            currentCoroutineContext().ensureActive()
+            val (grant, seconds) = spoilerGrantResponse(json)
+            if (identity != spoilerKey() || !SpoilerAccessRegistry.completeUnlock(identity, unlock,
+                    grant, seconds, pinChars, started)) {
+                throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.", 403)
+            }
+            clearBrowseCache()
+            return parseSpoilerStatus(json).copy(available = true, unlocked = true)
+        } finally {
+            pinChars.fill('\u0000')
         }
-        SpoilerAccessRegistry.put(identity, grant, seconds)
-        clearBrowseCache()
-        return parseSpoilerStatus(json).copy(available = true, unlocked = true)
+    }
+
+    private fun spoilerGrantResponse(json: JSONObject): Pair<String, Long> {
+        val grant = json.stringOrNull("token")?.takeIf {
+            it.startsWith("spc_") && it.length <= 256 && !it.contains('\n') && !it.contains('\r')
+        } ?: throw ApiException("서버의 스포일러 표시 권한을 받지 못했습니다.")
+        val seconds = runCatching {
+            val value = json.opt("expires_in")
+            if (value !is Number) return@runCatching null
+            java.math.BigDecimal(value.toString()).longValueExact().takeIf { it > 0 }
+        }.getOrNull() ?: throw ApiException("스포일러 표시 권한의 만료 정보를 받지 못했습니다.")
+        return grant to seconds
+    }
+
+    /** Reauthenticate once, then obtain fresh contexts/tickets for this exact private source. */
+    suspend fun reauthenticateSpoilerPlayback(
+        current: PlaybackSpec,
+        positionMs: Long,
+        audioStreamIndex: Int? = current.selectedAudioStreamIndex,
+    ): PlaybackSpec {
+        val source = current.sourceItem
+        val stream = runCatching { current.url.toHttpUrl() }.getOrNull()
+        if (source == null || !source.isSpoiler || !source.playable || source.id != current.itemId ||
+            source.libraryId != current.libraryId || source.viewItemId != current.viewItemId ||
+            current.partId <= 0 || current.libraryId <= 0 || current.viewItemId?.let { it > 0 } != true ||
+            positionMs < 0 || (audioStreamIndex != null && audioStreamIndex < 0) ||
+            stream == null || !sameOrigin(stream)) {
+            throw ApiException("현재 스포일러 재생 정보를 확인할 수 없습니다.")
+        }
+        val identity = spoilerKey()
+        val accountToken = token
+        val attempt = SpoilerAccessRegistry.beginReauthentication(identity)
+            ?: throw ApiException("스포일러 PIN을 다시 입력해 주세요.", 403)
+        var ownedGrant = attempt.grant
+        fun requireCurrent() {
+            if (identity != spoilerKey() || accountToken != token ||
+                !SpoilerAccessRegistry.isCurrent(identity, ownedGrant)) {
+                throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.", 403)
+            }
+        }
+        fun requireSameSource(value: PlaybackSpec) {
+            val item = value.sourceItem
+            if (value.partId != current.partId || value.itemId != current.itemId ||
+                value.libraryId != current.libraryId || value.viewItemId != current.viewItemId ||
+                item == null || !item.isSpoiler || item.id != source.id || item.type != source.type ||
+                item.libraryId != source.libraryId || item.viewItemId != source.viewItemId) {
+                throw ApiException("스포일러 재생 파일이나 라이브러리 항목이 변경되었습니다.", 403)
+            }
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            requireCurrent()
+            val started = SpoilerAccessRegistry.started()
+            // No automatic transport retry: an uncertain PIN result requires explicit user action.
+            val body = JSONObject().put("pin", String(attempt.pin))
+            val json = try { request("/spoiler/client/unlock", body, singleAttempt = true).objectValue() }
+                finally { body.remove("pin") }
+            currentCoroutineContext().ensureActive()
+            requireCurrent()
+            val (grant, seconds) = spoilerGrantResponse(json)
+            ownedGrant = SpoilerAccessRegistry.completeReauthentication(identity, attempt, grant, seconds, started)
+                ?: throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.", 403)
+            clearBrowseCache()
+            val fresh = playback(source, current.partId)
+            currentCoroutineContext().ensureActive()
+            requireCurrent(); requireSameSource(fresh)
+            if (current.progressToken != null && fresh.progressToken == current.progressToken) {
+                throw ApiException("새 스포일러 재생 권한을 확인하지 못했습니다.", 403)
+            }
+            // Only delivery-mode hints come from the previous URL; no old ticket/context survives.
+            val result = renewPlayback(fresh.copy(url = current.url, conversionHeight = current.conversionHeight,
+                durationMs = current.durationMs.takeIf { it > 0 } ?: fresh.durationMs,
+                navigationQuery = current.navigationQuery), positionMs, audioStreamIndex)
+            currentCoroutineContext().ensureActive()
+            requireCurrent(); requireSameSource(result)
+            if (!SpoilerAccessRegistry.cacheReauthenticatedPin(identity, ownedGrant, attempt)) {
+                throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.", 403)
+            }
+            return result
+        } catch (error: Exception) {
+            if (identity == spoilerKey() && accountToken == token &&
+                SpoilerAccessRegistry.failReauthentication(identity, ownedGrant)) {
+                clearBrowseCache(); mediaInfoCache.clear(); invalidateSeriesCounts()
+            }
+            throw error
+        } finally {
+            SpoilerAccessRegistry.finishReauthentication(identity, attempt)
+        }
     }
 
     suspend fun lockSpoiler() {
@@ -1243,7 +1340,8 @@ class ShyniClient(
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, "UTF-8")
 
     private suspend fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true, method: String = "POST", responseLimit: Long? = null,
-        spoiler: Boolean = false, spoilerToken: String? = null, expectContinueResponse: Boolean = false): Any {
+        spoiler: Boolean = false, spoilerToken: String? = null, expectContinueResponse: Boolean = false,
+        singleAttempt: Boolean = false): Any {
         val url = resolve(path)
         if (!sameOrigin(url)) throw ApiException("다른 서버로 인증 정보를 전달할 수 없습니다.")
         val builder = Request.Builder().url(url).header("Accept", "application/json")
@@ -1258,7 +1356,7 @@ class ShyniClient(
             builder.header("X-Shyni-Spoiler", grant)
         }
         body?.let { builder.method(method, it.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
-        val call = client.newCall(builder.build())
+        val call = (if (singleAttempt) singleAttemptClient else client).newCall(builder.build())
         return suspendCancellableCoroutine { continuation ->
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {

@@ -598,7 +598,8 @@ class GestureControlsPlaybackTest {
     private fun withFixture(subtitles: Boolean, markers: List<PlaybackMarker> = emptyList(), invalidMedia: Boolean = false,
         block: (ActivityScenario<NativePlayerActivity>) -> Unit) {
         val context = instrumentation.targetContext
-        assertTrue("Instrumentation must target the isolated debug app", context.packageName.endsWith(".debug"))
+        assertTrue("Instrumentation must target an isolated debug app",
+            context.packageName.endsWith(".debug") || context.packageName.endsWith(".spoilerqa"))
         val keyguard = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         assertFalse("Unlock the device before checking real video gestures", keyguard.isKeyguardLocked)
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)

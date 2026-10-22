@@ -52,7 +52,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -134,6 +139,12 @@ class NativePlayerActivity : AppCompatActivity() {
     private val watchedAttemptAt = mutableMapOf<String, Long>()
     private val completionGates = mutableMapOf<String, PlaybackCompletionGate>()
     private var visible = false
+    private var activityStarted = false
+    private var spoilerReauthenticationJob: Job? = null
+    private var spoilerRotationJob: Job? = null
+    private var spoilerRecovery: ConversionRestore? = null
+    private val playbackAuthentication = PlaybackAuthenticationEpoch()
+    @Volatile private var progressDeliveryJob: Job? = null
     private var exiting = false
     private var refreshing = false
     private var resumeWhenVisible = true
@@ -167,7 +178,8 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private data class ProgressUpdate(val spec: PlaybackSpec, val position: Long, val duration: Long,
         val state: String, val watched: Long, val acknowledgement: CompletableDeferred<Boolean>? = null,
-        val thresholdAttempt: Boolean = false, val completionEligible: Boolean = false)
+        val thresholdAttempt: Boolean = false, val completionEligible: Boolean = false,
+        val authenticationEpoch: Long = 0)
 
     private data class ConversionRestore(val spec: PlaybackSpec, val position: Long, val playing: Boolean,
         val subtitle: SubtitleTrack?, val audio: PlaybackTrackPreference?, val text: PlaybackTrackPreference?,
@@ -177,6 +189,7 @@ class NativePlayerActivity : AppCompatActivity() {
         override fun run() {
             if (exiting || !visible) return
             if (closeLockedSpoilerPlayback()) return
+            ensureSpoilerPlaybackReauthentication()
             val active = player
             if (active != null && !refreshing && !gestures.isSeekGestureActive && active.reconcilePlaybackCompletion()) {
                 finishPlaybackToHome()
@@ -262,51 +275,69 @@ class NativePlayerActivity : AppCompatActivity() {
                 while (true) {
                     val update = updates.next() ?: break
                     val key = watchedKey(update.spec)
-                    val saved = try {
+                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch)) {
+                        update.acknowledgement?.complete(false)
+                        if (update.thresholdAttempt) watchedQueued.remove(key)
+                        continue
+                    }
+                    val delivery = progressScope.async(start = CoroutineStart.LAZY) {
                         deliverPlaybackProgress(update.acknowledgement, onSaved = {
-                            // Back/Home can already be visible when a slow POST
-                            // commits. Refresh partial viewing as well as EOF.
-                            if (update.state in setOf("paused", "stopped", "completed")) PlaybackCompletionSignals.notifyChanged()
+                            if (playbackAuthentication.isCurrent(update.authenticationEpoch) &&
+                                update.state in setOf("paused", "stopped", "completed")) PlaybackCompletionSignals.notifyChanged()
                         }) {
                             var committed = true
                             try {
                                 retryPlaybackProgress {
+                                    ensureProgressAuthentication(update)
                                     client.saveProgress(update.spec, update.position, update.duration, update.state, update.watched,
                                         completionEligible = update.completionEligible)
                                 }
-                                // Natural EOF leaves immediately. The final progress
-                                // may commit after Home's first refresh, even if the
-                                // separate watched write fails or was confirmed at 95%.
-                                if (update.state == "completed") PlaybackCompletionSignals.notifyChanged()
+                                if (update.state == "completed" && playbackAuthentication.isCurrent(update.authenticationEpoch))
+                                    PlaybackCompletionSignals.notifyChanged()
                             } catch (cancel: kotlinx.coroutines.CancellationException) {
                                 throw cancel
                             } catch (_: Exception) {
                                 committed = false
                             }
-                            // The server recalculates completion on every progress
-                            // write. Preserve this viewing's existing 95% behavior.
                             if (update.completionEligible) {
                                 try {
                                     retryPlaybackProgress {
+                                        ensureProgressAuthentication(update)
                                         client.markPlaybackWatched(update.spec.copy(durationMs = update.duration))
                                     }
-                                    if (watchedConfirmed.add(key)) PlaybackCompletionSignals.notifyChanged()
+                                    if (playbackAuthentication.isCurrent(update.authenticationEpoch) && watchedConfirmed.add(key))
+                                        PlaybackCompletionSignals.notifyChanged()
                                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                                     throw cancel
                                 } catch (_: Exception) {
-                                    watchedConfirmed.remove(key)
+                                    if (playbackAuthentication.isCurrent(update.authenticationEpoch)) watchedConfirmed.remove(key)
                                     committed = false
                                 }
                             }
-                            committed
+                            committed && playbackAuthentication.isCurrent(update.authenticationEpoch)
                         }
+                    }
+                    progressDeliveryJob = delivery
+                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch)) delivery.cancel()
+                    delivery.start()
+                    val saved = try {
+                        delivery.await()
+                    } catch (cancel: kotlinx.coroutines.CancellationException) {
+                        if (playbackAuthentication.isCurrent(update.authenticationEpoch)) throw cancel
+                        update.acknowledgement?.complete(false)
+                        false
                     } finally {
+                        if (progressDeliveryJob === delivery) progressDeliveryJob = null
                         if (update.thresholdAttempt) watchedQueued.remove(key)
                     }
+                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch)) continue
                     if (saved) syncErrorShown = false
                     else if (!syncErrorShown) {
                         syncErrorShown = true
-                        runOnUiThread { if (!isDestroyed && !exiting) toast("시청 상태를 서버에 저장하지 못했습니다.") }
+                        runOnUiThread {
+                            if (!isDestroyed && !exiting && playbackAuthentication.isCurrent(update.authenticationEpoch))
+                                toast("시청 상태를 서버에 저장하지 못했습니다.")
+                        }
                     }
                 }
             } finally { progressScope.cancel() }
@@ -570,6 +601,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun preparePlayback(autoStart: Boolean) {
         prepared = false
         releasePlayer()
+        playerView.visibility = View.VISIBLE
+        errorPanel.getChildAt(1).apply { visibility = View.VISIBLE; isEnabled = true }
         completionGate().seek(lastPosition)
         completed = false; prepared = false; errorPanel.visibility = View.GONE
         val created = MpvPlayer(this, client.playbackHeaders(spec), preferSoftwareDecode = spec.preferSoftwareDecode,
@@ -1035,8 +1068,13 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun closeLockedSpoilerPlayback(): Boolean {
         if (!::spec.isInitialized || !::client.isInitialized || spec.sourceItem?.isSpoiler != true || client.spoilerUnlocked) return false
+        if (activityStarted && spoilerRecovery != null && client.spoilerPlaybackReauthenticationFailed && !exiting) {
+            showSpoilerReauthenticationFailure()
+            return true
+        }
         if (!exiting) {
             exiting = true
+            cancelSpoilerPlaybackReauthentication()
             settleWatchTime(false)
             neighborsJob?.cancel(); conversionJob?.cancel()
             releasePlayer()
@@ -1044,6 +1082,122 @@ class NativePlayerActivity : AppCompatActivity() {
             finish()
         }
         return true
+    }
+
+    private fun ensureSpoilerPlaybackReauthentication() {
+        if (!activityStarted || exiting || !prepared || refreshing || conversionLoading || navigationLoading ||
+            spoilerRecovery != null || spec.sourceItem?.isSpoiler != true || player == null ||
+            player?.playbackState == Player.STATE_ENDED || spoilerReauthenticationJob?.isActive == true) return
+        val current = player
+        val currentSpec = spec
+        spoilerReauthenticationJob = scope.launch {
+            while (activityStarted && !exiting && player === current && prepared &&
+                spec.partId == currentSpec.partId && spec.libraryId == currentSpec.libraryId &&
+                spec.viewItemId == currentSpec.viewItemId && spec.sessionId == currentSpec.sessionId) {
+                if (refreshing || conversionLoading || navigationLoading) { delay(500); continue }
+                val remaining = client.spoilerRemainingMs
+                if (remaining <= 0) { closeLockedSpoilerPlayback(); return@launch }
+                val wait = SpoilerPlaybackReauthenticationPolicy.delayMs(remaining, client.spoilerLifetimeMs)
+                if (wait > 0) { delay(wait); continue }
+                reauthenticateSpoilerPlayback()
+                return@launch
+            }
+        }
+    }
+
+    private fun reauthenticateSpoilerPlayback() {
+        val active = player ?: return
+        if (!activityStarted || exiting || !prepared || refreshing || conversionLoading || navigationLoading ||
+            spoilerRotationJob?.isActive == true || spec.sourceItem?.isSpoiler != true) return
+        val wasPlaying = gestures.playWhenReadyBeforeSeek ?: active.playWhenReady
+        finishRemoteSeeking()
+        gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
+        capturePosition(); settleWatchTime(false)
+        val previous = ConversionRestore(spec, lastPosition, wasPlaying,
+            spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
+            selectedTrackPreference(C.TRACK_TYPE_AUDIO),
+            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+                selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
+            if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
+            lastDuration)
+        spoilerRecovery = previous
+        refreshing = true; conversionResumeWhenVisible = wasPlaying; resumeWhenVisible = wasPlaying
+        active.pause(); playerView.hideController(); hideLockControl(); updatePlaybackButtons()
+        val acknowledgement = CompletableDeferred<Boolean>()
+        submitProgress(ProgressUpdate(previous.spec, previous.position, previous.duration, "paused", watchedMs, acknowledgement))
+        spoilerRotationJob = scope.launch {
+            var rotation: Long? = null
+            try {
+                val flushBudget = SpoilerPlaybackReauthenticationPolicy.flushTimeoutMs(client.spoilerRemainingMs)
+                if (flushBudget > 0) withTimeoutOrNull(flushBudget) { acknowledgement.await() }
+                if (!activityStarted || exiting || player !== active || spoilerRecovery !== previous) return@launch
+                val epoch = playbackAuthentication.beginRotation()
+                rotation = epoch
+                progressDeliveryJob?.cancel()
+                neighborsJob?.cancel(); markersJob?.cancel()
+                subtitleJob?.cancel(); subtitleSelectionRevision++; subtitleTimeline = null
+                prepared = false
+                releasePlayer()
+                hideSpoilerPlaybackMedia()
+                showError("비공개 재생 권한을 다시 확인하고 있습니다…")
+                errorPanel.getChildAt(1).apply { visibility = View.GONE; isEnabled = false }
+                if (television) errorPanel.getChildAt(2).requestFocus()
+                val budget = SpoilerPlaybackReauthenticationPolicy.timeoutMs(client.spoilerRemainingMs)
+                if (budget <= 0) throw ApiException("비공개 재생 권한을 다시 확인해야 합니다.", 403)
+                val refreshed = withTimeoutOrNull(budget) {
+                    client.reauthenticateSpoilerPlayback(previous.spec, previous.position, previous.audioIndex)
+                } ?: throw ApiException("비공개 재생 권한 확인 시간이 초과되었습니다.")
+                if (!activityStarted || exiting || spoilerRecovery !== previous || !playbackAuthentication.isCurrent(epoch)) return@launch
+                if (refreshed.itemId != previous.spec.itemId || refreshed.partId != previous.spec.partId ||
+                    refreshed.libraryId != previous.spec.libraryId || refreshed.viewItemId != previous.spec.viewItemId ||
+                    refreshed.sourceItem?.isSpoiler != true) throw ApiException("비공개 재생 정보를 다시 확인해야 합니다.")
+                if (!playbackAuthentication.completeRotation(epoch)) return@launch
+                refreshing = false; conversionResumeWhenVisible = null
+                applyConversionPlayback(refreshed, previous)
+                spoilerRecovery = null
+                refreshPlaybackNeighbors(); refreshPlaybackMarkers()
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                if (activityStarted && !exiting && spoilerRecovery === previous &&
+                    (rotation == null || playbackAuthentication.isCurrent(rotation))) {
+                    if (!client.spoilerUnlocked && !client.spoilerPlaybackReauthenticationFailed) closeLockedSpoilerPlayback()
+                    else showSpoilerReauthenticationFailure()
+                }
+            } finally {
+                spoilerRotationJob = null
+                if (!exiting && !isDestroyed) updatePlaybackButtons()
+            }
+        }
+    }
+
+    private fun hideSpoilerPlaybackMedia() {
+        playerView.visibility = View.INVISIBLE
+        subtitleOverlay.subtitleText = ""; subtitleOverlay.visibility = View.INVISIBLE
+        segmentSkipButton.visibility = View.GONE
+        playerView.hideController(); hideLockControl()
+    }
+
+    private fun showSpoilerReauthenticationFailure() {
+        prepared = false; refreshing = false; conversionResumeWhenVisible = null
+        if (playbackAuthentication.captureProgress() != null) {
+            playbackAuthentication.beginRotation()
+            progressDeliveryJob?.cancel()
+        }
+        releasePlayer()
+        hideSpoilerPlaybackMedia()
+        showError("비공개 재생 권한을 다시 확인하지 못했습니다.\n라이브러리로 돌아가 PIN을 다시 입력해 주세요. 현재 위치는 유지했습니다.")
+        errorPanel.getChildAt(1).apply { visibility = View.GONE; isEnabled = false }
+        if (television) errorPanel.getChildAt(2).requestFocus()
+    }
+
+    private fun cancelSpoilerPlaybackReauthentication() {
+        spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
+        if (spoilerRotationJob?.isActive == true || spoilerRecovery != null) {
+            playbackAuthentication.beginRotation()
+            progressDeliveryJob?.cancel()
+        }
+        spoilerRotationJob?.cancel(); spoilerRotationJob = null
     }
 
     private fun refreshPlaybackNeighbors() {
@@ -1651,14 +1805,25 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun submitProgress(update: ProgressUpdate): Boolean {
+        val epoch = playbackAuthentication.captureProgress() ?: run {
+            update.acknowledgement?.complete(false)
+            return false
+        }
         val key = watchedKey(update.spec)
         val reached = completionGates[key]?.eligible == true || key in watchedReached
         if (reached) watchedReached.add(key)
         val firstThreshold = reached && key !in watchedConfirmed && watchedQueued.add(key)
-        val accepted = updates.submit(update.copy(thresholdAttempt = firstThreshold, completionEligible = reached),
+        val accepted = updates.submit(update.copy(thresholdAttempt = firstThreshold, completionEligible = reached,
+            authenticationEpoch = epoch),
             important = firstThreshold || update.acknowledgement != null || update.state in setOf("stopped", "completed"))
         if (!accepted && firstThreshold) watchedQueued.remove(key)
         return accepted
+    }
+
+    private suspend fun ensureProgressAuthentication(update: ProgressUpdate) {
+        currentCoroutineContext().ensureActive()
+        if (!playbackAuthentication.isCurrent(update.authenticationEpoch))
+            throw kotlinx.coroutines.CancellationException("Playback authentication changed")
     }
 
     private fun finishPlaybackToHome() {
@@ -1666,6 +1831,7 @@ class NativePlayerActivity : AppCompatActivity() {
         capturePosition()
         completionGate().finish()
         endingToHome = true; exiting = true; completed = true; resumeWhenVisible = false
+        cancelSpoilerPlaybackReauthentication()
         settleWatchTime(false)
         if (lastDuration > 0) lastPosition = lastDuration
         handler.removeCallbacks(ticker)
@@ -1696,6 +1862,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
         subtitleDialog?.dismiss(); subtitleDialog = null
         playerGestureActive = false
         if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
@@ -1714,6 +1881,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (exiting) return
         gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
         exiting = true; resumeWhenVisible = false
+        cancelSpoilerPlaybackReauthentication()
         handler.removeCallbacks(ticker)
         capturePosition(); settleWatchTime(false)
         val acknowledgement = CompletableDeferred<Boolean>()
@@ -1722,6 +1890,24 @@ class NativePlayerActivity : AppCompatActivity() {
         if (!sent) acknowledgement.complete(false)
         player?.pause()
         finishAfterProgress(acknowledgement)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        activityStarted = true
+        if (::spec.isInitialized && ::client.isInitialized) ensureSpoilerPlaybackReauthentication()
+    }
+
+    override fun onStop() {
+        val interruptedSpoilerRotation = spoilerRecovery != null || spoilerRotationJob?.isActive == true
+        activityStarted = false
+        cancelSpoilerPlaybackReauthentication()
+        if (interruptedSpoilerRotation && ::spec.isInitialized && ::client.isInitialized &&
+            spec.sourceItem?.isSpoiler == true) {
+            client.clearSpoilerGrant()
+            closeLockedSpoilerPlayback()
+        }
+        super.onStop()
     }
 
     override fun onResume() {

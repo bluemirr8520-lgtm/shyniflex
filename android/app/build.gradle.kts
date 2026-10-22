@@ -24,8 +24,8 @@ android {
         applicationId = "io.mirr.shyniflex"
         minSdk = 26
         targetSdk = 36
-        versionCode = 26
-        versionName = "1.0.25"
+        versionCode = 27
+        versionName = "1.0.26"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
     }
@@ -50,6 +50,10 @@ android {
             isMinifyEnabled = false
             isShrinkResources = false
         }
+    }
+    // Only the isolated loopback fixture app may use a local HTTP test server.
+    if (providers.gradleProperty("shyniflexDebugApplicationIdSuffix").orNull == ".spoilerqa") {
+        sourceSets.getByName("debug").manifest.srcFile("src/spoilerqa/AndroidManifest.xml")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
