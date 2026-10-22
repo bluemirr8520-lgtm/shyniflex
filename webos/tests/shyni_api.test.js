@@ -141,17 +141,39 @@ test('legacy webOS playback uses a Shyni video transcode ticket, scoped subtitle
   assert.equal(playback.playMethod, 'Transcode');
   assert.equal(playback.url, 'https://media.example.test/transcode/90?ticket=transcode-ticket&mode=video&max_height=1080');
   assert.equal(playback.resumePositionMs, 300000);
+  assert.equal(playback.requestedStartPositionMs, 300000);
   assert.equal(playback.subtitles.length, 1);
   assert.match(playback.subtitles[0].url, /\/subtitles\/track\/4\.vtt\?library_view_id=8&view_item_id=501&ticket=subtitle-ticket$/);
   assert.match(calls[1].url, /\/playback\/transcode-ticket\/90\?library_view_id=8&view_item_id=501&mode=video$/);
   assert.match(calls[2].url, /\/stream-ticket\/90\?library_view_id=8&view_item_id=501$/);
 
+  response(200, {
+    session_id: 'hls-session', playlist: '/transcode/hls/hls-session/index.m3u8', segment_format: 'mpegts'
+  });
+  response(200, '#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:6.0,\nseg00000.ts?ticket=transcode-ticket\n', {
+    'content-type': 'application/vnd.apple.mpegurl'
+  });
+  playback = await client.preparePlayback(playback);
+  assert.equal(playback.directUrl, '');
+  assert.equal(playback.hlsUrl, 'https://media.example.test/transcode/hls/hls-session/index.m3u8?ticket=transcode-ticket');
+  assert.equal(playback.deliveryMode, 'hls-mpegts');
+  assert.equal(playback.streamStartPositionMs, 300000);
+  assert.equal(playback.resumePositionMs, 0);
+  assert.match(calls[5].url, /\/transcode\/90\/hls\?.*mode=video/);
+  assert.match(calls[5].url, /start_ms=300000/);
+  assert.match(calls[5].url, /segment_format=mpegts/);
+
   response(200, { ok: true });
   await client.reportProgress(playback, { positionMs: 420000, durationMs: 7200000, isPaused: false });
-  var progress = JSON.parse(calls[5].body);
+  var progress = JSON.parse(calls[7].body);
   assert.equal(progress.state, 'playing');
   assert.equal(progress.position_ms, 420000);
   assert.equal(progress.delivery_mode, 'server_proxy');
+
+  response(200, { ok: true });
+  await client.stopTranscode(playback);
+  assert.equal(calls[8].method, 'DELETE');
+  assert.equal(calls[8].url, 'https://media.example.test/transcode/hls/hls-session');
 });
 
 test('completed playback is reported as a completion candidate', async function () {

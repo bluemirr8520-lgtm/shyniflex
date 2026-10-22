@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.0.1';
   var PRODUCT = 'ShyniFlex webOS';
   var PLEX_TV_URL = 'https://plex.tv';
   var PLEX_AUTH_URL = 'https://plex.tv/link/';
@@ -1629,12 +1629,18 @@
                 var duration = number(selected.duration_ms, 0) || number(selected.duration_sec, 0) * 1000 || number(progress && progress.duration_ms, 0) || number(item.durationMs, 0);
                 var watched = progress && (bool(progress.completed || progress.watched) || text(progress.state).toLowerCase() === 'completed');
                 var resume = watched ? 0 : number(progress && progress.position_ms, number(item.resumePositionMs, 0));
+                var requestedStart = Object.prototype.hasOwnProperty.call(options, 'startTimeSeconds')
+                  ? Math.max(0, Math.round(number(options.startTimeSeconds, 0) * 1000))
+                  : resume;
                 return { serverType: 'shyni', itemId: item.id, libraryId: item.libraryId, viewItemId: item.viewItemId,
                   partId: String(partId), url: streamUrl, directUrl: streamUrl, hlsUrl: '', fallbackUrl: '',
                   sources: [{ kind: 'direct', url: streamUrl, mimeType: 'video/mp4', playMethod: compatibility ? 'Transcode' : 'DirectPlay' }],
                   mimeType: 'video/mp4', subtitles: subtitles, durationMs: duration, resumePositionMs: resume,
                   playMethod: compatibility ? 'Transcode' : 'DirectPlay', sessionId: sessionId,
                   progressToken: text(decision.playback_context_token), decision: compatibility ? 'video_transcode' : text(decision.decision, 'direct_play'),
+                  transcodeTicket: compatibility ? ticket : '', requestedStartPositionMs: requestedStart,
+                  streamStartPositionMs: 0, maxVideoHeight: Math.min(1080, number(options.maxVideoHeight, 1080)),
+                  selectedAudioStreamIndex: number(decision.selected_audio_stream_index, -1),
                   sourceItem: item };
               });
           });
@@ -2569,8 +2575,100 @@
     return /[?&]X-Plex-Token=/.test(resolved) ? resolved : tokenizedUrl(connection, resolved);
   }
 
+  function waitFor(milliseconds) {
+    return new global.Promise(function (resolve) {
+      global.setTimeout(resolve, Math.max(0, number(milliseconds, 0)));
+    });
+  }
+
+  function shyniHlsManifestReady(body) {
+    var lines = text(body).replace(/^\uFEFF/, '').trim().split(/\r?\n/);
+    if (lines[0] !== '#EXTM3U') { return false; }
+    if (lines.some(function (line) { return /^#EXT-X-(?:MAP:|MEDIA:)/.test(line); })) {
+      throw new ApiError('이 TV에서 지원하지 않는 HLS 형식입니다.', 0, '', 'shyni_hls_unsupported');
+    }
+    return lines.some(function (line) { return /^#EXTINF:/.test(line); }) &&
+      lines.some(function (line) { return line && line.charAt(0) !== '#'; });
+  }
+
+  function prepareShyniHls(connection, playback) {
+    if (!playback || playback.playMethod !== 'Transcode' || !playback.partId || !playback.transcodeTicket) {
+      return global.Promise.resolve(playback);
+    }
+    var context = {};
+    var startMs = Math.max(0, number(playback.requestedStartPositionMs, playback.resumePositionMs));
+    if (playback.progressToken) {
+      context.playback_context_token = playback.progressToken;
+    } else {
+      context.library_view_id = playback.libraryId;
+      context.view_item_id = playback.viewItemId;
+    }
+    context.mode = 'video';
+    context.start_ms = Math.round(startMs);
+    context.max_height = Math.min(1080, Math.max(480, number(playback.maxVideoHeight, 1080)));
+    context.segment_format = 'mpegts';
+    context.client_session_id = playback.sessionId;
+    if (number(playback.selectedAudioStreamIndex, -1) >= 0) {
+      context.audio_stream_index = number(playback.selectedAudioStreamIndex, -1);
+    }
+    return request(connection, 'POST', '/transcode/' + encodeURIComponent(playback.partId) + '/hls', {
+      query: context, body: {}, timeout: 30000
+    }).then(function (created) {
+      created = created || {};
+      var sessionId = text(created.session_id || created.sessionId);
+      var playlist = text(created.playlist || created.playlist_url || created.url);
+      if (!sessionId || !playlist) {
+        throw new ApiError('TV용 HLS 재생 정보를 받지 못했습니다.', 0, '/transcode/hls', 'missing_hls_session');
+      }
+      playlist = shyniAbsolute(connection, playlist);
+      if (!sameOrigin(playlist, connection.baseUrl)) {
+        throw new ApiError('HLS 재생 서버 주소가 일치하지 않습니다.', 0, '', 'shyni_hls_origin');
+      }
+      playlist = appendQuery(playlist, { ticket: playback.transcodeTicket });
+      var attempts = 0;
+      function readManifest() {
+        attempts += 1;
+        return request(connection, 'GET', playlist, {
+          rawText: true, responseInfo: true, maxResponseBytes: 262144,
+          accept: 'application/vnd.apple.mpegurl', timeout: 12000
+        }).then(function (response) {
+          if (!sameOrigin(response.url, connection.baseUrl)) {
+            throw new ApiError('HLS 재생 서버 주소가 일치하지 않습니다.', 0, '', 'shyni_hls_origin');
+          }
+          if (shyniHlsManifestReady(response.body)) { return response.url; }
+          if (attempts >= 20) {
+            throw new ApiError('TV용 영상 조각 준비 시간이 초과되었습니다.', 0, '', 'shyni_hls_empty');
+          }
+          return waitFor(500).then(readManifest);
+        }).catch(function (error) {
+          if (attempts >= 20 || (error && error.code === 'shyni_hls_unsupported')) { throw error; }
+          return waitFor(500).then(readManifest);
+        });
+      }
+      return readManifest().then(function (readyUrl) {
+        playback.url = readyUrl;
+        playback.directUrl = '';
+        playback.hlsUrl = readyUrl;
+        playback.fallbackUrl = readyUrl;
+        playback.sources = [{ kind: 'hls', url: readyUrl,
+          mimeType: 'application/vnd.apple.mpegurl', playMethod: 'Transcode' }];
+        playback.mimeType = 'application/vnd.apple.mpegurl';
+        playback.hlsSessionId = sessionId;
+        playback.deliveryMode = 'hls-mpegts';
+        playback.streamStartPositionMs = startMs;
+        playback.resumePositionMs = 0;
+        return playback;
+      });
+    }).catch(function (error) {
+      if (error && /^shyni_hls_/.test(error.code || '')) { throw error; }
+      throw new ApiError('Shyni TV 호환 영상을 준비하지 못했습니다.' +
+        (error && error.status ? ' (HTTP ' + error.status + ')' : ''),
+      number(error && error.status, 0), '', 'shyni_hls_prepare');
+    });
+  }
+
   function preparePlayback(connection, playback) {
-    if (connection.type === 'shyni') { return global.Promise.resolve(playback); }
+    if (connection.type === 'shyni') { return prepareShyniHls(connection, playback); }
     if (!playback || connection.type !== 'plex' || playback.playMethod === 'DirectPlay') {
       return global.Promise.resolve(playback);
     }
@@ -2613,7 +2711,12 @@
   }
 
   function stopTranscode(connection, playback) {
-    if (connection.type === 'shyni') { return global.Promise.resolve(null); }
+    if (connection.type === 'shyni') {
+      if (!playback || !playback.hlsSessionId) { return global.Promise.resolve(null); }
+      return request(connection, 'DELETE', '/transcode/hls/' + encodeURIComponent(playback.hlsSessionId), {
+        timeout: 5000
+      }).catch(function () { return null; });
+    }
     if (!playback || connection.type !== 'plex' || !playback.sessionId) { return global.Promise.resolve(null); }
     return request(connection, 'GET', '/video/:/transcode/universal/stop', {
       query: { session: playback.sessionId }, timeout: 5000

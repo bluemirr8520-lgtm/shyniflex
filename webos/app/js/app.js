@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.0.1';
   var STORAGE = {
     connection: 'shyniflex.webos.connection.v1',
     libraryOrder: 'shyniflex.webos.library-order.v1',
@@ -296,7 +296,22 @@
     if (!error) {
       return '알 수 없는 오류가 발생했습니다.';
     }
-    return text(error.userMessage || error.message || error.statusText || error, '요청에 실패했습니다.');
+    if (typeof error === 'string') { return error; }
+    var message = error.userMessage || error.message || error.statusText;
+    if (message && typeof message !== 'object') { return text(message, '요청에 실패했습니다.'); }
+    if (number(error.code, 0) === 4 || error.name === 'source_not_supported') {
+      return 'TV가 이 영상 형식을 지원하지 않습니다.';
+    }
+    if (number(error.code, 0) === 3 || error.name === 'decode') {
+      return 'TV가 영상 데이터를 해독하지 못했습니다.';
+    }
+    if (number(error.code, 0) === 2 || error.name === 'network') {
+      return '영상 데이터를 받는 중 네트워크 오류가 발생했습니다.';
+    }
+    if (error.name === 'startup_timeout') {
+      return '영상이 시작되지 않아 재생을 중단했습니다.';
+    }
+    return '재생 요청을 처리하지 못했습니다.';
   }
 
   function setNetworkStatus(label, isError) {
@@ -1990,6 +2005,8 @@
       hlsUrl: hlsUrl,
       type: text(firstValue(result, ['mimeType', 'type'], directSource ? directSource.mimeType : '')),
       startTime: Math.max(0, startTime),
+      positionOffset: Math.max(0, number(result.streamStartPositionMs, 0) / 1000),
+      durationHint: Math.max(0, number(result.durationMs, 0) / 1000),
       subtitleUrl: subtitleUrl,
       subtitles: subtitleList,
       selectedSubtitle: preferredSubtitle,
@@ -2009,9 +2026,21 @@
   }
 
   function updateProgressUi(progress) {
-    refs.currentTime.textContent = formatTime(progress.position);
-    refs.duration.textContent = formatTime(progress.duration);
-    refs.timeline.value = String(Math.round(clamp(progress.percent, 0, 1) * 1000));
+    var offset = state.playback ? number(state.playback.positionOffset, 0) : 0;
+    var position = Math.max(0, number(progress.position, 0) + offset);
+    var duration = state.playback && state.playback.durationHint > 0
+      ? state.playback.durationHint
+      : Math.max(0, number(progress.duration, 0) + offset);
+    refs.currentTime.textContent = formatTime(position);
+    refs.duration.textContent = formatTime(duration);
+    refs.timeline.value = String(Math.round(clamp(duration > 0 ? position / duration : progress.percent, 0, 1) * 1000));
+    if (state.playerState === 'buffering' && !progress.paused && number(progress.position, 0) > 0 && refs.video.readyState >= 3) {
+      state.playerState = 'playing';
+      refs.playerView.setAttribute('data-playback-state', 'playing');
+      setNetworkStatus('재생 중', false);
+      setPlayerError('');
+      showOsd(false);
+    }
     if (state.playback && shouldReportPlaybackProgress(state.playbackStartReported, state.playerState)) {
       reportPlayback(progress.paused ? 'paused' : 'playing', progress, false);
     }
@@ -2029,9 +2058,11 @@
     var playbackAtCall = state.playback;
     var isInitialPlayingReport = playState === 'playing' && !state.playbackStartReported;
     progress = progress || state.player.getProgress();
+    var positionOffset = state.playback ? number(state.playback.positionOffset, 0) : 0;
+    var durationHint = state.playback ? number(state.playback.durationHint, 0) : 0;
     var overrides = {
-      positionMs: Math.round(number(progress.position, 0) * 1000),
-      durationMs: Math.round(number(progress.duration, 0) * 1000),
+      positionMs: Math.round((number(progress.position, 0) + positionOffset) * 1000),
+      durationMs: Math.round((durationHint > 0 ? durationHint : number(progress.duration, 0) + positionOffset) * 1000),
       isPaused: playState === 'paused',
       playMethod: state.playback.session && state.playback.session.playMethod,
       eventName: progress.eventName || (playState === 'paused' ? 'Pause' : 'TimeUpdate')
@@ -2212,7 +2243,8 @@
       state.playbackStartReported = false;
       state.playerState = 'loading';
       refs.playerTitle.textContent = playback.title;
-      refs.playbackMode.textContent = result.playMethod === 'Transcode' ? 'Shyni 호환 변환 · 1080p' :
+      refs.playbackMode.textContent = result.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :
+        result.playMethod === 'Transcode' ? 'Shyni 호환 변환 · 1080p' :
         (result.playMethod === 'DirectStream' ? '호환 스트리밍 · 영상 원본 유지' : '직접 재생');
       refs.playerView.classList.remove('hidden');
       refs.appHeader.classList.add('hidden');
@@ -3717,8 +3749,12 @@
     refreshLoginFieldStates();
     refs.timeline.addEventListener('change', function () {
       var progress = state.player.getProgress();
-      if (progress.duration > 0) {
-        state.player.seekTo(progress.duration * number(refs.timeline.value, 0) / 1000);
+      var offset = state.playback ? number(state.playback.positionOffset, 0) : 0;
+      var duration = state.playback && state.playback.durationHint > 0
+        ? state.playback.durationHint
+        : progress.duration + offset;
+      if (duration > 0) {
+        state.player.seekTo(Math.max(0, duration * number(refs.timeline.value, 0) / 1000 - offset));
       }
       showOsd(false);
     });
@@ -3950,7 +3986,8 @@
         if (playState === 'buffering') { setPlayerError('영상 데이터를 기다리고 있습니다…'); }
         if (state.playback && state.playback.session && (details.attempt === 'hls-native' || details.attempt === 'hls-js')) {
           if (state.playback.session.playMethod === 'DirectPlay') { state.playback.session.playMethod = 'Transcode'; }
-          refs.playbackMode.textContent = state.playback.session.playMethod === 'DirectStream' ? '호환 스트리밍 · 영상 원본 유지' : '호환 변환 · H.264/AAC';
+          refs.playbackMode.textContent = state.playback.session.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :
+            state.playback.session.playMethod === 'DirectStream' ? '호환 스트리밍 · 영상 원본 유지' : '호환 변환 · H.264/AAC';
         }
         if (playState === 'playing') {
           setNetworkStatus('재생 중', false);
