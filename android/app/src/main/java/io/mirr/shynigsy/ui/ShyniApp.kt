@@ -95,7 +95,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -786,24 +785,12 @@ internal fun WatchedOptionsDialog(item: MediaItem, onDismiss: () -> Unit, onSetW
             Column(Modifier.padding(4.dp)) {
                 TextButton(onClick = { onSetWatched(true) },
                     shape = androidx.compose.ui.graphics.RectangleShape, contentPadding = PaddingValues(horizontal = 12.dp),
-                    modifier = Modifier.fillMaxWidth().height(48.dp).tvOnlyFocus().testTag("watched-mark-seen")
-                        .semantics { selected = item.watched }) {
-                    Box(Modifier.size(16.dp)) {
-                        if (item.watched) Icon(Icons.Rounded.Check, null,
-                            Modifier.fillMaxSize().testTag("watched-seen-check"))
-                    }
-                    Spacer(Modifier.width(8.dp))
+                    modifier = Modifier.fillMaxWidth().height(48.dp).tvOnlyFocus().testTag("watched-mark-seen")) {
                     Text("보았음", style = MaterialTheme.typography.labelLarge, fontSize = 13.sp)
                 }
                 TextButton(onClick = { onSetWatched(false) },
                     shape = androidx.compose.ui.graphics.RectangleShape, contentPadding = PaddingValues(horizontal = 12.dp),
-                    modifier = Modifier.fillMaxWidth().height(48.dp).tvOnlyFocus().testTag("watched-mark-unseen")
-                        .semantics { selected = !item.watched }) {
-                    Box(Modifier.size(16.dp)) {
-                        if (!item.watched) Icon(Icons.Rounded.Check, null,
-                            Modifier.fillMaxSize().testTag("watched-unseen-check"))
-                    }
-                    Spacer(Modifier.width(8.dp))
+                    modifier = Modifier.fillMaxWidth().height(48.dp).tvOnlyFocus().testTag("watched-mark-unseen")) {
                     Text("보지 않음", style = MaterialTheme.typography.labelLarge, fontSize = 13.sp)
                 }
                 TextButton(onClick = onDismiss,
@@ -849,12 +836,13 @@ private fun SectionTitle(title: String) {
 }
 
 @Composable
-private fun WatchedBadge(modifier: Modifier = Modifier) {
+internal fun WatchedBadge(modifier: Modifier = Modifier, compact: Boolean = false) {
     Surface(modifier = modifier, color = Navy.copy(alpha = 0.92f), shape = RoundedCornerShape(8.dp)) {
-        Row(Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+        Row(Modifier.padding(horizontal = if (compact) 4.dp else 7.dp, vertical = if (compact) 2.dp else 5.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            Icon(Icons.Rounded.Check, null, tint = Mint, modifier = Modifier.size(14.dp))
-            Text("보았음", color = Mint, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+            Icon(Icons.Rounded.Check, null, tint = Mint, modifier = Modifier.size(if (compact) 12.dp else 14.dp))
+            Text("보았음", color = Mint, style = MaterialTheme.typography.labelSmall,
+                fontSize = if (compact) 10.sp else 11.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }

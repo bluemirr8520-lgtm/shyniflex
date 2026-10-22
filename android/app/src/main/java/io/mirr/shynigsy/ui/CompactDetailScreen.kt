@@ -1,6 +1,7 @@
 package io.mirr.shynigsy.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -23,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -108,8 +110,13 @@ internal fun CompactDetailContent(
         contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item(key = "heading") {
             if (item.playable) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                artwork(item, Modifier.width(if (item.type == "episode") 112.dp else 68.dp)
-                    .aspectRatio(if (item.type == "episode") 16f / 9f else 2f / 3f))
+                Box(Modifier.width(if (item.type == "episode") 112.dp else 68.dp)
+                    .aspectRatio(if (item.type == "episode") 16f / 9f else 2f / 3f)
+                    .testTag("compact-detail-art")) {
+                    artwork(item, Modifier.fillMaxSize())
+                    if (item.watched) WatchedBadge(Modifier.align(Alignment.TopEnd).padding(2.dp)
+                        .testTag("compact-detail-watched-${compactMediaIdentity(item)}"), compact = true)
+                }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(item.title, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("compact-detail-title"))

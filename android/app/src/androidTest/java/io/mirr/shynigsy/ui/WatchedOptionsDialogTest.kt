@@ -5,8 +5,6 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotSelected
-import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -31,9 +29,11 @@ class WatchedOptionsDialogTest {
             MaterialTheme { WatchedOptionsDialog(MediaItem(1, 7, "영화", "movie"), onDismiss = {},
                 onSetWatched = { watched = it; writes++ }) }
         }
-        screen.onNodeWithTag("watched-mark-seen").assertTextEquals("보았음").assertIsNotSelected().assertIsEnabled()
-        screen.onNodeWithTag("watched-mark-unseen").assertTextEquals("보지 않음").assertIsSelected().assertIsEnabled()
-        screen.onNodeWithTag("watched-unseen-check", useUnmergedTree = true).assertExists()
+        screen.onNodeWithTag("watched-mark-seen").assertTextEquals("보았음").assertIsEnabled()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+        screen.onNodeWithTag("watched-mark-unseen").assertTextEquals("보지 않음").assertIsEnabled()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+        screen.onNodeWithTag("watched-unseen-check", useUnmergedTree = true).assertDoesNotExist()
         screen.onNodeWithTag("watched-seen-check", useUnmergedTree = true).assertDoesNotExist()
         screen.onNodeWithTag("watched-cancel").assertTextEquals("취소")
             .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
@@ -49,9 +49,11 @@ class WatchedOptionsDialogTest {
             MaterialTheme { WatchedOptionsDialog(MediaItem(2, 7, "시리즈", "show", watched = true),
                 onDismiss = {}, onSetWatched = { watched = it }) }
         }
-        screen.onNodeWithTag("watched-mark-seen").assertTextEquals("보았음").assertIsSelected().assertIsEnabled()
-        screen.onNodeWithTag("watched-mark-unseen").assertTextEquals("보지 않음").assertIsNotSelected().assertIsEnabled()
-        screen.onNodeWithTag("watched-seen-check", useUnmergedTree = true).assertExists()
+        screen.onNodeWithTag("watched-mark-seen").assertTextEquals("보았음").assertIsEnabled()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+        screen.onNodeWithTag("watched-mark-unseen").assertTextEquals("보지 않음").assertIsEnabled()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+        screen.onNodeWithTag("watched-seen-check", useUnmergedTree = true).assertDoesNotExist()
         screen.onNodeWithTag("watched-unseen-check", useUnmergedTree = true).assertDoesNotExist()
         screen.onNodeWithTag("watched-cancel").assertTextEquals("취소")
             .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
@@ -69,7 +71,8 @@ class WatchedOptionsDialogTest {
                 onDismiss = { dismissals++ }, onSetWatched = { writes += it }) }
         }
         screen.runOnIdle { assertEquals(emptyList<Boolean>(), writes); assertEquals(0, dismissals) }
-        screen.onNodeWithTag("watched-mark-seen").assertIsSelected().assertIsEnabled().performClick()
+        screen.onNodeWithTag("watched-mark-seen").assertIsEnabled()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected)).performClick()
         screen.runOnIdle { assertEquals(listOf(true), writes); assertEquals(0, dismissals) }
         screen.onNodeWithTag("watched-cancel")
             .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected)).performClick()

@@ -77,6 +77,8 @@ internal fun CompactEpisodeRow(
         Box(Modifier.width(112.dp).aspectRatio(16f / 9f).clip(shape)
             .testTag("compact-episode-art-${compactMediaIdentity(item)}")) {
             artwork(item, Modifier.fillMaxSize())
+            if (item.watched) WatchedBadge(Modifier.align(Alignment.TopEnd).padding(2.dp)
+                .testTag("compact-episode-watched-${compactMediaIdentity(item)}"), compact = true)
             if (progress != null) LinearProgressIndicator(progress = { progress },
                 modifier = Modifier.fillMaxWidth().height(3.dp).align(Alignment.BottomCenter))
         }
@@ -99,7 +101,7 @@ internal fun CompactEpisodeRow(
                 modifier = Modifier.heightIn(min = 48.dp)
                     .testTag("compact-episode-watch-${compactMediaIdentity(item)}")
                     .semantics { contentDescription = "${item.title} 시청 상태" })
-        } else if (item.watched) Text("보았음", fontSize = 11.sp, color = accent)
+        }
     }
 }
 

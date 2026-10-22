@@ -59,13 +59,19 @@ class CompactDetailScreenTest {
     @Test fun seriesOpensWithThumbnailRowsAndEpisodeTapOpensItsExactDetail() {
         var opened: MediaItem? = null
         var plays = 0
-        render(series(), onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
+        val detail = mutableStateOf(series())
+        render(detail.value, detailState = detail, onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-title").assertTextEquals(show.title)
         saveScreenshot("compact-episode-list.png")
         screen.onNodeWithTag(artTag(show), useUnmergedTree = true).assertDoesNotExist()
         val art = screen.onNodeWithTag("compact-episode-art-${compactMediaIdentity(episode)}", useUnmergedTree = true)
             .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertEquals("Episode artwork is a horizontal thumbnail", 16f / 9f, art.width / art.height, .02f)
+        screen.onNodeWithTag(episodeBadgeTag(episode), useUnmergedTree = true).assertDoesNotExist()
+        screen.runOnIdle { detail.value = series(listOf(episode.copy(watched = true, resumeMs = 0))) }
+        assertBadgeInsideArtwork(episodeBadgeTag(episode), "compact-episode-art-${compactMediaIdentity(episode)}")
+        screen.runOnIdle { detail.value = series() }
+        screen.onNodeWithTag(episodeBadgeTag(episode), useUnmergedTree = true).assertDoesNotExist()
         screen.onNodeWithTag(rowTag(episode)).performClick()
         screen.runOnIdle {
             assertEquals("The episode detail retains the authorized View and resume snapshot", episode, opened)
@@ -109,11 +115,22 @@ class CompactDetailScreenTest {
     @Test fun resolutionSelectionDoesNotPlayAndPlayActionsKeepTheOriginalEpisode() {
         val selected = mutableStateOf<Int?>(null)
         val plays = mutableListOf<Pair<MediaItem, Boolean>>()
-        render(MediaDetails(episode), versions = listOf(
+        val detail = mutableStateOf(MediaDetails(episode))
+        render(detail.value, detailState = detail, versions = listOf(
             MediaVersion(901, "합성 고해상도", resolution = "2160p"),
             MediaVersion(902, "합성 일반 해상도", resolution = "1080p")), selectedPart = selected,
             onVersion = { selected.value = it }, onPlay = { item, restart -> plays.add(item to restart) })
         saveScreenshot("compact-resolution-detail.png")
+        screen.onNodeWithTag(detailBadgeTag(episode), useUnmergedTree = true).assertDoesNotExist()
+        screen.runOnIdle { detail.value = MediaDetails(episode.copy(watched = true, resumeMs = 0)) }
+        assertBadgeInsideArtwork(detailBadgeTag(episode), "compact-detail-art")
+        screen.onNodeWithTag("compact-detail-play").assertTextEquals("다시 재생")
+        val watchedMovie = MediaItem(31, 7, "합성 영화", "movie", watched = true)
+        screen.runOnIdle { detail.value = MediaDetails(watchedMovie) }
+        assertBadgeInsideArtwork(detailBadgeTag(watchedMovie), "compact-detail-art")
+        screen.runOnIdle { detail.value = MediaDetails(episode) }
+        screen.onNodeWithTag(detailBadgeTag(episode), useUnmergedTree = true).assertDoesNotExist()
+        screen.onNodeWithTag(detailBadgeTag(watchedMovie), useUnmergedTree = true).assertDoesNotExist()
         screen.onNodeWithText("재생 파일").assertDoesNotExist()
         screen.onNodeWithTag("resolution-folder-2160p").performClick()
         screen.onNodeWithTag("resolution-folder-2160p").assertIsSelected()
@@ -196,6 +213,18 @@ class CompactDetailScreenTest {
         }
     }
 
+    private fun assertBadgeInsideArtwork(badgeTag: String, artworkTag: String) {
+        val badge = screen.onNodeWithTag(badgeTag, useUnmergedTree = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        val artwork = screen.onNodeWithTag(artworkTag, useUnmergedTree = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue("The watched state stays on top of its own artwork",
+            badge.left >= artwork.left && badge.top >= artwork.top &&
+                badge.right <= artwork.right && badge.bottom <= artwork.bottom)
+    }
+
+    private fun episodeBadgeTag(item: MediaItem) = "compact-episode-watched-${compactMediaIdentity(item)}"
+    private fun detailBadgeTag(item: MediaItem) = "compact-detail-watched-${compactMediaIdentity(item)}"
     private fun rowTag(item: MediaItem) = "compact-episode-${compactMediaIdentity(item)}"
     private fun watchTag(item: MediaItem) = "compact-episode-watch-${compactMediaIdentity(item)}"
     private fun seasonTag(item: MediaItem) = "compact-season-${compactMediaIdentity(item)}"
