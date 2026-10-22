@@ -405,7 +405,7 @@ class ShyniClient(
     suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort = LibrarySort.TITLE_ASC,
         genre: String? = null, year: Int? = null,
         contentType: LibraryContentType = LibraryContentType.defaultFor(library),
-        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL): MediaPage = withContext(Dispatchers.Default) {
+        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, decade: Int? = null): MediaPage = withContext(Dispatchers.Default) {
         val generation = browseCacheGeneration.get()
         val normalizedQuery = query.trim()
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
@@ -436,7 +436,7 @@ class ShyniClient(
             currentCoroutineContext().ensureActive()
             cacheBrowsePage(key, generation, CachedItems(System.currentTimeMillis(), watched, watched.size))
         }
-        val filtered = filteredCatalog(page.items, genre, year, watchFilter)
+        val filtered = filteredCatalog(page.items, genre, year, watchFilter, decade)
         val start = offset.coerceIn(0, filtered.items.size)
         val visible = filtered.items.subList(start, minOf(start + PAGE_SIZE, filtered.items.size)).toList()
         filtered.copy(items = if (watchFilter == LibraryWatchFilter.ALL) withProgress(visible) else visible)
@@ -1148,7 +1148,8 @@ class ShyniClient(
                 !row.isNull("position_ms") && position > 0 -> MediaWatchState.IN_PROGRESS
                 !row.isNull("position_ms") || row.watchedState() == false -> MediaWatchState.UNWATCHED
                 else -> previous?.watchState
-            }, row.numberOrNull("episode_count")?.takeIf { it >= 0 } ?: previous?.episodeCount)
+            }, row.numberOrNull("episode_count")?.takeIf { it >= 0 } ?: previous?.episodeCount,
+            mediaAddedAt(row) ?: previous?.addedAtMs)
     }
 
     private fun JSONObject.watchedState(): Boolean? = when {

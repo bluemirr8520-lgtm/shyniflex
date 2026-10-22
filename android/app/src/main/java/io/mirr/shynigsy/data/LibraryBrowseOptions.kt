@@ -2,18 +2,36 @@ package io.mirr.shynigsy.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.OffsetDateTime
 
 enum class LibrarySort(val label: String) {
-    TITLE_ASC("제목 오름차순"), TITLE_DESC("제목 내림차순"), RECENT("최근 추가순"),
+    TITLE_ASC("제목 오름차순"), TITLE_DESC("제목 내림차순"), RECENT("최근 추가순"), RECENT_ASC("오래된 추가순"),
     YEAR_DESC("제작 연도 최신순"), YEAR_ASC("제작 연도 오래된순"),
     DURATION_DESC("재생시간 긴순"), DURATION_ASC("재생시간 짧은순");
+
+    val field: LibrarySortField get() = when (this) {
+        TITLE_ASC, TITLE_DESC -> LibrarySortField.TITLE
+        RECENT, RECENT_ASC -> LibrarySortField.ADDED
+        YEAR_ASC, YEAR_DESC -> LibrarySortField.YEAR
+        DURATION_ASC, DURATION_DESC -> LibrarySortField.DURATION
+    }
+    val isAscending: Boolean get() = this == field.ascending
+    fun reversedDirection(): LibrarySort = if (isAscending) field.descending else field.ascending
 
     internal fun query(library: Library, contentType: LibraryContentType = LibraryContentType.defaultFor(library)): String = when (this) {
         TITLE_ASC -> "sort=title"
         TITLE_DESC -> if (contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) "sort=title" else "sort=title&sort_dir=desc"
-        RECENT -> if (contentType in setOf(LibraryContentType.SHOWS, LibraryContentType.EPISODES)) "sort=latest_episode&sort_dir=desc" else "sort=added&sort_dir=desc"
+        RECENT, RECENT_ASC -> if (contentType in setOf(LibraryContentType.SHOWS, LibraryContentType.EPISODES)) "sort=latest_episode&sort_dir=desc" else "sort=added&sort_dir=desc"
         else -> "sort=title"
     }
+}
+
+enum class LibrarySortField(val label: String, val ascending: LibrarySort, val descending: LibrarySort,
+    val defaultSort: LibrarySort) {
+    TITLE("제목", LibrarySort.TITLE_ASC, LibrarySort.TITLE_DESC, LibrarySort.TITLE_ASC),
+    ADDED("추가일", LibrarySort.RECENT_ASC, LibrarySort.RECENT, LibrarySort.RECENT),
+    YEAR("연도", LibrarySort.YEAR_ASC, LibrarySort.YEAR_DESC, LibrarySort.YEAR_DESC),
+    DURATION("재생시간", LibrarySort.DURATION_ASC, LibrarySort.DURATION_DESC, LibrarySort.DURATION_ASC),
 }
 
 enum class LibraryContentType(val label: String, internal val route: String, internal val itemType: String) {
@@ -40,6 +58,11 @@ internal fun mediaYear(row: JSONObject): Int? = sequenceOf("year", "production_y
 }.firstOrNull { it in 1..9999 } ?: sequenceOf("originally_available_at", "release_date", "first_air_date")
     .mapNotNull { row.optString(it).take(4).toIntOrNull() }.firstOrNull { it in 1..9999 }
 
+/** A real offset-bearing ISO timestamp only; a year or missing zone is not an added date. */
+internal fun mediaAddedAt(row: JSONObject): Long? = (row.opt("added_at") as? String)?.trim()?.let { raw ->
+    runCatching { OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull()
+}
+
 internal fun mediaGenres(row: JSONObject): List<String> {
     val value = row.opt("genres")?.takeUnless { it == JSONObject.NULL } ?: row.opt("genre")
     val values = when (value) {
@@ -57,8 +80,9 @@ internal fun mediaGenres(row: JSONObject): List<String> {
 }
 
 internal fun filteredCatalog(items: List<MediaItem>, genre: String?, year: Int?,
-    watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL): MediaPage {
+    watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, decade: Int? = null): MediaPage {
     val filtered = items.filter { (genre == null || genre in it.genres) && (year == null || year == it.year) &&
+        (decade == null || it.year?.let { value -> (value / 10) * 10 == decade } == true) &&
         when (watchFilter) {
             LibraryWatchFilter.ALL -> true
             LibraryWatchFilter.UNWATCHED -> it.watchState in setOf(MediaWatchState.UNWATCHED, MediaWatchState.IN_PROGRESS)
@@ -80,7 +104,10 @@ internal fun sortedCatalog(items: List<MediaItem>, sort: LibrarySort, contentTyp
     LibrarySort.TITLE_DESC -> if (contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) items.asReversed()
         else if (search) items.sortedByDescending { it.title.lowercase(java.util.Locale.ROOT) } else items
     LibrarySort.TITLE_ASC -> if (search) items.sortedBy { it.title.lowercase(java.util.Locale.ROOT) } else items
-    LibrarySort.RECENT -> items
+    LibrarySort.RECENT -> if (search) items.sortedWith(compareByDescending<MediaItem> { it.addedAtMs != null }
+        .thenByDescending { it.addedAtMs }) else items
+    LibrarySort.RECENT_ASC -> if (search) items.sortedWith(compareByDescending<MediaItem> { it.addedAtMs != null }
+        .thenBy { it.addedAtMs }) else items.asReversed()
 }
 
 internal fun aggregateWatchState(item: MediaItem, episodes: List<MediaItem>): MediaItem {

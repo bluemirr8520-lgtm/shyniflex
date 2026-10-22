@@ -39,6 +39,7 @@ data class AppState(
     val librarySort: LibrarySort = LibrarySort.TITLE_ASC,
     val libraryGenre: String? = null,
     val libraryYear: Int? = null,
+    val libraryDecade: Int? = null,
     val libraryGenres: List<String> = emptyList(),
     val libraryYears: List<Int> = emptyList(),
     val libraryContentType: LibraryContentType = LibraryContentType.MOVIES,
@@ -602,7 +603,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         if (library.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         mutableState.update { it.copy(library = library, items = emptyList(), total = 0,
-            query = "", librarySort = LibrarySort.TITLE_ASC, libraryGenre = null, libraryYear = null,
+            query = "", librarySort = LibrarySort.TITLE_ASC, libraryGenre = null, libraryYear = null, libraryDecade = null,
             libraryContentType = LibraryContentType.defaultFor(library), libraryWatchFilter = LibraryWatchFilter.ALL,
             libraryBrowseRevision = it.libraryBrowseRevision + 1,
             libraryGenres = emptyList(), libraryYears = emptyList(), detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
@@ -620,7 +621,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (snapshot.busy || snapshot.detailStack.isNotEmpty() || snapshot.items.size >= snapshot.total) return
         launchRequest {
             val page = active.items(library, snapshot.items.size, snapshot.query, snapshot.librarySort, snapshot.libraryGenre, snapshot.libraryYear,
-                snapshot.libraryContentType, snapshot.libraryWatchFilter)
+                snapshot.libraryContentType, snapshot.libraryWatchFilter, decade = snapshot.libraryDecade)
             val appended = appendLibraryPage(snapshot.items, page)
             mutableState.update { it.copy(items = appended.items.map(::collectionWatchState), total = appended.total) }
         }
@@ -635,7 +636,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchRequest {
             val page = active.items(library, query = query, sort = snapshot.librarySort,
                 genre = snapshot.libraryGenre, year = snapshot.libraryYear,
-                contentType = snapshot.libraryContentType, watchFilter = snapshot.libraryWatchFilter)
+                contentType = snapshot.libraryContentType, watchFilter = snapshot.libraryWatchFilter, decade = snapshot.libraryDecade)
             mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
                 libraryGenres = page.genres, libraryYears = page.years) }
         }
@@ -644,17 +645,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setLibraryOptions(sort: LibrarySort = mutableState.value.librarySort,
         genre: String? = mutableState.value.libraryGenre, year: Int? = mutableState.value.libraryYear,
         contentType: LibraryContentType = mutableState.value.libraryContentType,
-        watchFilter: LibraryWatchFilter = mutableState.value.libraryWatchFilter) {
+        watchFilter: LibraryWatchFilter = mutableState.value.libraryWatchFilter,
+        decade: Int? = mutableState.value.libraryDecade) {
         val active = client ?: return
         val snapshot = mutableState.value
         val library = snapshot.library ?: return
         if (contentType !in LibraryContentType.availableFor(library)) return
-        mutableState.update { it.copy(librarySort = sort, libraryGenre = genre, libraryYear = year,
+        mutableState.update { it.copy(librarySort = sort, libraryGenre = genre, libraryYear = year, libraryDecade = decade,
             libraryContentType = contentType, libraryWatchFilter = watchFilter, items = emptyList(), total = 0,
             libraryBrowseRevision = it.libraryBrowseRevision + 1) }
         launchRequest {
             val page = active.items(library, query = snapshot.query, sort = sort, genre = genre, year = year,
-                contentType = contentType, watchFilter = watchFilter)
+                contentType = contentType, watchFilter = watchFilter, decade = decade)
             mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
                 libraryGenres = page.genres, libraryYears = page.years) }
         }
@@ -849,7 +851,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else snapshot.library?.let { library ->
                     val page = active.items(library, query = snapshot.query, sort = snapshot.librarySort,
                         genre = snapshot.libraryGenre, year = snapshot.libraryYear,
-                        contentType = snapshot.libraryContentType, watchFilter = snapshot.libraryWatchFilter)
+                        contentType = snapshot.libraryContentType, watchFilter = snapshot.libraryWatchFilter, decade = snapshot.libraryDecade)
                     mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total,
                         libraryGenres = page.genres, libraryYears = page.years) }
                 }

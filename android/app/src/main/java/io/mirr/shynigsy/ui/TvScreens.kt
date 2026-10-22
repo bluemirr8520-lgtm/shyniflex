@@ -345,8 +345,8 @@ internal fun UnwatchedCountBadge(count: Int?, modifier: Modifier = Modifier) {
 
 @Composable
 internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
+    val library = state.library ?: return
     var focusedKey by rememberSaveable { mutableStateOf<String?>(null) }
-    var menu by remember { mutableStateOf<String?>(null) }
     val initialFocus = remember { FocusRequester() }
     var focusRequested by remember { mutableStateOf(false) }
     val visibleItems = remember(state.items, state.spoilerUnlocked) {
@@ -356,9 +356,15 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         visibleItems.mapTo(HashSet<String>(visibleItems.size), ::tvMediaKey)
     }
     val grid = rememberLazyGridState()
+    val scope = rememberCoroutineScope()
+    fun changeOptions(change: () -> Unit) {
+        focusedKey = null
+        scope.launch { grid.scrollToItem(0) }
+        change()
+    }
     LibraryAutoLoad(grid, listOf(state.library?.id, state.libraryBrowseRevision, state.query,
         state.librarySort, state.libraryGenre, state.libraryYear, state.libraryContentType,
-        state.libraryWatchFilter, state.spoilerUnlocked), state.items.size, visibleItems.size,
+        state.libraryWatchFilter, state.libraryDecade, state.spoilerUnlocked), state.items.size, visibleItems.size,
         state.total, state.busy, state.error != null, model::loadMore)
     val restoreKey = focusedKey?.takeIf { it in visibleItemKeys }
         ?: visibleItems.firstOrNull()?.let(::tvMediaKey)
@@ -375,25 +381,22 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                TvAction("${state.libraryWatchFilter.label} ▾", Modifier
-                    .then(if (restoreKey == null) Modifier.focusRequester(initialFocus) else Modifier),
-                    enabled = !state.busy) { menu = "watch" }
-                if (state.library?.type == "tv") TvAction("${state.libraryContentType.label} ▾",
-                    enabled = !state.busy) { menu = "content" }
-                val filterCount = listOf(state.libraryGenre, state.libraryYear).count { it != null }
-                TvAction(if (filterCount == 0) "필터 ▾" else "필터 · $filterCount ▾", enabled = !state.busy) { menu = "filter" }
-                TvAction("${state.librarySort.label} ▾", enabled = !state.busy) { menu = "sort" }
-            }
+            PlexLibraryToolbar(library, state.librarySort, state.libraryContentType,
+                state.libraryWatchFilter, state.libraryGenre, state.libraryYear, state.libraryDecade,
+                state.libraryGenres, state.libraryYears, state.busy, state.spoilerUnlocked,
+                onSort = { changeOptions { model.setLibraryOptions(sort = it) } },
+                onContentType = { changeOptions { model.setLibraryOptions(contentType = it) } },
+                onWatchFilter = { changeOptions { model.setLibraryOptions(watchFilter = it) } },
+                onGenre = { changeOptions { model.setLibraryOptions(genre = it) } },
+                onYear = { changeOptions { model.setLibraryOptions(year = it) } },
+                onDecade = { changeOptions { model.setLibraryOptions(decade = it) } },
+                onClearFilters = { changeOptions {
+                    model.setLibraryOptions(genre = null, year = null, decade = null, watchFilter = LibraryWatchFilter.ALL)
+                } }, firstControlModifier = if (restoreKey == null) Modifier.focusRequester(initialFocus) else Modifier)
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("${state.total}개", style = MaterialTheme.typography.titleMedium)
-                if (state.libraryGenre != null || state.libraryYear != null || state.libraryWatchFilter != LibraryWatchFilter.ALL)
-                    TextButton(enabled = !state.busy, modifier = Modifier.tvOnlyFocus(), onClick = {
-                    focusedKey = null
-                    model.setLibraryOptions(genre = null, year = null, watchFilter = LibraryWatchFilter.ALL)
-                }) { Text("필터 초기화") }
             }
         }
         if (state.error != null) item(span = { GridItemSpan(maxLineSpan) }) { Text(state.error, color = MaterialTheme.colorScheme.error) }
@@ -409,57 +412,6 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
         }
     }
-    when (menu) {
-        "watch" -> TvOptionDialog("시청 상태", LibraryWatchFilter.entries.map { it.name to it.label },
-            state.libraryWatchFilter.name, { menu = null }) { value ->
-            menu = null; focusedKey = null; model.setLibraryOptions(watchFilter = LibraryWatchFilter.valueOf(value))
-        }
-        "content" -> TvOptionDialog("표시 항목", LibraryContentType.entries.filter { it != LibraryContentType.MOVIES }.map { it.name to it.label },
-            state.libraryContentType.name, { menu = null }) { value ->
-            menu = null; focusedKey = null; model.setLibraryOptions(contentType = LibraryContentType.valueOf(value))
-        }
-        "filter" -> AlertDialog(onDismissRequest = { menu = null }, title = { Text("필터") }, text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                TvAction("장르 · ${state.libraryGenre ?: "전체"}", Modifier.fillMaxWidth()) { menu = "genre" }
-                TvAction("연도 · ${state.libraryYear?.toString() ?: "전체"}", Modifier.fillMaxWidth()) { menu = "year" }
-                if (state.libraryGenre != null || state.libraryYear != null) TextButton(onClick = {
-                    menu = null; focusedKey = null; model.setLibraryOptions(genre = null, year = null)
-                }, modifier = Modifier.tvOnlyFocus()) { Text("장르·연도 초기화") }
-            }
-        }, confirmButton = { TvAction("닫기", onClick = { menu = null }) })
-        "genre" -> TvOptionDialog("장르", listOf("" to "전체") + state.libraryGenres.map { it to it },
-            state.libraryGenre.orEmpty(), { menu = null }) { value ->
-            menu = null; focusedKey = null; model.setLibraryOptions(genre = value.ifBlank { null })
-        }
-        "year" -> TvOptionDialog("제작 연도", listOf("" to "전체") + state.libraryYears.map { it.toString() to "${it}년" },
-            state.libraryYear?.toString().orEmpty(), { menu = null }) { value ->
-            menu = null; focusedKey = null; model.setLibraryOptions(year = value.toIntOrNull())
-        }
-        "sort" -> TvOptionDialog("정렬", LibrarySort.entries.map { it.name to it.label },
-            state.librarySort.name, { menu = null }) { value ->
-            menu = null; focusedKey = null; model.setLibraryOptions(sort = LibrarySort.valueOf(value))
-        }
-    }
-}
-
-@Composable
-private fun TvOptionDialog(title: String, options: List<Pair<String, String>>, selected: String,
-    onDismiss: () -> Unit, onSelect: (String) -> Unit) {
-    val selectedIndex = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
-    val list = rememberLazyListState(initialFirstVisibleItemIndex = selectedIndex)
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { withFrameNanos { }; focus.requestFocus() }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (options.size == 1) Text("서버가 제공한 ${title} 정보가 없습니다.")
-            LazyColumn(Modifier.heightIn(max = 320.dp), state = list, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(options, key = { it.first }) { (value, label) ->
-                    TvAction((if (value == selected) "✓ " else "") + label,
-                        Modifier.fillMaxWidth().then(if (value == options[selectedIndex].first) Modifier.focusRequester(focus) else Modifier)) { onSelect(value) }
-                }
-            }
-        }
-    }, confirmButton = { TvAction("닫기", onClick = onDismiss) })
 }
 
 @Composable
