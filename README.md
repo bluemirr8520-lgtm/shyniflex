@@ -6,7 +6,7 @@ Shyni 서버용 미디어 플레이어입니다. Android 앱은 MPV를 사용하
 
 webOS판은 앱 ID `io.mirr.shyniflex.webos`로 Android판과 같은 Shyni 로그인·2단계 인증·라이브러리·검색·이어보기·재생 티켓·시청 기록 API를 사용합니다. 구형 TV에서는 서버의 최대 1080p 호환 변환을 기본으로 사용해 원본 코덱이 TV 재생기를 중단시키는 일을 줄입니다. 포스터와 자막은 짧은 수명의 인증 티켓 또는 인증 요청으로 받아 토큰을 URL에 노출하지 않습니다.
 
-설치·빌드·서버 요구사항은 [webOS 안내](webos/README.md)를 참고하세요. 설치 파일은 [ShyniFlex webOS 1.0.2 릴리스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/webos-v1.0.2)에서 받을 수 있습니다.
+설치·빌드·서버 요구사항은 [webOS 안내](webos/README.md)를 참고하세요. 설치 파일은 [ShyniFlex webOS 1.0.3 릴리스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/webos-v1.0.3)에서 받을 수 있습니다.
 
 최신 버전은 **1.0.26**(빌드 27)입니다. 스포일러 영상의 재생 화면을 앱 전면에 두면 권한 만료 전에 기존 잠금 해제 API로 다시 인증하고, 같은 파일·재생 위치·변환 설정을 유지해 재생을 이어갑니다. 앱을 벗어나면 다시 잠그고 임시 PIN을 메모리에서 지웁니다. 서버 수정이나 새 서버 API는 필요하지 않습니다.
 

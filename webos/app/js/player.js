@@ -115,6 +115,7 @@
     this._attempt = 'idle';
     this._activeUrl = '';
     this._pendingStartTime = 0;
+    this._resumeAfterSeek = false;
     this._autoplayRequested = false;
     this._autoplayAttempt = '';
     this._autoplayRetryCount = 0;
@@ -169,6 +170,13 @@
     });
     this._listen('durationchange', progress);
     this._listen('progress', progress);
+    this._listen('seeked', function (event) {
+      progress(event);
+      if (self._resumeAfterSeek) {
+        self._resumeAfterSeek = false;
+        self.play({ suppressError: true });
+      }
+    });
     this._listen('loadedmetadata', function (event) {
       // Only the bounded text overlay renders subtitles. Do not also ask the
       // native decoder to render embedded/image subtitle tracks.
@@ -517,6 +525,7 @@
     this._source = normalized;
     this._reportedFinalError = false;
     this._pendingStartTime = Math.max(0, normalized.startTime);
+    this._resumeAfterSeek = false;
     this._autoplayRequested = normalized.autoplay;
     this._autoplayAttempt = '';
     this._autoplayRetryCount = 0;
@@ -603,7 +612,8 @@
     }
     var pendingStartTime = this._pendingStartTime;
     this._pendingStartTime = 0;
-    this.seekTo(pendingStartTime);
+    this._resumeAfterSeek = false;
+    this.seekTo(pendingStartTime, false);
     if (this._hasStarted && this._pendingStartTime <= 0 && !this.video.paused && finiteNumber(this.video.readyState, 0) >= 3) { this._clearStartupTimer(); }
     return this._pendingStartTime <= 0;
   };
@@ -619,6 +629,7 @@
     this._autoplayRetryCount = 0;
     this._metadataReady = false;
     this._pendingStartTime = 0;
+    this._resumeAfterSeek = false;
     this._source = null;
     this._reportedFinalError = false;
     try {
@@ -645,14 +656,20 @@
     return this;
   };
 
-  Player.prototype.seekTo = function (seconds) {
+  Player.prototype.seekTo = function (seconds, resumePlayback) {
     var duration = finiteNumber(this.video.duration, Infinity);
     var target = Math.max(0, finiteNumber(seconds, 0));
+    var resume = typeof resumePlayback === 'boolean' ? resumePlayback : !this.video.paused && !this.video.ended;
     if (isFinite(duration) && duration > 0) {
       target = clamp(target, 0, duration);
     }
     try {
       this.video.currentTime = target;
+      this._resumeAfterSeek = resume;
+      if (resume) {
+        this.play({ suppressError: true });
+      }
+      this._call('onProgress', this.getProgress(), { type: 'seek-requested' });
     } catch (ignore) {
       // Some engines reject seeks until metadata is available; retry then.
       this._pendingStartTime = target;

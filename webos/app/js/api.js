@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.2';
+  var APP_VERSION = '1.0.3';
   var PRODUCT = 'ShyniFlex webOS';
   var PLEX_TV_URL = 'https://plex.tv';
   var PLEX_AUTH_URL = 'https://plex.tv/link/';
@@ -1582,10 +1582,15 @@
     var query = {};
     Object.keys(context).forEach(function (key) { query[key] = context[key]; });
     query.ticket = ticket;
+    var source = text(row.source).toLowerCase();
+    var rawText = source === 'external' && ['srt', 'subrip', 'vtt', 'webvtt'].indexOf(format) >= 0;
+    var convertedUrl = appendQuery(connection.baseUrl + '/subtitles/track/' + encodeURIComponent(id) + '.vtt', query);
     return {
       id: String(id), title: text(row.label || row.lang_code, '자막 ' + id), language: text(row.lang_code),
-      format: 'vtt', codec: 'vtt', textSubtitle: true, selected: bool(row.default), default: bool(row.default), forced: bool(row.forced),
-      url: appendQuery(connection.baseUrl + '/subtitles/track/' + encodeURIComponent(id) + '.vtt', query)
+      format: rawText ? format : 'vtt', codec: rawText ? format : 'vtt', source: source,
+      textSubtitle: true, selected: bool(row.default), default: bool(row.default), forced: bool(row.forced),
+      url: rawText ? appendQuery(connection.baseUrl + '/subtitles/raw/' + encodeURIComponent(id), query) : convertedUrl,
+      fallbackUrl: rawText ? convertedUrl : ''
     };
   }
 
@@ -1598,10 +1603,12 @@
     var body = { metadata_item_id: number(item.id, 0), library_view_id: number(item.libraryId, 0),
       view_item_id: number(item.viewItemId, 0), platform: 'general', client_app: 'shyniflex-webos',
       device_id: connection.clientIdentifier, client_session_id: sessionId,
-      max_video_height: Math.min(2160, Math.max(480, number(options.maxVideoHeight, 2160))),
-      client_profile: { device: 'lg-webos-tv', direct_play: options.compatibility === false,
-        max_video_width: Math.min(3840, Math.max(640, number(options.maxVideoWidth, 3840))),
-        max_video_height: Math.min(2160, Math.max(480, number(options.maxVideoHeight, 2160))),
+      // Playback decision selects the source file. Output resolution is capped
+      // separately when the TV-compatible HLS session is created below.
+      max_video_height: 2160,
+      client_profile: { device: 'lg-webos-tv', direct_play: true,
+        max_video_width: 3840,
+        max_video_height: 2160,
         video_codecs: ['h264', 'hevc', 'vp9', 'mpeg2video', 'mpeg4', 'vc1'],
         audio_codecs: ['aac', 'ac3', 'eac3', 'dts', 'mp3', 'pcm', 'vorbis'],
         containers: ['mp4', 'mkv', 'mpegts', 'ts', 'm2ts', 'mov', 'avi', 'wmv'] } };
@@ -1647,6 +1654,8 @@
           progressToken: text(decision.playback_context_token), decision: compatibility ? 'video_transcode' : text(decision.decision, 'direct_play'),
           transcodeTicket: compatibility ? ticket : '', requestedStartPositionMs: requestedStart,
           streamStartPositionMs: 0, maxVideoHeight: Math.min(1080, number(options.maxVideoHeight, 1080)),
+          requestedSubtitleId: number(options.requestedSubtitleId, 0),
+          burnSubtitleId: compatibility ? number(options.burnSubtitleId, 0) : 0,
           selectedAudioStreamIndex: number(decision.selected_audio_stream_index, -1),
           sourceItem: item };
       });
@@ -2586,14 +2595,38 @@
     });
   }
 
-  function shyniHlsManifestReady(body) {
+  function shyniHlsManifestTarget(connection, playlistUrl, body, ticket) {
     var lines = text(body).replace(/^\uFEFF/, '').trim().split(/\r?\n/);
     if (lines[0] !== '#EXTM3U') { return false; }
-    if (lines.some(function (line) { return /^#EXT-X-(?:MAP:|MEDIA:)/.test(line); })) {
+    // MPEG-TS playlists may legitimately advertise an alternate media group.
+    // Only EXT-X-MAP requires fragmented MP4 initialization that legacy webOS
+    // decoders cannot consume reliably.
+    if (lines.some(function (line) { return /^#EXT-X-MAP:/.test(line); })) {
       throw new ApiError('이 TV에서 지원하지 않는 HLS 형식입니다.', 0, '', 'shyni_hls_unsupported');
     }
-    return lines.some(function (line) { return /^#EXTINF:/.test(line); }) &&
-      lines.some(function (line) { return line && line.charAt(0) !== '#'; });
+    if (lines.some(function (line) { return /^#EXTINF:/.test(line); }) &&
+        lines.some(function (line) { return line && line.charAt(0) !== '#'; })) {
+      return playlistUrl;
+    }
+    var variant = '';
+    for (var i = 0; i < lines.length; i += 1) {
+      if (!/^#EXT-X-STREAM-INF:/.test(lines[i])) { continue; }
+      for (var j = i + 1; j < lines.length; j += 1) {
+        if (lines[j] && lines[j].charAt(0) !== '#') { variant = lines[j].trim(); break; }
+      }
+      if (variant) { break; }
+    }
+    if (!variant) { return ''; }
+    var resolved;
+    try { resolved = new global.URL(variant, playlistUrl).href; } catch (ignore) {
+      resolved = /^https?:\/\//i.test(variant) ? variant :
+        variant.charAt(0) === '/' ? connection.baseUrl + variant :
+          safePath(playlistUrl).slice(0, safePath(playlistUrl).lastIndexOf('/') + 1) + variant;
+    }
+    if (!sameOrigin(resolved, connection.baseUrl)) {
+      throw new ApiError('HLS 재생 서버 주소가 일치하지 않습니다.', 0, '', 'shyni_hls_origin');
+    }
+    return appendQuery(resolved, { ticket: ticket });
   }
 
   function prepareShyniHls(connection, playback) {
@@ -2616,6 +2649,10 @@
     if (number(playback.selectedAudioStreamIndex, -1) >= 0) {
       context.audio_stream_index = number(playback.selectedAudioStreamIndex, -1);
     }
+    if (number(playback.burnSubtitleId, 0) > 0) {
+      context.subtitle_id = number(playback.burnSubtitleId, 0);
+      context.subtitle_default = true;
+    }
     return request(connection, 'POST', '/transcode/' + encodeURIComponent(playback.partId) + '/hls', {
       query: context, body: {}, timeout: 30000
     }).then(function (created) {
@@ -2631,26 +2668,30 @@
       }
       playlist = appendQuery(playlist, { ticket: playback.transcodeTicket });
       var attempts = 0;
-      function readManifest() {
+      function readManifest(url) {
         attempts += 1;
-        return request(connection, 'GET', playlist, {
+        return request(connection, 'GET', url, {
           rawText: true, responseInfo: true, maxResponseBytes: 262144,
           accept: 'application/vnd.apple.mpegurl', timeout: 12000
         }).then(function (response) {
           if (!sameOrigin(response.url, connection.baseUrl)) {
             throw new ApiError('HLS 재생 서버 주소가 일치하지 않습니다.', 0, '', 'shyni_hls_origin');
           }
-          if (shyniHlsManifestReady(response.body)) { return response.url; }
+          var target = shyniHlsManifestTarget(connection, response.url, response.body, playback.transcodeTicket);
+          if (target) {
+            if (target === response.url) { return response.url; }
+            return readManifest(target);
+          }
           if (attempts >= 20) {
             throw new ApiError('TV용 영상 조각 준비 시간이 초과되었습니다.', 0, '', 'shyni_hls_empty');
           }
-          return waitFor(500).then(readManifest);
+          return waitFor(500).then(function () { return readManifest(response.url); });
         }).catch(function (error) {
           if (attempts >= 20 || (error && error.code === 'shyni_hls_unsupported')) { throw error; }
-          return waitFor(500).then(readManifest);
+          return waitFor(500).then(function () { return readManifest(url); });
         });
       }
-      return readManifest().then(function (readyUrl) {
+      return readManifest(playlist).then(function (readyUrl) {
         playback.url = readyUrl;
         playback.directUrl = '';
         playback.hlsUrl = readyUrl;

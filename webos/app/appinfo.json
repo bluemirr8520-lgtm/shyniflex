@@ -1,6 +1,6 @@
 {
   "id": "io.mirr.shyniflex.webos",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "vendor": "KSH",
   "type": "web",
   "main": "index.html",

@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.2';
+  var APP_VERSION = '1.0.3';
   var STORAGE = {
     connection: 'shyniflex.webos.connection.v1',
     libraryOrder: 'shyniflex.webos.library-order.v1',
@@ -49,6 +49,8 @@
     playerReturnFocus: null,
     playback: null,
     pendingPlayback: null,
+    playbackQueue: [],
+    playbackQueueIndex: -1,
     player: null,
     subtitles: null,
     remote: null,
@@ -1985,6 +1987,25 @@
     return ['vtt', 'webvtt', 'srt', 'subrip'].indexOf(format) >= 0 || /\.(vtt|srt)(?:$|[?#])/i.test(url);
   }
 
+  function isInternalShyniSubtitle(playback, track) {
+    return Boolean(playback && playback.session && playback.session.serverType === 'shyni' && track &&
+      text(track.source).toLowerCase() !== 'external');
+  }
+
+  function loadSubtitleTrack(track) {
+    var urls = [];
+    [firstValue(track, ['url', 'deliveryUrl', 'key'], ''), text(track && track.fallbackUrl)].forEach(function (url) {
+      if (url && urls.indexOf(url) < 0) { urls.push(url); }
+    });
+    function attempt(index) {
+      if (!urls[index]) { return global.Promise.resolve(false); }
+      return state.subtitles.loadFromUrl(urls[index]).then(function (loaded) {
+        return loaded ? true : attempt(index + 1);
+      });
+    }
+    return attempt(0);
+  }
+
   function normalizePlayback(result, item) {
     result = result || {};
     var sources = result.sources || {};
@@ -1997,8 +2018,14 @@
     });
     var subtitleList = Array.isArray(result.subtitles) ? result.subtitles : [];
     var preferredSubtitle = null;
+    var requestedSubtitleId = text(result.requestedSubtitleId || result.burnSubtitleId);
     subtitleList.forEach(function (subtitle) {
       if (!supportedSubtitle(subtitle)) { return; }
+      if (requestedSubtitleId && text(subtitle.id) === requestedSubtitleId) {
+        preferredSubtitle = subtitle;
+        return;
+      }
+      if (requestedSubtitleId) { return; }
       if (!preferredSubtitle || subtitle.selected || subtitle.default || subtitle.forced) {
         preferredSubtitle = subtitle;
       }
@@ -2011,6 +2038,7 @@
         try { subtitleUrl = state.client.subtitleUrl(preferredSubtitle) || subtitleUrl; } catch (ignore) { /* Keep direct URL. */ }
       }
     }
+    if (number(result.burnSubtitleId, 0) > 0) { subtitleUrl = ''; }
     var startTime = number(firstValue(result, ['startTime', 'resumeSeconds', 'positionSeconds'], NaN), NaN);
     if (!isFinite(startTime)) {
       startTime = number(firstValue(result, ['positionMs', 'resumePositionMs', 'viewOffset'], 0), 0) / 1000;
@@ -2032,6 +2060,51 @@
       item: item,
       title: entityTitle(item)
     };
+  }
+
+  function setPlaybackQueue(items, selected) {
+    state.playbackQueue = (items || []).filter(function (item) { return isPlayable(item); });
+    state.playbackQueueIndex = -1;
+    var selectedId = entityId(selected);
+    state.playbackQueue.some(function (item, index) {
+      if (item === selected || (selectedId && entityId(item) === selectedId)) {
+        state.playbackQueueIndex = index;
+        return true;
+      }
+      return false;
+    });
+    updatePlayerNextButton();
+  }
+
+  function nextPlaybackItem() {
+    var index = state.playbackQueueIndex;
+    var current = state.playback && state.playback.item;
+    var currentId = entityId(current);
+    if (index < 0 && current) {
+      state.playbackQueue.some(function (item, itemIndex) {
+        if (item === current || (currentId && entityId(item) === currentId)) {
+          index = itemIndex;
+          state.playbackQueueIndex = itemIndex;
+          return true;
+        }
+        return false;
+      });
+    }
+    return index >= 0 && index + 1 < state.playbackQueue.length
+      ? state.playbackQueue[index + 1]
+      : null;
+  }
+
+  function updatePlayerNextButton() {
+    if (!refs.playerNext || !refs.playerForward) { return; }
+    var next = nextPlaybackItem();
+    refs.playerNext.classList.toggle('hidden', !next);
+    refs.playerNext.disabled = !next;
+    refs.playerNext.setAttribute('aria-label', next ? '다음 영상: ' + entityTitle(next) : '다음 영상 없음');
+    refs.playerForward.setAttribute('data-nav-right', next ? '#player-next' : '#player-subtitles');
+    if (refs.playerSubtitles) {
+      refs.playerSubtitles.setAttribute('data-nav-left', next ? '#player-next' : '#player-forward');
+    }
   }
 
   function formatTime(seconds) {
@@ -2215,6 +2288,7 @@
     if (state.playerState === 'resolving') { return global.Promise.resolve(null); }
     var fromBeginning = arguments[1] === true;
     var forceCompatibility = arguments[2] === true;
+    var requestedSubtitle = arguments[3] || null;
     var preparedSession = null;
     var clientAtRequest = state.client;
     var token = state.playLoadToken + 1;
@@ -2235,6 +2309,12 @@
     focusInitial(refs.playerClose);
     var options = playbackOptionsForItem(item, forceCompatibility);
     if (fromBeginning) { options.startTimeSeconds = 0; }
+    if (requestedSubtitle) {
+      options.requestedSubtitleId = number(requestedSubtitle.id, 0);
+      if (forceCompatibility && text(requestedSubtitle.source).toLowerCase() !== 'external') {
+        options.burnSubtitleId = number(requestedSubtitle.id, 0);
+      }
+    }
     return invokeClient(['resolvePlayback', 'getPlayback', 'playback'], [item, options]).then(function (result) {
       if (token !== state.playLoadToken || state.client !== clientAtRequest) {
         if (clientAtRequest.stopTranscode) { clientAtRequest.stopTranscode(result); }
@@ -2256,12 +2336,26 @@
       if (!playback.directUrl && !playback.hlsUrl) {
         throw new Error('이 TV에서 재생할 주소를 서버가 제공하지 않았습니다.');
       }
+      if (!requestedSubtitle && state.subtitles.enabled && isInternalShyniSubtitle(playback, playback.selectedSubtitle)) {
+        state.playerState = 'idle';
+        return playItem(item, fromBeginning, true, playback.selectedSubtitle);
+      }
       state.playback = playback;
+      var playingId = entityId(item);
+      state.playbackQueue.some(function (queued, index) {
+        if (queued === item || (playingId && entityId(queued) === playingId)) {
+          state.playbackQueueIndex = index;
+          return true;
+        }
+        return false;
+      });
+      updatePlayerNextButton();
       state.lastProgressReport = 0;
       state.playbackStartReported = false;
       state.playerState = 'loading';
       refs.playerTitle.textContent = playback.title;
-      refs.playbackMode.textContent = result.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :
+      refs.playbackMode.textContent = number(result.burnSubtitleId, 0) > 0 ? '자막 포함 호환 HLS' :
+        result.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :
         result.playMethod === 'Transcode' ? 'Shyni 호환 변환 · 1080p' :
         (result.playMethod === 'DirectStream' ? '호환 스트리밍 · 영상 원본 유지' : '직접 재생');
       refs.playerView.classList.remove('hidden');
@@ -2272,7 +2366,7 @@
       state.subtitles.setPlaybackOffset(playback.positionOffset);
       renderSubtitleTracks(playback);
       if (playback.subtitleUrl && state.subtitles.enabled) {
-        state.subtitles.loadFromUrl(playback.subtitleUrl).then(function (loaded) {
+        loadSubtitleTrack(playback.selectedSubtitle || { url: playback.subtitleUrl }).then(function (loaded) {
           if (token !== state.playLoadToken || state.playback !== playback) { return; }
           if (!loaded) { showToast('기본 자막을 불러오지 못했습니다.'); }
         });
@@ -2354,6 +2448,47 @@
       });
     }
     return true;
+  }
+
+  function stopCurrentPlaybackForSwitch() {
+    state.playLoadToken += 1;
+    var active = state.playback;
+    if (active) { reportPlayback('stopped', state.player.getProgress(), true); }
+    if (state.client && state.client.stopTranscode) {
+      state.client.stopTranscode(state.pendingPlayback || (active && active.session));
+    }
+    state.pendingPlayback = null;
+    state.playback = null;
+    state.playbackStartReported = false;
+    state.playerState = 'idle';
+    state.player.unload();
+    state.subtitles.clear();
+    state.subtitles.setAdjustmentMode(false);
+  }
+
+  function restartPlaybackForSubtitle(track, forceCompatibility) {
+    if (!state.playback) { return; }
+    var playback = state.playback;
+    var progress = state.player.getProgress();
+    var positionMs = Math.max(0, Math.round((number(progress.position, 0) + number(playback.positionOffset, 0)) * 1000));
+    var item = playback.item;
+    item.resumePositionMs = positionMs;
+    stopCurrentPlaybackForSwitch();
+    setPlayerError('');
+    playItem(item, false, Boolean(forceCompatibility), track).catch(function () {});
+  }
+
+  function playNextQueuedItem() {
+    var next = nextPlaybackItem();
+    if (!next) {
+      showToast('다음 영상이 없습니다.');
+      return;
+    }
+    stopCurrentPlaybackForSwitch();
+    state.playbackQueueIndex += 1;
+    state.detailItem = next;
+    renderDetail(next);
+    playItem(next, false, false, null).catch(function () {});
   }
 
   function openModal(id) {
@@ -2482,10 +2617,22 @@
     var track = state.playback && (state.playback.subtitles || [])[number(refs.subtitleTrack.value, -1)];
     state.subtitles.setStyle({ enabled: Boolean(track && supportedSubtitle(track)) });
     persistSubtitleSettings();
-    if (!state.subtitles.enabled) { return; }
     var playback = state.playback;
-    state.subtitles.loadFromUrl(track.url || track.deliveryUrl || track.key).then(function (loaded) {
-      if (state.playback === playback && !loaded) { showToast('자막을 불러오지 못했습니다. SRT/VTT 형식과 2MB 이하 크기를 확인해 주세요.'); }
+    var burnedSubtitle = playback && playback.session && number(playback.session.burnSubtitleId, 0) > 0;
+    if (!state.subtitles.enabled) {
+      if (burnedSubtitle) { restartPlaybackForSubtitle(null, false); }
+      return;
+    }
+    if (isInternalShyniSubtitle(playback, track)) {
+      restartPlaybackForSubtitle(track, true);
+      return;
+    }
+    if (burnedSubtitle) {
+      restartPlaybackForSubtitle(track, false);
+      return;
+    }
+    loadSubtitleTrack(track).then(function (loaded) {
+      if (state.playback === playback && !loaded) { showToast('자막을 불러오지 못했습니다. SRT/VTT 형식과 파일 크기를 확인해 주세요.'); }
     });
   }
 
@@ -2880,6 +3027,7 @@
       if (playerAction === 'toggle') { state.player.toggle(); }
       if (playerAction === 'rewind') { state.player.seekBy(-state.player.seekStep); }
       if (playerAction === 'forward') { state.player.seekBy(state.player.seekStep); }
+      if (playerAction === 'next') { playNextQueuedItem(); }
       if (playerAction === 'fit') { cycleVideoFit(); }
       if (playerAction === 'close') { closePlayer(); }
       return;
@@ -2898,23 +3046,24 @@
     if (cardKind === 'item') {
       var item = state.items[number(target.getAttribute('data-card-index'), -1)];
       if (!item) { return; }
+      setPlaybackQueue(state.items, item);
       openDetail(item);
       return;
     }
     if (cardKind === 'search-item') {
       var searchItem = state.searchItems[number(target.getAttribute('data-card-index'), -1)];
-      if (searchItem) { openDetail(searchItem); }
+      if (searchItem) { setPlaybackQueue(state.searchItems, searchItem); openDetail(searchItem); }
       return;
     }
     if (cardKind === 'home-item') {
       var row = state.homeRows[number(target.getAttribute('data-home-row'), -1)];
       var homeItem = row && row.items[number(target.getAttribute('data-card-index'), -1)];
-      if (homeItem) { openDetail(homeItem); }
+      if (homeItem) { setPlaybackQueue(row.items, homeItem); openDetail(homeItem); }
       return;
     }
     if (cardKind === 'detail-child') {
       var detailChild = state.detailChildren[number(target.getAttribute('data-card-index'), -1)];
-      if (detailChild) { openDetail(detailChild); }
+      if (detailChild) { setPlaybackQueue(state.detailChildren, detailChild); openDetail(detailChild); }
       return;
     }
     if (target.hasAttribute('data-reorder-index')) {
@@ -3945,6 +4094,8 @@
     refs.playerRewind = byId('player-rewind');
     refs.playerToggle = byId('player-toggle');
     refs.playerForward = byId('player-forward');
+    refs.playerNext = byId('player-next');
+    refs.playerSubtitles = byId('player-subtitles');
     refs.playerFit = byId('player-fit');
     refs.playerTitle = byId('player-title');
     refs.playbackMode = byId('playback-mode');
@@ -3996,7 +4147,9 @@
           setPlayerError('');
           setNetworkStatus('', false);
           state.playerState = 'idle';
-          playItem(failedPlayback.item, false, true).catch(function () {});
+          playItem(failedPlayback.item, false, true,
+            state.subtitles.enabled && isInternalShyniSubtitle(failedPlayback, failedPlayback.selectedSubtitle)
+              ? failedPlayback.selectedSubtitle : null).catch(function () {});
           return;
         }
         if (state.subtitles) { state.subtitles.clear(); }
@@ -4004,13 +4157,13 @@
         setNetworkStatus('재생 오류', true);
       },
       onStateChange: function (playState, details) {
-        if (playState === 'starting') {
-          return;
-        }
+        var controlPlaying = playState === 'playing' || playState === 'starting' ||
+          (playState === 'buffering' && refs.video && !refs.video.paused);
         if (refs.playerToggle) {
-          refs.playerToggle.setAttribute('data-state', playState === 'playing' ? 'playing' : 'paused');
-          refs.playerToggle.setAttribute('aria-label', playState === 'playing' ? '일시정지' : '재생');
+          refs.playerToggle.setAttribute('data-state', controlPlaying ? 'playing' : 'paused');
+          refs.playerToggle.setAttribute('aria-label', controlPlaying ? '일시정지' : '재생');
         }
+        if (playState === 'starting') { return; }
         var previousPlayerState = state.playerState;
         state.playerState = playState;
         refs.playerView.setAttribute('data-playback-state', playState);
@@ -4018,7 +4171,8 @@
         // Keep transient buffering silent so the status message does not flicker.
         if (state.playback && state.playback.session && (details.attempt === 'hls-native' || details.attempt === 'hls-js')) {
           if (state.playback.session.playMethod === 'DirectPlay') { state.playback.session.playMethod = 'Transcode'; }
-          refs.playbackMode.textContent = state.playback.session.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :
+          refs.playbackMode.textContent = number(state.playback.session.burnSubtitleId, 0) > 0 ? '자막 포함 호환 HLS' :
+            state.playback.session.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :
             state.playback.session.playMethod === 'DirectStream' ? '호환 스트리밍 · 영상 원본 유지' : '호환 변환 · H.264/AAC';
         }
         if (playState === 'playing') {

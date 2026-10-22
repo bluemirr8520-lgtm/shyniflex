@@ -174,7 +174,8 @@ test('legacy webOS playback uses a Shyni video transcode ticket, scoped subtitle
   response(200, { ticket: 'transcode-ticket' });
   response(200, { ticket: 'subtitle-ticket' });
   response(200, { subtitles: [
-    { id: 4, label: '한국어', lang_code: 'ko', format: 'ass', source: 'external', default: true },
+    { id: 4, label: '한국어 내부', lang_code: 'ko', format: 'ass', source: 'internal', default: true },
+    { id: 6, label: '한국어 외부', lang_code: 'ko', format: 'srt', source: 'external' },
     { id: 5, label: 'PGS', format: 'pgs', playable: false }
   ] });
 
@@ -182,44 +183,54 @@ test('legacy webOS playback uses a Shyni video transcode ticket, scoped subtitle
   var playback = await client.resolvePlayback({
     id: '23', type: 'movie', playable: true, libraryId: '8', viewItemId: '501', partId: '90', title: '테스트 영화',
     resumePositionMs: 300000
-  }, { compatibility: true, maxVideoHeight: 1080 });
+  }, { compatibility: true, maxVideoHeight: 1080, requestedSubtitleId: 4, burnSubtitleId: 4 });
 
   assert.equal(playback.playMethod, 'Transcode');
   assert.equal(playback.url, 'https://media.example.test/transcode/90?ticket=transcode-ticket&mode=video&max_height=1080');
   assert.equal(playback.resumePositionMs, 300000);
   assert.equal(playback.requestedStartPositionMs, 300000);
-  assert.equal(playback.subtitles.length, 1);
+  assert.equal(playback.subtitles.length, 2);
   assert.match(playback.subtitles[0].url, /\/subtitles\/track\/4\.vtt\?library_view_id=8&view_item_id=501&ticket=subtitle-ticket$/);
+  assert.match(playback.subtitles[1].url, /\/subtitles\/raw\/6\?library_view_id=8&view_item_id=501&ticket=subtitle-ticket$/);
+  assert.match(playback.subtitles[1].fallbackUrl, /\/subtitles\/track\/6\.vtt\?library_view_id=8&view_item_id=501&ticket=subtitle-ticket$/);
+  assert.equal(playback.burnSubtitleId, 4);
+  assert.equal(JSON.parse(calls[0].body).client_profile.direct_play, true);
+  assert.equal(JSON.parse(calls[0].body).client_profile.max_video_height, 2160);
   assert.match(calls[1].url, /\/playback\/transcode-ticket\/90\?library_view_id=8&view_item_id=501&mode=video$/);
   assert.match(calls[2].url, /\/stream-ticket\/90\?library_view_id=8&view_item_id=501$/);
 
   response(200, {
     session_id: 'hls-session', playlist: '/transcode/hls/hls-session/index.m3u8', segment_format: 'mpegts'
   });
+  response(200, '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Korean"\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,CODECS="avc1.640028,mp4a.40.2"\nvideo.m3u8\n', {
+    'content-type': 'application/vnd.apple.mpegurl'
+  });
   response(200, '#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:6.0,\nseg00000.ts?ticket=transcode-ticket\n', {
     'content-type': 'application/vnd.apple.mpegurl'
   });
   playback = await client.preparePlayback(playback);
   assert.equal(playback.directUrl, '');
-  assert.equal(playback.hlsUrl, 'https://media.example.test/transcode/hls/hls-session/index.m3u8?ticket=transcode-ticket');
+  assert.equal(playback.hlsUrl, 'https://media.example.test/transcode/hls/hls-session/video.m3u8?ticket=transcode-ticket');
   assert.equal(playback.deliveryMode, 'hls-mpegts');
   assert.equal(playback.streamStartPositionMs, 300000);
   assert.equal(playback.resumePositionMs, 0);
   assert.match(calls[4].url, /\/transcode\/90\/hls\?.*mode=video/);
   assert.match(calls[4].url, /start_ms=300000/);
   assert.match(calls[4].url, /segment_format=mpegts/);
+  assert.match(calls[4].url, /subtitle_id=4/);
+  assert.match(calls[4].url, /subtitle_default=true/);
 
   response(200, { ok: true });
   await client.reportProgress(playback, { positionMs: 420000, durationMs: 7200000, isPaused: false });
-  var progress = JSON.parse(calls[6].body);
+  var progress = JSON.parse(calls[7].body);
   assert.equal(progress.state, 'playing');
   assert.equal(progress.position_ms, 420000);
   assert.equal(progress.delivery_mode, 'server_proxy');
 
   response(200, { ok: true });
   await client.stopTranscode(playback);
-  assert.equal(calls[7].method, 'DELETE');
-  assert.equal(calls[7].url, 'https://media.example.test/transcode/hls/hls-session');
+  assert.equal(calls[8].method, 'DELETE');
+  assert.equal(calls[8].url, 'https://media.example.test/transcode/hls/hls-session');
 });
 
 test('completed playback is reported as a completion candidate', async function () {

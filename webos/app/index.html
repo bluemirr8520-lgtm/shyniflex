@@ -350,7 +350,7 @@
                 <section class="settings-section">
                   <h2>정보</h2>
                   <div class="setting-row static-row">
-                    <span><strong>ShyniFlex webOS 1.0.2</strong><small id="device-capability">디스플레이 확인 중 · Shyni 재생 티켓 · 리모컨 · 외부 폰트 · 세로 자막</small></span>
+                    <span><strong>ShyniFlex webOS 1.0.3</strong><small id="device-capability">디스플레이 확인 중 · Shyni 재생 티켓 · 리모컨 · 외부 폰트 · 세로 자막</small></span>
                   </div>
                 </section>
               </div>
@@ -452,12 +452,13 @@
             </div>
             <div class="player-command-row">
               <div class="transport-actions">
-                <button id="player-rewind" class="focusable player-icon-button seek-button" tabindex="0" data-player-action="rewind" aria-label="10초 뒤로" data-nav-right="#player-toggle" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M8 7a12 12 0 1 1-3 13M8 2v7H1"/></svg><small aria-hidden="true">10</small></button>
+                <button id="player-rewind" class="focusable player-icon-button seek-button" tabindex="0" data-player-action="rewind" aria-label="10초 뒤로" data-nav-right="#player-toggle" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path d="M15 7 6 16l9 9M7 16h18c9.4 0 17 7.6 17 17"/></svg><small aria-hidden="true">10</small></button>
                 <button id="player-toggle" class="focusable primary player-toggle" tabindex="0" data-state="paused" data-player-action="toggle" aria-label="재생 또는 일시정지" data-nav-left="#player-rewind" data-nav-right="#player-forward" data-nav-up="#timeline"><svg class="transport-symbol play-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M10 5l18 11-18 11z"/></svg><svg class="transport-symbol pause-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M10 6v20M22 6v20"/></svg></button>
-                <button id="player-forward" class="focusable player-icon-button seek-button" tabindex="0" data-player-action="forward" aria-label="10초 앞으로" data-nav-left="#player-toggle" data-nav-right="#player-subtitles" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M24 7a12 12 0 1 0 3 13M24 2v7h7"/></svg><small aria-hidden="true">10</small></button>
+                <button id="player-forward" class="focusable player-icon-button seek-button" tabindex="0" data-player-action="forward" aria-label="10초 앞으로" data-nav-left="#player-toggle" data-nav-right="#player-next" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path d="m33 7 9 9-9 9M41 16H23c-9.4 0-17 7.6-17 17"/></svg><small aria-hidden="true">10</small></button>
+                <button id="player-next" class="focusable player-option-button player-next-button hidden" tabindex="0" data-player-action="next" aria-label="다음 영상" data-nav-left="#player-forward" data-nav-right="#player-subtitles" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path class="next-fill" d="M5 6l17 10L5 26z"/><path d="M25 6v20"/></svg><span>다음 영상</span></button>
               </div>
               <div class="player-option-actions">
-                <button id="player-subtitles" class="focusable player-option-button" tabindex="0" data-action="open-subtitles" data-nav-left="#player-forward" data-nav-right="#player-fit" data-nav-up="#timeline">자막</button>
+                <button id="player-subtitles" class="focusable player-option-button" tabindex="0" data-action="open-subtitles" data-nav-left="#player-next" data-nav-right="#player-fit" data-nav-up="#timeline">자막</button>
                 <button id="player-fit" class="focusable player-option-button" tabindex="0" data-player-action="fit" data-nav-left="#player-subtitles" data-nav-up="#timeline">화면 맞춤</button>
               </div>
             </div>

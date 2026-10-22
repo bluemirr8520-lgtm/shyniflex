@@ -372,8 +372,10 @@ function testPlayerFallbackProgressAndMediaKeys() {
   assert.strictEqual(video.playCount, 1);
   assert.strictEqual(player.handleRemoteKey(417), true);
   assert.strictEqual(video.currentTime, 50);
+  assert.strictEqual(video.playCount, 2);
   assert.strictEqual(player.handleRemoteKey(412), true);
   assert.strictEqual(video.currentTime, 40);
+  assert.strictEqual(video.playCount, 3);
   assert.strictEqual(player.handleRemoteKey(19), true);
   assert.strictEqual(video.paused, true);
   assert.strictEqual(player.handleRemoteKey(413), true);

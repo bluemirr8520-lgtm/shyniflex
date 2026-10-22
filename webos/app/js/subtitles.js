@@ -11,7 +11,7 @@
   };
   var FONT_DB_NAME = 'ShyniFlexWebOSSubtitleFonts';
   var FONT_STORE_NAME = 'fonts';
-  var MAX_SUBTITLE_BYTES = 2 * 1024 * 1024;
+  var MAX_SUBTITLE_BYTES = 8 * 1024 * 1024;
   var MAX_CUES = 10000;
 
   function noop() {}

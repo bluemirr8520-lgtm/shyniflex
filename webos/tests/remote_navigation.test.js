@@ -249,6 +249,17 @@ test('sidebar refresh is first in both visual and D-pad order, with stable focus
   assert.doesNotMatch(app, /remote\.root\s*=/, 'scope changes must not detach pointer/focus listeners from their original root');
 });
 
+test('player exposes reliable ten-second, pause, and next-video controls', function () {
+  var html = fs.readFileSync(path.join(__dirname, '../app/index.html'), 'utf8');
+  var app = fs.readFileSync(path.join(__dirname, '../app/js/app.js'), 'utf8');
+  assert.match(html, /id="player-rewind"[^>]*data-player-action="rewind"/);
+  assert.match(html, /id="player-forward"[^>]*data-player-action="forward"/);
+  assert.match(html, /id="player-next"[^>]*data-player-action="next"/);
+  assert.match(html, /class="transport-symbol pause-symbol"/);
+  assert.match(app, /playState === 'buffering' && refs\.video && !refs\.video\.paused/);
+  assert.match(app, /playerAction === 'next'\) \{ playNextQueuedItem\(\); \}/);
+});
+
 test('vertical grid navigation remembers its column through a short last row', function () {
   var f = fixture(20, 8);
   f.remote.focus(f.cards[15]);
