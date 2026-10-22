@@ -2,6 +2,8 @@
 
 ShyniFlex webOS는 Shyni 서버의 영화와 시리즈를 LG TV 리모컨으로 탐색하고 재생하는 패키지형 웹 앱입니다.
 
+- [ShyniFlex webOS 1.0.0 설치 파일과 SHA-256](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/webos-v1.0.0)
+
 ## 주요 기능
 
 - Shyni 아이디·비밀번호 로그인, 2단계 인증, 로그인 토큰 유지
