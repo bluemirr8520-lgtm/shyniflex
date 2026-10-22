@@ -116,7 +116,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
             items(libraries, key = { it.id }) { library ->
                 TvSidebarItem(library.title,
                     if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder,
-                    selectedLibraryId == library.id) { onLibrary(library) }
+                    selectedLibraryId == library.id, onClick = { onLibrary(library) })
             }
             if (showLocked || spoilerUnlocked) item(key = "spoiler-access") {
                 TvSidebarItem(if (spoilerUnlocked) "스포일러 잠그기" else "잠긴 라이브러리",
