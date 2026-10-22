@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -581,8 +582,13 @@ private fun LibraryScreen(
 ) {
     var searchText by rememberSaveable(library.id, query) { mutableStateOf(query) }
     val focus = LocalFocusManager.current
+    val browseState by viewModel.state.collectAsState()
+    val grid = rememberLazyGridState()
+    LibraryAutoLoad(grid, listOf(library.id, query, browseState.libraryBrowseRevision),
+        media.size, media.size, total, busy, error != null, viewModel::loadMore)
     LazyVerticalGrid(
         columns = GridCells.Adaptive(130.dp),
+        state = grid,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -609,10 +615,8 @@ private fun LibraryScreen(
             EmptyMessage(if (busy) "작품을 불러오는 중입니다" else if (query.isBlank()) "표시할 작품이 없습니다" else "검색 결과가 없습니다")
         }
         items(media, key = { "${it.libraryId}:${it.id}" }) { item -> PosterCard(item, viewModel, onWatchOptions = onWatchOptions) }
-        if (media.size < total && media.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
-            OutlinedButton(onClick = viewModel::loadMore, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                Text(if (busy) "불러오는 중…" else "더 불러오기 · ${media.size} / $total")
-            }
+        if (busy && media.size < total && media.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
         }
     }
 }

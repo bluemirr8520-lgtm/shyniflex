@@ -43,6 +43,7 @@ data class AppState(
     val libraryYears: List<Int> = emptyList(),
     val libraryContentType: LibraryContentType = LibraryContentType.MOVIES,
     val libraryWatchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL,
+    val libraryBrowseRevision: Long = 0,
     val detailStack: List<MediaDetails> = emptyList(),
     val versions: List<MediaVersion> = emptyList(),
     val selectedPartId: Int? = null,
@@ -67,6 +68,12 @@ internal fun initialEpisodeSeason(seasons: List<MediaItem>): MediaItem? {
     return available.firstOrNull { it.seasonNumber == 1 }
         ?: available.filter { (it.seasonNumber ?: -1) > 0 }.minByOrNull { it.seasonNumber!! }
         ?: available.firstOrNull()
+}
+
+/** A repeated or empty page ends this snapshot instead of making automatic paging loop. */
+internal fun appendLibraryPage(existing: List<MediaItem>, page: MediaPage): MediaPage {
+    val merged = (existing + page.items).distinctBy { it.id }
+    return page.copy(items = merged, total = if (merged.size <= existing.size) merged.size else maxOf(merged.size, page.total))
 }
 
 /** A version chosen in one detail screen must never select a different item's file. */
@@ -597,6 +604,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(library = library, items = emptyList(), total = 0,
             query = "", librarySort = LibrarySort.TITLE_ASC, libraryGenre = null, libraryYear = null,
             libraryContentType = LibraryContentType.defaultFor(library), libraryWatchFilter = LibraryWatchFilter.ALL,
+            libraryBrowseRevision = it.libraryBrowseRevision + 1,
             libraryGenres = emptyList(), libraryYears = emptyList(), detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
         launchRequest {
             val page = active.items(library)
@@ -609,12 +617,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val snapshot = mutableState.value
         val active = client ?: return
         val library = snapshot.library ?: return
-        if (snapshot.busy || snapshot.items.size >= snapshot.total) return
+        if (snapshot.busy || snapshot.detailStack.isNotEmpty() || snapshot.items.size >= snapshot.total) return
         launchRequest {
             val page = active.items(library, snapshot.items.size, snapshot.query, snapshot.librarySort, snapshot.libraryGenre, snapshot.libraryYear,
                 snapshot.libraryContentType, snapshot.libraryWatchFilter)
-            mutableState.update { it.copy(items = (snapshot.items + page.items).map(::collectionWatchState).distinctBy { item -> item.id },
-                total = if (page.items.isEmpty()) snapshot.items.size else page.total) }
+            val appended = appendLibraryPage(snapshot.items, page)
+            mutableState.update { it.copy(items = appended.items.map(::collectionWatchState), total = appended.total) }
         }
     }
 
@@ -622,7 +630,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         val snapshot = mutableState.value
         val library = snapshot.library ?: return
-        mutableState.update { it.copy(query = query, items = emptyList(), total = 0) }
+        mutableState.update { it.copy(query = query, items = emptyList(), total = 0,
+            libraryBrowseRevision = it.libraryBrowseRevision + 1) }
         launchRequest {
             val page = active.items(library, query = query, sort = snapshot.librarySort,
                 genre = snapshot.libraryGenre, year = snapshot.libraryYear,
@@ -641,7 +650,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val library = snapshot.library ?: return
         if (contentType !in LibraryContentType.availableFor(library)) return
         mutableState.update { it.copy(librarySort = sort, libraryGenre = genre, libraryYear = year,
-            libraryContentType = contentType, libraryWatchFilter = watchFilter, items = emptyList(), total = 0) }
+            libraryContentType = contentType, libraryWatchFilter = watchFilter, items = emptyList(), total = 0,
+            libraryBrowseRevision = it.libraryBrowseRevision + 1) }
         launchRequest {
             val page = active.items(library, query = snapshot.query, sort = sort, genre = genre, year = year,
                 contentType = contentType, watchFilter = watchFilter)
@@ -814,7 +824,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshCurrent(afterRefresh: (() -> Unit)? = null) {
         val active = client ?: return
         active.invalidateSeriesCounts()
-        mutableState.update { it.copy(seriesCountRevision = it.seriesCountRevision + 1) }
+        mutableState.update { it.copy(seriesCountRevision = it.seriesCountRevision + 1,
+            libraryBrowseRevision = if (it.library != null && it.detailStack.isEmpty()) it.libraryBrowseRevision + 1 else it.libraryBrowseRevision) }
         val snapshot = mutableState.value
         launchRequest {
             coroutineScope {

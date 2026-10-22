@@ -387,7 +387,8 @@ class ShyniClient(
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
         if (contentType !in LibraryContentType.availableFor(library)) throw ApiException("이 라이브러리에서 지원하지 않는 표시 종류입니다.")
         val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$sort:$contentType:$watchFilter"
-        val cached = browseCache[key]?.takeIf { System.currentTimeMillis() - it.at < 60_000 && offset > 0 }
+        // Keep page offsets in the same catalog snapshot until an explicit first-page refresh.
+        val cached = browseCache[key]?.takeIf { offset > 0 }
         val page = cached ?: run {
             val parsed = browseCatalog(library, contentType, sort, normalizedQuery)
             val watched = if (watchFilter == LibraryWatchFilter.ALL) parsed else {

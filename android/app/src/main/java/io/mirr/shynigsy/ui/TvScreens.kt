@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -337,6 +338,11 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
     val initialFocus = remember { FocusRequester() }
     var focusRequested by remember { mutableStateOf(false) }
     val visibleItems = state.items.filter { state.spoilerUnlocked || !it.isSpoiler }
+    val grid = rememberLazyGridState()
+    LibraryAutoLoad(grid, listOf(state.library?.id, state.libraryBrowseRevision, state.query,
+        state.librarySort, state.libraryGenre, state.libraryYear, state.libraryContentType,
+        state.libraryWatchFilter, state.spoilerUnlocked), state.items.size, visibleItems.size,
+        state.total, state.busy, state.error != null, model::loadMore)
     val restoreKey = focusedKey?.takeIf { key -> visibleItems.any { tvMediaKey(it) == key } }
         ?: visibleItems.firstOrNull()?.let(::tvMediaKey)
     val modelIsTelevision = LocalContext.current.isTelevision()
@@ -348,6 +354,7 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         }
     }
     LazyVerticalGrid(GridCells.Adaptive(if (modelIsTelevision) 152.dp else 114.dp), Modifier.fillMaxSize().testTag("tv-library"),
+        state = grid,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -381,9 +388,8 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
                 onSelect = { focusedKey = tvMediaKey(item) },
                 onClick = { model.openItem(item) }, onWatchOptions = { onWatchOptions(item) })
         }
-        if (state.items.isNotEmpty() && state.items.size < state.total) item(span = { GridItemSpan(maxLineSpan) }) {
-            TvAction(if (state.busy) "불러오는 중…" else "더 불러오기 · ${state.items.size} / ${state.total}",
-                enabled = !state.busy, onClick = model::loadMore)
+        if (state.busy && state.items.isNotEmpty() && state.items.size < state.total) item(span = { GridItemSpan(maxLineSpan) }) {
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
         }
     }
     when (menu) {
