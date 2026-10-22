@@ -2,21 +2,21 @@
 
 MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태블릿·Android TV에서 사용하며 Android 8.0 이상을 지원합니다. 첫 로그인 화면의 서버 주소는 빈칸이며 사용자가 직접 입력합니다.
 
-현재 작업 빌드는 **1.0.17**(빌드 18)입니다. 라이브러리는 전체·미시청·시청 중·보았음, TV 쇼·시즌·에피소드, 장르·연도와 정렬을 조합할 수 있습니다. 메뉴는 작은 사각형으로 표시하며, 시리즈 포스터에서 첫 시즌의 썸네일 회차 목록을 바로 열고 같은 화면에서 시즌을 바꿉니다. 작품 안의 **해상도** 폴더로 원본 4K·1080p·720p 등의 버전을 선택하며, 이 분류는 서버 파일을 이동하지 않습니다. 같은 해상도의 파일이 여러 개면 서버가 정한 우선 버전을 사용합니다.
+최신 버전은 **1.0.17**(빌드 18)입니다. 라이브러리는 전체·미시청·시청 중·보았음, TV 쇼·시즌·에피소드, 장르·연도와 정렬을 조합할 수 있습니다. 메뉴는 작은 사각형으로 표시하며, 시리즈 포스터에서 첫 시즌의 썸네일 회차 목록을 바로 열고 같은 화면에서 시즌을 바꿉니다. 작품 안의 **해상도** 폴더로 원본 4K·1080p·720p 등의 버전을 선택하며, 이 분류는 서버 파일을 이동하지 않습니다. 같은 해상도의 파일이 여러 개면 서버가 정한 우선 버전을 사용합니다.
 
-이 작업 빌드의 APK와 `shyniflex-1.0.17-corresponding-source.zip`은 함께 제공합니다. 아래 GitHub 링크는 기존 공개 릴리스입니다.
+APK와 `shyniflex-1.0.17-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
 
 공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
 
-- [shyniflex 1.0.14 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.14/shyniflex-1.0.14.apk)
-- [shyniflex 1.0.14 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.14/shyniflex-1.0.14-corresponding-source.zip)
-- [v1.0.14 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.14)
+- [shyniflex 1.0.17 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.17/shyniflex-1.0.17.apk)
+- [shyniflex 1.0.17 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.17/shyniflex-1.0.17-corresponding-source.zip)
+- [v1.0.17 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.17)
 
 전체 대응 소스 ZIP에는 해당 앱 소스, MPV·FFmpeg 등 네이티브 의존 소스, 하위 모듈, Maven 런타임 라이브러리의 소스, 빌드 스크립트와 라이선스를 함께 담습니다. 복원 방법은 [네이티브 대응 소스 안내](docs/NATIVE-SOURCES.md)를 참고하세요.
 
 ## 설치와 사용
 
-설치 파일은 위 APK 링크의 `shyniflex-1.0.14.apk`(빌드 15)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.14.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함합니다. 기존 버전에서 업데이트 설치하면 로그인과 설정을 유지합니다.
+설치 파일은 위 APK 링크의 `shyniflex-1.0.17.apk`(빌드 18)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.17.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 이전 TV 테스트 앱(`io.mirr.shyniflex.debug`)과는 패키지가 달라 별도로 설치하고 다시 로그인해야 합니다.
 
 1. APK를 Android 기기에 설치합니다.
 2. Shyni 서버의 HTTPS 주소와 사용자 이름·비밀번호를 입력해 로그인합니다. 2단계 인증을 사용하는 경우 인증 코드를 입력합니다.
