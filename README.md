@@ -2,31 +2,31 @@
 
 MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태블릿·Android TV에서 사용하며 Android 8.0 이상을 지원합니다. 첫 로그인 화면의 서버 주소는 빈칸이며 사용자가 직접 입력합니다.
 
-현재 작업 빌드는 **1.0.19**(빌드 20)이며, 공개 배포 버전은 **1.0.18**(빌드 19)입니다. Plex 방식의 필터·표시 종류·정렬 메뉴를 적용하고, 시청 상태·장르·연도·연대를 조합하며 정렬 방향을 바꿀 수 있습니다. 라이브러리의 더 불러오기 버튼을 없애고 목록 끝에 가까워지면 다음 작품을 자동으로 불러옵니다. 통신 오류 후에는 사이드 메뉴의 새로고침으로 다시 조회할 수 있습니다.
+최신 버전은 **1.0.19**(빌드 20)입니다. Plex 방식의 필터·표시 종류·정렬 메뉴를 적용하고, 시청 상태·장르·연도·연대를 조합하며 정렬 방향을 바꿀 수 있습니다. 라이브러리의 더 불러오기 버튼을 없애고 목록 끝에 가까워지면 다음 작품을 자동으로 불러옵니다. 통신 오류 후에는 사이드 메뉴의 새로고침으로 다시 조회할 수 있습니다.
 
 라이브러리는 전체·미시청·시청 중·보았음, TV 쇼·시즌·에피소드, 장르·연도와 정렬을 조합할 수 있습니다. 메뉴는 작은 사각형으로 표시하며, 시리즈 포스터에서 첫 시즌의 썸네일 회차 목록을 바로 열고 같은 화면에서 시즌을 바꿉니다. 작품 안의 **해상도** 폴더로 원본 4K·1080p·720p 등의 버전을 선택하며, 이 분류는 서버 파일을 이동하지 않습니다. 같은 해상도의 파일이 여러 개면 서버가 정한 우선 버전을 사용합니다.
 
-APK와 `shyniflex-1.0.18-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
+APK와 `shyniflex-1.0.19-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
 
 공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
 
-- [shyniflex 1.0.18 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.18/shyniflex-1.0.18.apk)
-- [shyniflex 1.0.18 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.18/shyniflex-1.0.18-corresponding-source.zip)
-- [v1.0.18 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.18)
+- [shyniflex 1.0.19 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.19/shyniflex-1.0.19.apk)
+- [shyniflex 1.0.19 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.19/shyniflex-1.0.19-corresponding-source.zip)
+- [v1.0.19 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.19)
 
 전체 대응 소스 ZIP에는 해당 앱 소스, MPV·FFmpeg 등 네이티브 의존 소스, 하위 모듈, Maven 런타임 라이브러리의 소스, 빌드 스크립트와 라이선스를 함께 담습니다. 복원 방법은 [네이티브 대응 소스 안내](docs/NATIVE-SOURCES.md)를 참고하세요.
 
 CPU별 APK는 동일한 재생 기능과 코덱을 포함하면서 해당 기기의 네이티브 라이브러리만 담습니다. Galaxy S23 Ultra 등 64비트 ARM 기기는 ARM64를 사용합니다. CPU를 모르거나 여러 종류의 기기에 배포할 때는 통합 APK를 사용합니다.
 
-- [ARM64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.18/shyniflex-1.0.18-arm64-v8a.apk)
-- [32비트 ARM APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.18/shyniflex-1.0.18-armeabi-v7a.apk)
-- [x86_64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.18/shyniflex-1.0.18-x86_64.apk)
+- [ARM64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.19/shyniflex-1.0.19-arm64-v8a.apk)
+- [32비트 ARM APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.19/shyniflex-1.0.19-armeabi-v7a.apk)
+- [x86_64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.19/shyniflex-1.0.19-x86_64.apk)
 
 목록 정리·정렬과 큰 외부 자막의 인덱스 구축은 화면 스레드 밖에서 처리합니다. 라이브러리·홈의 표시 목록을 재사용하고, 빠르게 지나간 카드의 미시청 편수 조회를 줄입니다. 비공개 이미지의 디스크·메모리 캐시 차단은 유지합니다.
 
 ## 설치와 사용
 
-설치 파일은 위 APK 링크의 `shyniflex-1.0.18.apk`(빌드 19)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.18.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 이전 TV 테스트 앱(`io.mirr.shyniflex.debug`)과는 패키지가 달라 별도로 설치하고 다시 로그인해야 합니다.
+설치 파일은 위 APK 링크의 `shyniflex-1.0.19.apk`(빌드 20)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.19.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 이전 TV 테스트 앱(`io.mirr.shyniflex.debug`)과는 패키지가 달라 별도로 설치하고 다시 로그인해야 합니다.
 
 1. APK를 Android 기기에 설치합니다.
 2. Shyni 서버의 HTTPS 주소와 사용자 이름·비밀번호를 입력해 로그인합니다. 2단계 인증을 사용하는 경우 인증 코드를 입력합니다.
