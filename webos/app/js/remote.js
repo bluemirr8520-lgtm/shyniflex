@@ -698,7 +698,7 @@
     if (!this.options.repeatNavigation || typeof this.options.canRepeatNavigation !== 'function' ||
         !this.options.canRepeatNavigation(this.document.activeElement)) { return; }
     this._heldDirection = { code: code, scope: this._focusScope(), lastEventAt: Date.now() };
-    this._repeatTimer = global.setTimeout(function () { self._repeatDirection(); }, 140);
+    this._repeatTimer = global.setTimeout(function () { self._repeatDirection(); }, 220);
   };
 
   Remote.prototype._repeatDirection = function () {
@@ -715,7 +715,7 @@
     // Holding a key stops at a content boundary. A fresh press can enter the sidebar/header.
     if (!next || next === current || (!isInside(current, '.side-navigation') && !isInside(next, '[data-nav-layout]'))) { return; }
     this.focus(next, 'dpad-repeat');
-    this._repeatTimer = global.setTimeout(function () { self._repeatDirection(); }, 55);
+    this._repeatTimer = global.setTimeout(function () { self._repeatDirection(); }, 95);
   };
 
   Remote.prototype.handleKeyDown = function (eventOrCode) {

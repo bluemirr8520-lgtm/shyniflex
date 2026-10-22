@@ -97,16 +97,16 @@ test('left/right edits subtitle select values while up/down navigates, without a
   f.remote.handleKeyDown(40); assert.equal(f.doc.activeElement, f.cards[2]);
 });
 
-test('held arrows start after 140ms, repeat every 55ms, and keyup cancels immediately', function () {
+test('held arrows start after 220ms, repeat every 95ms, and keyup cancels immediately', function () {
   var clock = fakeClock(); var f = fixture(24, 12, clock); enableRepeat(f);
   f.remote.focus(f.cards[0]);
   f.remote.handleKeyDown({ keyCode: 39 });
   assert.equal(f.doc.activeElement, f.cards[1]);
-  clock.advance(139); assert.equal(f.doc.activeElement, f.cards[1]);
+  clock.advance(219); assert.equal(f.doc.activeElement, f.cards[1]);
   clock.advance(1); assert.equal(f.doc.activeElement, f.cards[2]);
   f.remote.handleKeyDown({ keyCode: 39, repeat: true });
   assert.equal(f.doc.activeElement, f.cards[2], 'native repeats must not duplicate timer movement');
-  clock.advance(55); assert.equal(f.doc.activeElement, f.cards[3]);
+  clock.advance(95); assert.equal(f.doc.activeElement, f.cards[3]);
   f.remote.handleKeyUp({ keyCode: 39 });
   clock.advance(1000); assert.equal(f.doc.activeElement, f.cards[3]);
   assert.equal(clock.jobs.size, 0);
@@ -244,7 +244,7 @@ test('sidebar refresh is first in both visual and D-pad order, with stable focus
   assert.ok(html.indexOf('id="nav-refresh"') < html.indexOf('id="nav-home"'));
   assert.match(app, /\[refs\.navRefresh, refs\.navHome, refs\.navSearch, refs\.navLibraries\]/);
   assert.match(css, /\.focusable\s*\{[^}]*transition: none;/);
-  assert.match(css, /box-shadow: 0 0 0 7px #6ce6c2;/);
+  assert.match(css, /box-shadow: 0 0 0 7px #55dfb8,/);
   assert.match(css, /\.side-navigation\.expanded\s*\{\s*border-right-color: #6ce6c2;\s*\}/, 'focus must not change sidebar geometry');
   assert.doesNotMatch(app, /remote\.root\s*=/, 'scope changes must not detach pointer/focus listeners from their original root');
 });

@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.1';
+  var APP_VERSION = '1.0.2';
   var STORAGE = {
     connection: 'shyniflex.webos.connection.v1',
     libraryOrder: 'shyniflex.webos.library-order.v1',
@@ -394,8 +394,26 @@
     return playbackOptionsForCapabilities(state.deviceCapabilities, state.playbackSettings);
   }
 
-  function playbackOptionsForItem(item) {
+  function playbackOptionsForItem(item, forceCompatibility) {
     var options = playbackOptions();
+    if (state.connection && state.connection.type === 'shyni') {
+      // The TV's native decoder can handle many 4K H.264/H.265 files without
+      // making the server transcode them. Auto quality therefore tries the
+      // original stream first and only falls back after a decoder failure.
+      if (state.playbackSettings.quality === 'auto' && !forceCompatibility) {
+        options.compatibility = false;
+        if (state.deviceCapabilities && state.deviceCapabilities.uhd) {
+          options.uhd = true;
+          options.maxVideoWidth = 3840;
+          options.maxVideoHeight = 2160;
+          options.videoResolution = '3840x2160';
+          options.maxVideoBitrateKbps = 80000;
+          options.maxStreamingBitrate = 120000000;
+        }
+      } else if (forceCompatibility) {
+        options.compatibility = true;
+      }
+    }
     options.startTimeSeconds = playbackStartTimeForSettings(
       number(item && item.resumePositionMs, 0) / 1000,
       state.playbackSettings
@@ -2190,12 +2208,13 @@
   function setPlayerError(message) {
     refs.playerMessage.textContent = message || '';
     refs.playerMessage.classList.toggle('hidden', !message);
-    showOsd(true);
+    if (message) { showOsd(true); }
   }
 
   function playItem(item) {
     if (state.playerState === 'resolving') { return global.Promise.resolve(null); }
     var fromBeginning = arguments[1] === true;
+    var forceCompatibility = arguments[2] === true;
     var preparedSession = null;
     var clientAtRequest = state.client;
     var token = state.playLoadToken + 1;
@@ -2203,18 +2222,18 @@
     if (refs.playerView.classList.contains('hidden')) {
       state.playerReturnFocus = global.document.activeElement;
     }
-    setNetworkStatus('재생 준비', false);
+    setNetworkStatus('', false);
     state.playerState = 'resolving';
     state.remote.stopRepeating();
-    setPlayerError('Shyni 서버에서 재생 방식을 확인하고 있습니다…');
+    setPlayerError('');
     refs.playerTitle.textContent = entityTitle(item);
-    refs.playbackMode.textContent = '재생 준비';
+    refs.playbackMode.textContent = '';
     refs.playerView.classList.remove('hidden');
     refs.appHeader.classList.add('hidden');
     refs.content.classList.add('hidden');
     releaseBrowseArtwork();
     focusInitial(refs.playerClose);
-    var options = playbackOptionsForItem(item);
+    var options = playbackOptionsForItem(item, forceCompatibility);
     if (fromBeginning) { options.startTimeSeconds = 0; }
     return invokeClient(['resolvePlayback', 'getPlayback', 'playback'], [item, options]).then(function (result) {
       if (token !== state.playLoadToken || state.client !== clientAtRequest) {
@@ -2224,7 +2243,6 @@
       state.pendingPlayback = result;
       preparedSession = result;
       if (options.compatibility && clientAtRequest.preparePlayback) {
-        setPlayerError('Shyni 서버가 TV 호환 영상을 준비하고 있습니다…');
         return clientAtRequest.preparePlayback(result);
       }
       return result;
@@ -2251,6 +2269,7 @@
       refs.content.classList.add('hidden');
       releaseBrowseArtwork();
       state.subtitles.clear();
+      state.subtitles.setPlaybackOffset(playback.positionOffset);
       renderSubtitleTracks(playback);
       if (playback.subtitleUrl && state.subtitles.enabled) {
         state.subtitles.loadFromUrl(playback.subtitleUrl).then(function (loaded) {
@@ -2267,7 +2286,7 @@
       });
       showOsd(false);
       global.setTimeout(function () { focusInitial(refs.playerToggle); }, 0);
-      setNetworkStatus('영상 시작 대기', false);
+      setNetworkStatus('', false);
     }).catch(function (error) {
       if (token !== state.playLoadToken || state.client !== clientAtRequest) {
         if (preparedSession && clientAtRequest.stopTranscode) { clientAtRequest.stopTranscode(preparedSession); }
@@ -2459,6 +2478,7 @@
 
   function selectSubtitleTrack() {
     state.subtitles.clear();
+    state.subtitles.setPlaybackOffset(state.playback ? state.playback.positionOffset : 0);
     var track = state.playback && (state.playback.subtitles || [])[number(refs.subtitleTrack.value, -1)];
     state.subtitles.setStyle({ enabled: Boolean(track && supportedSubtitle(track)) });
     persistSubtitleSettings();
@@ -3965,8 +3985,20 @@
     }
     state.player = new global.ShyniFlexWebOS.Player(refs.video, {
       seekStep: state.playbackSettings.seekSeconds,
+      startupTimeout: 12000,
       onProgress: updateProgressUi,
       onError: function (error) {
+        var failedPlayback = state.playback;
+        var failedSession = failedPlayback && failedPlayback.session;
+        if (failedSession && failedSession.serverType === 'shyni' &&
+            failedSession.playMethod === 'DirectPlay' && !failedSession.compatibilityFallbackStarted) {
+          failedSession.compatibilityFallbackStarted = true;
+          setPlayerError('');
+          setNetworkStatus('', false);
+          state.playerState = 'idle';
+          playItem(failedPlayback.item, false, true).catch(function () {});
+          return;
+        }
         if (state.subtitles) { state.subtitles.clear(); }
         setPlayerError('재생 오류: ' + errorMessage(error));
         setNetworkStatus('재생 오류', true);
@@ -3982,8 +4014,8 @@
         var previousPlayerState = state.playerState;
         state.playerState = playState;
         refs.playerView.setAttribute('data-playback-state', playState);
-        if (playState === 'loading') { setPlayerError('호환 영상을 불러오는 중입니다…'); }
-        if (playState === 'buffering') { setPlayerError('영상 데이터를 기다리고 있습니다…'); }
+        // HLS segment boundaries can briefly emit `waiting` on older webOS TVs.
+        // Keep transient buffering silent so the status message does not flicker.
         if (state.playback && state.playback.session && (details.attempt === 'hls-native' || details.attempt === 'hls-js')) {
           if (state.playback.session.playMethod === 'DirectPlay') { state.playback.session.playMethod = 'Transcode'; }
           refs.playbackMode.textContent = state.playback.session.deliveryMode === 'hls-mpegts' ? 'Shyni TV 호환 HLS' :

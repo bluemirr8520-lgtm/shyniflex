@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.1';
+  var APP_VERSION = '1.0.2';
   var PRODUCT = 'ShyniFlex webOS';
   var PLEX_TV_URL = 'https://plex.tv';
   var PLEX_AUTH_URL = 'https://plex.tv/link/';
@@ -1522,16 +1522,19 @@
         return request(connection, 'GET', '/libraries/' + encodeURIComponent(library.id) + '/' + route, { maxResponseBytes: 16777216 })
           .then(function (value) {
             var kind = library.collectionType === 'tv' ? 'show' : 'movie';
-            return shyniRows(value, 'items', 'results').slice(0, limit).map(function (row) { return shyniMedia(connection, row, library.id, kind); });
-          }).catch(function () { return []; });
+            return { library: library, items: shyniRows(value, 'items', 'results').slice(0, limit).map(function (row) {
+              return shyniMedia(connection, row, library.id, kind);
+            }) };
+          }).catch(function () { return { library: library, items: [] }; });
       })).then(function (recentGroups) {
-        var recent = [];
-        recentGroups.forEach(function (group) { recent = recent.concat(group); });
-        recent.sort(function (a, b) { return text(b.addedAt).localeCompare(text(a.addedAt)); });
-        recent = recent.slice(0, limit);
-        if (!recent.length) { return hubs; }
-        return shyniWithProgress(connection, recent).then(function (items) {
-          hubs.push({ id: 'recently-added', title: '최근 추가됨', kind: 'recent', items: items });
+        return global.Promise.all(recentGroups.map(function (group) {
+          if (!group.items.length) { return null; }
+          return shyniWithProgress(connection, group.items).then(function (items) {
+            return { id: 'recently-added-' + group.library.id, title: group.library.title + ' 최근 추가',
+              kind: 'recent', libraryId: group.library.id, items: items };
+          });
+        })).then(function (rows) {
+          rows.filter(Boolean).forEach(function (row) { hubs.push(row); });
           return hubs;
         });
       });
@@ -1593,8 +1596,15 @@
     }
     var sessionId = randomId();
     var body = { metadata_item_id: number(item.id, 0), library_view_id: number(item.libraryId, 0),
-      view_item_id: number(item.viewItemId, 0), platform: 'mobile', client_app: 'shyniflex-webos',
-      device_id: connection.clientIdentifier, client_session_id: sessionId };
+      view_item_id: number(item.viewItemId, 0), platform: 'general', client_app: 'shyniflex-webos',
+      device_id: connection.clientIdentifier, client_session_id: sessionId,
+      max_video_height: Math.min(2160, Math.max(480, number(options.maxVideoHeight, 2160))),
+      client_profile: { device: 'lg-webos-tv', direct_play: options.compatibility === false,
+        max_video_width: Math.min(3840, Math.max(640, number(options.maxVideoWidth, 3840))),
+        max_video_height: Math.min(2160, Math.max(480, number(options.maxVideoHeight, 2160))),
+        video_codecs: ['h264', 'hevc', 'vp9', 'mpeg2video', 'mpeg4', 'vc1'],
+        audio_codecs: ['aac', 'ac3', 'eac3', 'dts', 'mp3', 'pcm', 'vorbis'],
+        containers: ['mp4', 'mkv', 'mpegts', 'ts', 'm2ts', 'mov', 'avi', 'wmv'] } };
     if (item.partId) { body.part_id = number(item.partId, 0); }
     return request(connection, 'POST', '/playback/decision', { body: body, timeout: 30000 }).then(function (decision) {
       decision = decision || {};
@@ -1607,43 +1617,38 @@
       var ticketQuery = {};
       Object.keys(context).forEach(function (key) { ticketQuery[key] = context[key]; });
       if (compatibility) { ticketQuery.mode = 'video'; }
-      return request(connection, 'POST', ticketPath, { query: ticketQuery, body: {}, timeout: 30000 }).then(function (ticketResponse) {
-        var ticket = text(ticketResponse && ticketResponse.ticket);
+      var playbackTicketPromise = request(connection, 'POST', ticketPath, { query: ticketQuery, body: {}, timeout: 30000 });
+      var subtitleTicketPromise = compatibility
+        ? request(connection, 'POST', '/stream-ticket/' + encodeURIComponent(partId), { query: context, body: {}, timeout: 30000 })
+        : playbackTicketPromise;
+      var subtitleRowsPromise = request(connection, 'GET', '/subtitles/' + encodeURIComponent(partId), { query: context })
+        .catch(function () { return { subtitles: [] }; });
+      return global.Promise.all([playbackTicketPromise, subtitleTicketPromise, subtitleRowsPromise]).then(function (values) {
+        var ticket = text(values[0] && values[0].ticket);
         if (!ticket) { throw new ApiError('재생 티켓을 받지 못했습니다.', 0, ticketPath, 'missing_stream_ticket'); }
         var streamUrl = compatibility
           ? appendQuery(connection.baseUrl + '/transcode/' + encodeURIComponent(partId), { ticket: ticket, mode: 'video', max_height: Math.min(1080, number(options.maxVideoHeight, 1080)) })
           : appendQuery(connection.baseUrl + '/stream/' + encodeURIComponent(partId), { ticket: ticket });
-        return request(connection, 'POST', '/stream-ticket/' + encodeURIComponent(partId), { query: context, body: {}, timeout: 30000 })
-          .then(function (subtitleTicketResponse) {
-            var subtitleTicket = text(subtitleTicketResponse && subtitleTicketResponse.ticket);
-            if (!subtitleTicket) { return []; }
-            return request(connection, 'GET', '/subtitles/' + encodeURIComponent(partId), { query: context }).then(function (subtitleResponse) {
-              return shyniRows(subtitleResponse, 'subtitles').map(function (row) {
-                return shyniSubtitle(connection, row, subtitleTicket, context);
-              }).filter(Boolean);
-            });
-          }).catch(function () { return []; }).then(function (subtitles) {
-            return request(connection, 'GET', '/playback/progress', { query: { item_ids: item.id, library_view_id: decision.library_view_id || item.libraryId } })
-              .catch(function () { return null; }).then(function (progressResponse) {
-                var progress = shyniProgressFor(progressResponse, item.id);
-                var duration = number(selected.duration_ms, 0) || number(selected.duration_sec, 0) * 1000 || number(progress && progress.duration_ms, 0) || number(item.durationMs, 0);
-                var watched = progress && (bool(progress.completed || progress.watched) || text(progress.state).toLowerCase() === 'completed');
-                var resume = watched ? 0 : number(progress && progress.position_ms, number(item.resumePositionMs, 0));
-                var requestedStart = Object.prototype.hasOwnProperty.call(options, 'startTimeSeconds')
-                  ? Math.max(0, Math.round(number(options.startTimeSeconds, 0) * 1000))
-                  : resume;
-                return { serverType: 'shyni', itemId: item.id, libraryId: item.libraryId, viewItemId: item.viewItemId,
-                  partId: String(partId), url: streamUrl, directUrl: streamUrl, hlsUrl: '', fallbackUrl: '',
-                  sources: [{ kind: 'direct', url: streamUrl, mimeType: 'video/mp4', playMethod: compatibility ? 'Transcode' : 'DirectPlay' }],
-                  mimeType: 'video/mp4', subtitles: subtitles, durationMs: duration, resumePositionMs: resume,
-                  playMethod: compatibility ? 'Transcode' : 'DirectPlay', sessionId: sessionId,
-                  progressToken: text(decision.playback_context_token), decision: compatibility ? 'video_transcode' : text(decision.decision, 'direct_play'),
-                  transcodeTicket: compatibility ? ticket : '', requestedStartPositionMs: requestedStart,
-                  streamStartPositionMs: 0, maxVideoHeight: Math.min(1080, number(options.maxVideoHeight, 1080)),
-                  selectedAudioStreamIndex: number(decision.selected_audio_stream_index, -1),
-                  sourceItem: item };
-              });
-          });
+        var subtitleTicket = text(values[1] && values[1].ticket);
+        var subtitles = subtitleTicket ? shyniRows(values[2], 'subtitles').map(function (row) {
+          return shyniSubtitle(connection, row, subtitleTicket, context);
+        }).filter(Boolean) : [];
+        var duration = number(selected.duration_ms, 0) || number(selected.duration_sec, 0) * 1000 || number(item.durationMs, 0);
+        var resume = item.played || item.watched ? 0 : number(item.resumePositionMs, 0);
+        var requestedStart = Object.prototype.hasOwnProperty.call(options, 'startTimeSeconds')
+          ? Math.max(0, Math.round(number(options.startTimeSeconds, 0) * 1000))
+          : resume;
+        var sourceMimeType = compatibility ? 'video/mp4' : '';
+        return { serverType: 'shyni', itemId: item.id, libraryId: item.libraryId, viewItemId: item.viewItemId,
+          partId: String(partId), url: streamUrl, directUrl: streamUrl, hlsUrl: '', fallbackUrl: '',
+          sources: [{ kind: 'direct', url: streamUrl, mimeType: sourceMimeType, playMethod: compatibility ? 'Transcode' : 'DirectPlay' }],
+          mimeType: sourceMimeType, subtitles: subtitles, durationMs: duration, resumePositionMs: resume,
+          playMethod: compatibility ? 'Transcode' : 'DirectPlay', sessionId: sessionId,
+          progressToken: text(decision.playback_context_token), decision: compatibility ? 'video_transcode' : text(decision.decision, 'direct_play'),
+          transcodeTicket: compatibility ? ticket : '', requestedStartPositionMs: requestedStart,
+          streamStartPositionMs: 0, maxVideoHeight: Math.min(1080, number(options.maxVideoHeight, 1080)),
+          selectedAudioStreamIndex: number(decision.selected_audio_stream_index, -1),
+          sourceItem: item };
       });
     });
   }

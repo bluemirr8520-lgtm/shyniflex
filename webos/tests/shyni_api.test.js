@@ -120,6 +120,52 @@ test('season browsing returns a four-column-ready episode collection with watch 
   assert.match(calls[1].url, /\/playback\/progress\?item_ids=21%2C22&library_view_id=9$/);
 });
 
+test('home keeps recently added rows separate for each library', async function () {
+  response(200, []);
+  response(200, [{ id: 31, title: '영화 한 편', item_type: 'movie', view_item_id: 701, part_id: 101 }]);
+  response(200, [{ id: 41, title: '드라마 한 편', item_type: 'show', view_item_id: 801 }]);
+  response(200, {});
+  response(200, {});
+
+  var hubs = await api.createClient(connection()).listHomeHubs({ limit: 14, libraries: [
+    { id: '8', title: '영화 UHD', collectionType: 'movie' },
+    { id: '9', title: 'VOD 드라마', collectionType: 'tv' }
+  ] });
+
+  assert.deepEqual(hubs.map(function (hub) { return [hub.id, hub.title, hub.libraryId]; }), [
+    ['recently-added-8', '영화 UHD 최근 추가', '8'],
+    ['recently-added-9', 'VOD 드라마 최근 추가', '9']
+  ]);
+  assert.equal(hubs[0].items[0].title, '영화 한 편');
+  assert.equal(hubs[1].items[0].title, '드라마 한 편');
+});
+
+test('Shyni original playback uses a stream ticket without starting a transcode', async function () {
+  response(200, {
+    decision: 'direct_play', library_view_id: 8, view_item_id: 501,
+    selected: { part_id: 90, duration_ms: 7200000 }
+  });
+  response(200, { ticket: 'original-ticket' });
+  response(200, { subtitles: [] });
+
+  var playback = await api.createClient(connection()).resolvePlayback({
+    id: '23', type: 'movie', playable: true, libraryId: '8', viewItemId: '501', partId: '90', title: '4K 테스트 영화'
+  }, { compatibility: false, maxVideoHeight: 2160 });
+
+  assert.equal(playback.playMethod, 'DirectPlay');
+  assert.equal(playback.url, 'https://media.example.test/stream/90?ticket=original-ticket');
+  assert.equal(playback.transcodeTicket, '');
+  assert.equal(playback.mimeType, '');
+  var decisionRequest = JSON.parse(calls[0].body);
+  assert.equal(decisionRequest.platform, 'general');
+  assert.equal(decisionRequest.max_video_height, 2160);
+  assert.equal(decisionRequest.client_profile.direct_play, true);
+  assert.ok(decisionRequest.client_profile.video_codecs.indexOf('hevc') >= 0);
+  assert.ok(decisionRequest.client_profile.audio_codecs.indexOf('eac3') >= 0);
+  assert.match(calls[1].url, /\/stream-ticket\/90\?library_view_id=8&view_item_id=501$/);
+  assert.equal(calls.some(function (call) { return /\/transcode(?:\/|$)/.test(call.url); }), false);
+});
+
 test('legacy webOS playback uses a Shyni video transcode ticket, scoped subtitles and progress', async function () {
   response(200, {
     decision: 'video_transcode', library_view_id: 8, view_item_id: 501,
@@ -131,11 +177,11 @@ test('legacy webOS playback uses a Shyni video transcode ticket, scoped subtitle
     { id: 4, label: '한국어', lang_code: 'ko', format: 'ass', source: 'external', default: true },
     { id: 5, label: 'PGS', format: 'pgs', playable: false }
   ] });
-  response(200, { '23': { metadata_item_id: 23, position_ms: 300000, duration_ms: 7200000 } });
 
   var client = api.createClient(connection());
   var playback = await client.resolvePlayback({
-    id: '23', type: 'movie', playable: true, libraryId: '8', viewItemId: '501', partId: '90', title: '테스트 영화'
+    id: '23', type: 'movie', playable: true, libraryId: '8', viewItemId: '501', partId: '90', title: '테스트 영화',
+    resumePositionMs: 300000
   }, { compatibility: true, maxVideoHeight: 1080 });
 
   assert.equal(playback.playMethod, 'Transcode');
@@ -159,21 +205,21 @@ test('legacy webOS playback uses a Shyni video transcode ticket, scoped subtitle
   assert.equal(playback.deliveryMode, 'hls-mpegts');
   assert.equal(playback.streamStartPositionMs, 300000);
   assert.equal(playback.resumePositionMs, 0);
-  assert.match(calls[5].url, /\/transcode\/90\/hls\?.*mode=video/);
-  assert.match(calls[5].url, /start_ms=300000/);
-  assert.match(calls[5].url, /segment_format=mpegts/);
+  assert.match(calls[4].url, /\/transcode\/90\/hls\?.*mode=video/);
+  assert.match(calls[4].url, /start_ms=300000/);
+  assert.match(calls[4].url, /segment_format=mpegts/);
 
   response(200, { ok: true });
   await client.reportProgress(playback, { positionMs: 420000, durationMs: 7200000, isPaused: false });
-  var progress = JSON.parse(calls[7].body);
+  var progress = JSON.parse(calls[6].body);
   assert.equal(progress.state, 'playing');
   assert.equal(progress.position_ms, 420000);
   assert.equal(progress.delivery_mode, 'server_proxy');
 
   response(200, { ok: true });
   await client.stopTranscode(playback);
-  assert.equal(calls[8].method, 'DELETE');
-  assert.equal(calls[8].url, 'https://media.example.test/transcode/hls/hls-session');
+  assert.equal(calls[7].method, 'DELETE');
+  assert.equal(calls[7].url, 'https://media.example.test/transcode/hls/hls-session');
 });
 
 test('completed playback is reported as a completion candidate', async function () {

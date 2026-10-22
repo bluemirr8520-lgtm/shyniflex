@@ -322,6 +322,10 @@
     this.cues = [];
     this.enabled = this.options.enabled !== false;
     this.timeOffset = 0;
+    // Compatibility HLS may begin at a resume point while its media clock
+    // restarts at zero. Keep that session offset separate from the user's
+    // persisted fine-tuning so full-timeline subtitle cues stay in sync.
+    this.playbackOffset = 0;
     this._loadToken = 0;
     this._request = null;
     this._cueEnds = [];
@@ -637,9 +641,16 @@
   };
 
   Subtitles.prototype.update = function (time) {
-    var text = this.enabled ? this._activeText(finiteNumber(time, 0) - this.timeOffset) : '';
+    var timelineTime = finiteNumber(time, 0) + this.playbackOffset - this.timeOffset;
+    var text = this.enabled ? this._activeText(timelineTime) : '';
     this._render(text);
     return text;
+  };
+
+  Subtitles.prototype.setPlaybackOffset = function (seconds) {
+    this.playbackOffset = Math.max(0, finiteNumber(seconds, 0));
+    this.update(this.video ? finiteNumber(this.video.currentTime, 0) : 0);
+    return this.playbackOffset;
   };
 
   Subtitles.prototype._writeCueText = function (text) {
@@ -1005,6 +1016,7 @@
     this.cancelLoad();
     this.cues = [];
     this._cueEnds = [];
+    this.playbackOffset = 0;
     this._render('');
   };
 

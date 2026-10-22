@@ -237,6 +237,16 @@ function testSubtitleParsingAndPresentation() {
   assert.strictEqual(subtitles.cueElement.style.textOrientation, 'upright');
   assert.strictEqual(subtitles.cueElement.style.textAlign, 'center');
 
+  subtitles.setCues([{ start: 300, end: 305, text: '이어보기 자막', order: 0 }]);
+  assert.strictEqual(subtitles.update(2), '');
+  assert.strictEqual(subtitles.setPlaybackOffset(300), 300);
+  assert.strictEqual(subtitles.update(2), '이어보기 자막');
+  subtitles.setStyle({ timeOffset: 1 });
+  assert.strictEqual(subtitles.update(2), '이어보기 자막');
+  subtitles.clear();
+  assert.strictEqual(subtitles.playbackOffset, 0);
+  subtitles.setStyle({ timeOffset: 0 });
+
   var symbolSource = '가격 $10 (50%) & A&B!\n[OK] #1';
   var symbolExpected = '가격 ＄10 (50％) ＆ A＆B！\n[OK] ＃1';
   subtitles.setCues([{ start: 0, end: 10, text: symbolSource, order: 0 }]);
