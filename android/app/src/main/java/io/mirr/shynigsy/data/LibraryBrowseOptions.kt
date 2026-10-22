@@ -15,7 +15,7 @@ enum class LibrarySort(val label: String) {
         YEAR_ASC, YEAR_DESC -> LibrarySortField.YEAR
         DURATION_ASC, DURATION_DESC -> LibrarySortField.DURATION
     }
-    val isAscending: Boolean get() = this == field.ascending
+    val isAscending: Boolean get() = this == this.field.ascending
     fun reversedDirection(): LibrarySort = if (isAscending) field.descending else field.ascending
 
     internal fun query(library: Library, contentType: LibraryContentType = LibraryContentType.defaultFor(library)): String = when (this) {
