@@ -39,6 +39,8 @@ class TvNavigationTest {
     }
 
     @Test fun watchedDialogIgnoresOpeningConfirmReleaseAndRequiresFreshSelection() {
+        org.junit.Assume.assumeTrue("TV window focus requires a television device",
+            InstrumentationRegistry.getInstrumentation().targetContext.isTelevision())
         var selected: Boolean? = null
         var dismissed = false
         compose.setContent { MaterialTheme {

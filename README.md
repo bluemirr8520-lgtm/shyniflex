@@ -2,7 +2,7 @@
 
 MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태블릿·Android TV에서 사용하며 Android 8.0 이상을 지원합니다. 첫 로그인 화면의 서버 주소는 빈칸이며 사용자가 직접 입력합니다.
 
-최신 버전은 **1.0.23**(빌드 24)입니다. 보았음·보지 않음을 저장한 뒤 목록을 갱신하는 동안 표시가 이전 상태로 돌아가는 문제를 수정했습니다. 일부 갱신 요청이 늦거나 실패해도 확인된 저장 결과를 각 화면에 함께 반영합니다.
+최신 버전은 **1.0.24**(빌드 25)입니다. **시청 상태** 메뉴에서 현재 상태에 체크 표시를 합니다. 보았음·보지 않음·취소 세 항목과 작은 팝업 크기는 그대로 유지하며, 메뉴를 다시 열어도 현재 선택을 바로 확인할 수 있습니다.
 
 재생 화면 하단의 **CC(자막 선택)** 버튼에서 자막을 끄거나 서버 외부 자막·내장 자막을 고릅니다. 자막의 언어·형식·출처와 현재 선택을 표시합니다. 기존 자막 글꼴·위치·세로 쓰기 설정은 그대로 사용할 수 있습니다.
 
@@ -12,31 +12,31 @@ MPV 기반의 **Android용 Shyni 서버 플레이어**입니다. 휴대폰·태�
 
 라이브러리는 선택한 표시 종류의 전체 작품을 보여 줍니다. 영화 또는 TV 쇼·시즌·에피소드로 표시하고 제목·추가일·연도·재생시간으로 정렬할 수 있습니다. 메뉴는 작은 사각형으로 표시하며, 시리즈 포스터에서 첫 시즌의 썸네일 회차 목록을 바로 열고 같은 화면에서 시즌을 바꿉니다. 작품 안의 **해상도** 폴더로 원본 4K·1080p·720p 등의 버전을 선택하며, 이 분류는 서버 파일을 이동하지 않습니다. 같은 해상도의 파일이 여러 개면 서버가 정한 우선 버전을 사용합니다.
 
-APK와 `shyniflex-1.0.23-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
+APK와 `shyniflex-1.0.24-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
 
 공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
 
-- [shyniflex 1.0.23 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.23/shyniflex-1.0.23.apk)
-- [shyniflex 1.0.23 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.23/shyniflex-1.0.23-corresponding-source.zip)
-- [v1.0.23 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.23)
+- [shyniflex 1.0.24 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.24/shyniflex-1.0.24.apk)
+- [shyniflex 1.0.24 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.24/shyniflex-1.0.24-corresponding-source.zip)
+- [v1.0.24 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.24)
 
 전체 대응 소스 ZIP에는 해당 앱 소스, MPV·FFmpeg 등 네이티브 의존 소스, 하위 모듈, Maven 런타임 라이브러리의 소스, 빌드 스크립트와 라이선스를 함께 담습니다. 복원 방법은 [네이티브 대응 소스 안내](docs/NATIVE-SOURCES.md)를 참고하세요.
 
 CPU별 APK는 동일한 재생 기능과 코덱을 포함하면서 해당 기기의 네이티브 라이브러리만 담습니다. Galaxy S23 Ultra 등 64비트 ARM 기기는 ARM64를 사용합니다. CPU를 모르거나 여러 종류의 기기에 배포할 때는 통합 APK를 사용합니다.
 
-- [ARM64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.23/shyniflex-1.0.23-arm64-v8a.apk)
-- [32비트 ARM APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.23/shyniflex-1.0.23-armeabi-v7a.apk)
-- [x86_64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.23/shyniflex-1.0.23-x86_64.apk)
+- [ARM64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.24/shyniflex-1.0.24-arm64-v8a.apk)
+- [32비트 ARM APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.24/shyniflex-1.0.24-armeabi-v7a.apk)
+- [x86_64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.24/shyniflex-1.0.24-x86_64.apk)
 
 목록 정리·정렬과 큰 외부 자막의 인덱스 구축은 화면 스레드 밖에서 처리합니다. 라이브러리·홈의 표시 목록을 재사용하고, 빠르게 지나간 카드의 미시청 편수 조회를 줄입니다. 비공개 이미지의 디스크·메모리 캐시 차단은 유지합니다.
 
 ## 설치와 사용
 
-설치 파일은 위 APK 링크의 `shyniflex-1.0.23.apk`(빌드 24)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.23.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 이전 TV 테스트 앱(`io.mirr.shyniflex.debug`)과는 패키지가 달라 별도로 설치하고 다시 로그인해야 합니다.
+설치 파일은 위 APK 링크의 `shyniflex-1.0.24.apk`(빌드 25)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.24.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 이전 TV 테스트 앱(`io.mirr.shyniflex.debug`)과는 패키지가 달라 별도로 설치하고 다시 로그인해야 합니다.
 
 1. APK를 Android 기기에 설치합니다.
 2. Shyni 서버의 HTTPS 주소와 사용자 이름·비밀번호를 입력해 로그인합니다. 2단계 인증을 사용하는 경우 인증 코드를 입력합니다.
-3. 라이브러리에서 영화 또는 회차를 선택해 재생합니다. 1.0.23에서는 사이드바의 **검색**으로 여러 라이브러리의 제목을 찾고 작품을 열 수 있습니다.
+3. 라이브러리에서 영화 또는 회차를 선택해 재생합니다. 1.0.24에서는 사이드바의 **검색**으로 여러 라이브러리의 제목을 찾고 작품을 열 수 있습니다.
 4. 재생 화면 하단의 **CC(자막 선택)** 버튼으로 자막을 고릅니다. **설정 → 자막 → 자막 모양 → 세로 쓰기**에서 세로 자막을 켭니다.
 5. **설정 → 자막 → 자막 글꼴**에서 **시스템 기본** 또는 직접 가져온 글꼴을 고릅니다. **폰트 파일 추가**로 TTF/OTF 파일을 가져옵니다.
 6. 자막을 길게 누른 뒤 끌면 위치가 바뀝니다. 손을 떼면 저장하고, 화면 밖으로는 벗어나지 않습니다. TV에서는 같은 설정의 **자막 위치** 메뉴를 사용합니다.
