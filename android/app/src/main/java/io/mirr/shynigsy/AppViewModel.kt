@@ -285,7 +285,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(totpChallenge = null, busy = false, error = null) }
     }
 
-    private suspend fun loadHome(active: ShyniClient, refreshUserName: Boolean = false) {
+    private suspend fun loadHome(active: ShyniClient, refreshUserName: Boolean = false,
+        allowHomeInteraction: Boolean = true,
+        reconcile: (AppState) -> AppState = { it }) {
         val homeRevision = ++homeRefreshRevision
         val navigationRevision = revision
         val accessRevision = spoilerRevision
@@ -343,11 +345,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             continueOwner = HomeContinueOwner(active, homeAccountToken)
             mutableState.update { state ->
                 val selected = continueItems.firstOrNull { continueIdentity(it) == selectedContinueIdentity }
-                state.copy(continueItems = continueItems, spoilerUnlocked = unlocked,
+                reconcile(state.copy(continueItems = continueItems, spoilerUnlocked = unlocked,
                     continueLoading = false, continueError = continueError,
                     continueDetails = selected?.let { row -> state.continueDetails?.let { continueMetadata(row, it) } },
                     error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
-                        listOfNotNull(publicRecent?.second, continueError).distinct().joinToString("\n").ifBlank { null } else state.error)
+                        listOfNotNull(publicRecent?.second, continueError).distinct().joinToString("\n").ifBlank { null } else state.error))
             }
         }
         fun publishRecent() {
@@ -357,9 +359,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 previousRecent.filter { it.isSpoiler } else emptyList()
             val rows = visibleContinueWatching(publicLoad.first, privateRecent ?: retainedPrivate,
                 homeLibraries(), active.spoilerUnlocked).map(::collectionWatchState)
-            mutableState.update { state -> state.copy(recentItems = rows, recentLoading = false,
+            mutableState.update { state -> reconcile(state.copy(recentItems = rows, recentLoading = false,
                 error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
-                    listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error) }
+                    listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error)) }
         }
         fun publishLibraries() {
             if (ordinary == null || !canPublishHome()) return
@@ -368,7 +370,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             publishContinue()
             publishRecent()
         }
-        mutableState.update { it.copy(homeLoading = true, continueLoading = true, continueError = null, recentLoading = true) }
+        mutableState.update { it.copy(homeLoading = allowHomeInteraction, continueLoading = true, continueError = null, recentLoading = true) }
         try {
             coroutineScope {
                 val publicLibraries = async {
@@ -733,29 +735,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 collectionWatch[key] = item to watched
                 while (collectionWatch.size > 32) collectionWatch.remove(collectionWatch.keys.first())
             }
-            val applyResult = {
-                fun matches(candidate: MediaItem, target: MediaItem) = candidate.id == target.id &&
-                    candidate.libraryId == target.libraryId && candidate.type == target.type &&
-                    candidate.isSpoiler == target.isSpoiler && (candidate.viewItemId == null || target.viewItemId == null ||
-                        candidate.viewItemId == target.viewItemId)
-                fun affected(candidate: MediaItem) = matches(candidate, item) || changed.any { matches(candidate, it) }
-                fun updated(candidate: MediaItem) = when {
-                    affected(candidate) -> candidate.copy(watched = watched, resumeMs = 0)
-                    continueIdentity(candidate) in invalidatedAggregates -> candidate.copy(watched = false)
-                    else -> candidate
-                }
-                clearContinueSelection()
-                mutableState.update { state ->
-                    state.copy(items = state.items.map(::updated), searchItems = state.searchItems.map(::updated),
-                        recentItems = state.recentItems.map(::updated),
-                        continueItems = state.continueItems.filterNot(::affected),
-                        detailStack = state.detailStack.map { detail ->
-                            detail.copy(item = updated(detail.item), children = detail.children.map(::updated), seasons = detail.seasons.map(::updated))
-                        })
+            val accountToken = active.token
+            val accessRevision = spoilerRevision
+            // Every refreshed section publishes the acknowledged change atomically.
+            // A slow or failed sibling request must not expose the pre-write state.
+            val applyResult: (AppState) -> AppState = { state ->
+                if (client !== active || active.token != accountToken || !state.loggedIn ||
+                    (item.isSpoiler && (accessRevision != spoilerRevision ||
+                        !state.spoilerUnlocked || !active.spoilerUnlocked))) state
+                else applyExplicitWatchState(state, item, changed, watched) { candidate ->
+                    continueIdentity(candidate) in invalidatedAggregates
                 }
             }
-            applyResult()
-            refreshCurrent(applyResult)
+            clearContinueSelection()
+            mutableState.update(applyResult)
+            // A queued playback-completion refresh waits until this confirmed change
+            // has finished publishing instead of cancelling its reconciliation.
+            refreshCurrent(applyResult, allowHomeInteraction = false)
         }
     }
 
@@ -812,7 +808,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchRequest { loadSearch(active, normalized) }
     }
 
-    private suspend fun loadSearch(active: ShyniClient, query: String) {
+    private suspend fun loadSearch(active: ShyniClient, query: String,
+        reconcile: (AppState) -> AppState = { it }) {
         if (query.isBlank()) return
         val navigationRevision = revision
         val accountToken = active.token
@@ -834,9 +831,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             accessRevision != spoilerRevision || grantRevision != SpoilerAccessRegistry.changes.value) return
         mutableState.update { state ->
             if (!state.loggedIn || !state.searchOpen || state.searchQuery != query) state
-            else state.copy(libraries = libraries.filter { !it.isSpoiler || active.spoilerUnlocked },
+            else reconcile(state.copy(libraries = libraries.filter { !it.isSpoiler || active.spoilerUnlocked },
                 searchItems = result.items.filter { !it.isSpoiler || (state.spoilerUnlocked && active.spoilerUnlocked) }
-                    .map(::collectionWatchState), searchFailureCount = result.failedLibraryCount + if (privateCatalogFailed) 1 else 0)
+                    .map(::collectionWatchState), searchFailureCount = result.failedLibraryCount + if (privateCatalogFailed) 1 else 0))
         }
     }
 
@@ -868,7 +865,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refresh() = refreshCurrent()
 
-    private fun refreshCurrent(afterRefresh: (() -> Unit)? = null) {
+    private fun refreshCurrent(reconcile: (AppState) -> AppState = { it },
+        allowHomeInteraction: Boolean = true) {
         val active = client ?: return
         active.invalidateSeriesCounts()
         mutableState.update { it.copy(seriesCountRevision = it.seriesCountRevision + 1,
@@ -876,7 +874,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val snapshot = mutableState.value
         launchRequest {
             coroutineScope {
-                launch { loadHome(active) }
+                launch { loadHome(active, allowHomeInteraction = allowHomeInteraction, reconcile = reconcile) }
                 if (snapshot.detailStack.isNotEmpty()) {
                     val item = snapshot.detailStack.last().item
                     var detail = active.details(item)
@@ -888,19 +886,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             seasons = seasons, selectedSeasonId = selected?.id)
                     }
                     detail = collectionWatchState(detail)
-                    mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail) }
+                    mutableState.update { reconcile(it.copy(detailStack = it.detailStack.dropLast(1) + detail)) }
                     if (item.playable) {
                         val versions = active.versions(item)
                         mutableState.update { it.copy(versions = versions) }
                     }
-                } else if (snapshot.searchOpen) loadSearch(active, snapshot.searchQuery)
+                } else if (snapshot.searchOpen) loadSearch(active, snapshot.searchQuery, reconcile)
                 else snapshot.library?.let { library ->
                     val page = active.items(library, query = snapshot.query, sort = snapshot.librarySort,
                         contentType = snapshot.libraryContentType)
-                    mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+                    mutableState.update { reconcile(it.copy(items = page.items.map(::collectionWatchState), total = page.total)) }
                 }
             }
-            afterRefresh?.invoke()
         }
     }
 
