@@ -116,14 +116,6 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         homeLoading = false, continueLoading = false, continueError = null, recentLoading = false)
 }
 
-/** A naturally ended video returns to home without changing account or private-access state. */
-internal fun homeAfterPlayback(state: AppState): AppState = state.copy(
-    library = null, items = emptyList(), total = 0, query = "", detailStack = emptyList(),
-    searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0,
-    versions = emptyList(), selectedPartId = null, playback = null, continueDetails = null,
-    busy = false, error = null, homeLoading = false, continueLoading = false, continueError = null, recentLoading = false,
-)
-
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val settings = application.getSharedPreferences("gsy_settings", Application.MODE_PRIVATE)
     private val sessionStore = SessionStore(application)
@@ -778,13 +770,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun consumePlayback() { mutableState.update { it.copy(playback = null) } }
-
-    fun returnHomeAfterPlayback() {
-        requestJob?.cancel(); revision++
-        clearContinueSelection(clearCache = false)
-        mutableState.update(::homeAfterPlayback)
-        refresh()
-    }
 
     fun openSearch() {
         requestJob?.cancel(); revision++

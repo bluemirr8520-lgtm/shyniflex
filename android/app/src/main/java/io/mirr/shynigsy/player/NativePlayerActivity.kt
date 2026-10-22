@@ -1,7 +1,6 @@
 package io.mirr.shynigsy.player
 
 import android.graphics.Color
-import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -132,7 +131,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var lastDuration = 0L
     private var prepared = false
     private var completed = false
-    private var endingToHome = false
+    private var endingAfterCompletion = false
     private val watchedReached = ConcurrentHashMap.newKeySet<String>()
     private val watchedConfirmed = ConcurrentHashMap.newKeySet<String>()
     private val watchedQueued = ConcurrentHashMap.newKeySet<String>()
@@ -192,7 +191,7 @@ class NativePlayerActivity : AppCompatActivity() {
             ensureSpoilerPlaybackReauthentication()
             val active = player
             if (active != null && !refreshing && !gestures.isSeekGestureActive && active.reconcilePlaybackCompletion()) {
-                finishPlaybackToHome()
+                finishCompletedPlayback()
                 return
             }
             if (active != null && prepared) {
@@ -222,9 +221,10 @@ class NativePlayerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (savedInstanceState?.getBoolean("endingToHome") == true) {
-            endingToHome = true; exiting = true; completed = true
-            returnHome()
+        if (savedInstanceState?.getBoolean("endingAfterCompletion") == true ||
+            savedInstanceState?.getBoolean("endingToHome") == true) {
+            endingAfterCompletion = true; exiting = true; completed = true
+            returnToCaller()
             return
         }
         val server = intent.getStringExtra("server").orEmpty()
@@ -657,7 +657,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 } else if (state == Player.STATE_ENDED && !exiting && !refreshing) {
                     handler.post {
                         if (player === created && !exiting && !refreshing && created.reconcilePlaybackCompletion())
-                            finishPlaybackToHome()
+                            finishCompletedPlayback()
                     }
                 }
                 updateSegmentSkipButton()
@@ -1793,7 +1793,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun enqueueProgress(state: String) {
-        if (endingToHome || !prepared || !::spec.isInitialized || (completed && state != "completed")) return
+        if (endingAfterCompletion || !prepared || !::spec.isInitialized || (completed && state != "completed")) return
         capturePosition(); settleWatchTime(visible && !exiting && player?.isPlaying == true)
         submitProgress(ProgressUpdate(spec, lastPosition, lastDuration, state, watchedMs))
     }
@@ -1826,11 +1826,11 @@ class NativePlayerActivity : AppCompatActivity() {
             throw kotlinx.coroutines.CancellationException("Playback authentication changed")
     }
 
-    private fun finishPlaybackToHome() {
-        if (exiting || endingToHome || isDestroyed) return
+    private fun finishCompletedPlayback() {
+        if (exiting || endingAfterCompletion || isDestroyed) return
         capturePosition()
         completionGate().finish()
-        endingToHome = true; exiting = true; completed = true; resumeWhenVisible = false
+        endingAfterCompletion = true; exiting = true; completed = true; resumeWhenVisible = false
         cancelSpoilerPlaybackReauthentication()
         settleWatchTime(false)
         if (lastDuration > 0) lastPosition = lastDuration
@@ -1841,13 +1841,13 @@ class NativePlayerActivity : AppCompatActivity() {
         segmentSkipButton.visibility = View.GONE
         updatePlaybackButtons()
         // The independent writer drains this critical snapshot after Activity exit.
-        // A finished frame must never wait on the server before returning Home.
+        // A finished frame must never wait on the server before returning to the caller.
         submitProgress(ProgressUpdate(spec, lastPosition, lastDuration, "completed", watchedMs))
-        returnHome()
+        returnToCaller()
     }
 
-    private fun returnHome() {
-        setResult(RESULT_OK, Intent().putExtra("return_home", true))
+    private fun returnToCaller() {
+        setResult(RESULT_OK)
         finish()
     }
 
@@ -1913,9 +1913,9 @@ class NativePlayerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume(); visible = true; hideSystemBars()
         if (closeLockedSpoilerPlayback()) return
-        if (endingToHome || exiting) return
+        if (endingAfterCompletion || exiting) return
         if (!refreshing && player?.reconcilePlaybackCompletion() == true) {
-            finishPlaybackToHome()
+            finishCompletedPlayback()
             return
         }
         player?.playWhenReady = resumeWhenVisible && !refreshing
@@ -1932,7 +1932,7 @@ class NativePlayerActivity : AppCompatActivity() {
         hideLockControl()
         if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
         if (::gestures.isInitialized) {
-            resumeWhenVisible = if (endingToHome || exiting) false else
+            resumeWhenVisible = if (endingAfterCompletion || exiting) false else
                 conversionResumeWhenVisible ?: gestures.playWhenReadyBeforeSeek ?: player?.playWhenReady ?: false
             gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
             pendingSeek?.let { target -> player?.seekTo(target) }
@@ -1943,7 +1943,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean("endingToHome", endingToHome)
+        outState.putBoolean("endingAfterCompletion", endingAfterCompletion)
         if (::spec.isInitialized) {
             capturePosition(); outState.putString("spec", spec.toJson()); outState.putLong("position", lastPosition)
             outState.putLong("duration", lastDuration); outState.putLong("watched", watchedMs); outState.putFloat("speed", speed)

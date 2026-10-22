@@ -190,7 +190,7 @@ class GestureControlsPlaybackTest {
         }
     }
 
-    @Test fun introSkipPreservesPauseAndCreditsAtTheEndReturnsHome() = withFixture(false,
+    @Test fun introSkipPreservesPauseAndCreditsAtTheEndReturnsToCaller() = withFixture(false,
         markers = listOf(PlaybackMarker("intro", 1_000, 3_000), PlaybackMarker("credits", 4_000, 6_000))) { scenario ->
         var video: PlayerView? = null
         waitFor(scenario, "intro marker button appears in the paused starting interval") { activity ->
@@ -218,16 +218,16 @@ class GestureControlsPlaybackTest {
                 skip.text.toString() == "크레딧 건너뛰기"
         }
         tapThroughActivityRoot(scenario, R.id.player_segment_skip)
-        assertReturnedHome(scenario, "Credits ending at the title duration must return to Home", timeoutMs = 3_000)
+        assertCompletedToCaller(scenario, "Credits ending at the title duration must finish back to the caller", timeoutMs = 3_000)
     }
 
-    @Test fun naturalEofReturnsHomeWithASuccessfulActivityResult() = withFixture(false) { scenario ->
+    @Test fun naturalEofCompletesToCallerWithASuccessfulActivityResult() = withFixture(false) { scenario ->
         waitFor(scenario, "video playing before normal EOF") { activity ->
             val active = findView<PlayerView>(activity.findViewById(android.R.id.content))?.player
             active?.volume = 0f
             active != null && active.isPlaying
         }
-        assertReturnedHome(scenario, "Natural EOF must return to Home")
+        assertCompletedToCaller(scenario, "Natural EOF must complete back to the caller")
     }
 
     @Test fun pausedSeekBeyondNinetyFivePercentStaysOpenUntilPlaybackReallyEnds() = withFixture(false) { scenario ->
@@ -257,10 +257,10 @@ class GestureControlsPlaybackTest {
             assertTrue(active.currentPosition < active.duration)
             active.play()
         }
-        assertReturnedHome(scenario, "Only subsequent real EOF returns to Home", timeoutMs = 3_000)
+        assertCompletedToCaller(scenario, "Only subsequent real EOF may finish back to the caller", timeoutMs = 3_000)
     }
 
-    @Test fun invalidLocalMediaShowsAnErrorAndNeverReturnsHomeAsCompleted() = withFixture(false, invalidMedia = true) { scenario ->
+    @Test fun invalidLocalMediaShowsAnErrorAndDoesNotFinishAsCompleted() = withFixture(false, invalidMedia = true) { scenario ->
         waitFor(scenario, "invalid local media reports a real playback error") { activity ->
             val root = activity.findViewById<View>(android.R.id.content)
             val active = findView<PlayerView>(root)?.player
@@ -642,7 +642,7 @@ class GestureControlsPlaybackTest {
         }
     }
 
-    private fun assertReturnedHome(scenario: ActivityScenario<NativePlayerActivity>, message: String, timeoutMs: Long = 8_000) {
+    private fun assertCompletedToCaller(scenario: ActivityScenario<NativePlayerActivity>, message: String, timeoutMs: Long = 8_000) {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (scenario.state != Lifecycle.State.DESTROYED && SystemClock.elapsedRealtime() < deadline) {
             Thread.sleep(50)
@@ -650,7 +650,10 @@ class GestureControlsPlaybackTest {
         assertEquals(message, Lifecycle.State.DESTROYED, scenario.state)
         val result = scenario.result
         assertEquals(message, Activity.RESULT_OK, result.resultCode)
-        assertTrue(message, result.resultData?.getBooleanExtra("return_home", false) == true)
+        // Native finishes its own Activity; the caller retains its library/episode screen.
+        // RESULT_OK without a data Intent is the completion contract.
+        assertFalse("Completion must not request navigation to Home", result.resultData?.getBooleanExtra("return_home", false) == true)
+        assertNull("Completion must not choose a replacement Activity", result.resultData?.component)
     }
 
     private fun hasVisibleText(view: View, text: String): Boolean {

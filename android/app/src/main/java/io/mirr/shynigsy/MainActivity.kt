@@ -1,7 +1,6 @@
 package io.mirr.shynigsy
 
 import android.content.Intent
-import android.app.Activity
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -39,10 +38,8 @@ class MainActivity : ComponentActivity() {
         else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.")
     }
     private var lastCompletionRevision = 0L
-    private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data?.getBooleanExtra("return_home", false) == true)
-            model.returnHomeAfterPlayback()
-        else model.refresh()
+    private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        model.refresh()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
