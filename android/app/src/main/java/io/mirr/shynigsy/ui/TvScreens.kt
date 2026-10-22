@@ -59,9 +59,6 @@ import io.mirr.shynigsy.AppState
 import io.mirr.shynigsy.AppViewModel
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.MediaItem
-import io.mirr.shynigsy.data.LibrarySort
-import io.mirr.shynigsy.data.LibraryContentType
-import io.mirr.shynigsy.data.LibraryWatchFilter
 import io.mirr.shynigsy.data.Library
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
@@ -363,8 +360,7 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         change()
     }
     LibraryAutoLoad(grid, listOf(state.library?.id, state.libraryBrowseRevision, state.query,
-        state.librarySort, state.libraryGenre, state.libraryYear, state.libraryContentType,
-        state.libraryWatchFilter, state.libraryDecade, state.spoilerUnlocked), state.items.size, visibleItems.size,
+        state.librarySort, state.libraryContentType, state.spoilerUnlocked), state.items.size, visibleItems.size,
         state.total, state.busy, state.error != null, model::loadMore)
     val restoreKey = focusedKey?.takeIf { it in visibleItemKeys }
         ?: visibleItems.firstOrNull()?.let(::tvMediaKey)
@@ -381,18 +377,10 @@ internal fun TvLibrary(state: AppState, model: AppViewModel, onWatchOptions: (Me
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            PlexLibraryToolbar(library, state.librarySort, state.libraryContentType,
-                state.libraryWatchFilter, state.libraryGenre, state.libraryYear, state.libraryDecade,
-                state.libraryGenres, state.libraryYears, state.busy, state.spoilerUnlocked,
+            PlexLibraryToolbar(library, state.librarySort, state.libraryContentType, state.busy, state.spoilerUnlocked,
                 onSort = { changeOptions { model.setLibraryOptions(sort = it) } },
                 onContentType = { changeOptions { model.setLibraryOptions(contentType = it) } },
-                onWatchFilter = { changeOptions { model.setLibraryOptions(watchFilter = it) } },
-                onGenre = { changeOptions { model.setLibraryOptions(genre = it) } },
-                onYear = { changeOptions { model.setLibraryOptions(year = it) } },
-                onDecade = { changeOptions { model.setLibraryOptions(decade = it) } },
-                onClearFilters = { changeOptions {
-                    model.setLibraryOptions(genre = null, year = null, decade = null, watchFilter = LibraryWatchFilter.ALL)
-                } }, firstControlModifier = if (restoreKey == null) Modifier.focusRequester(initialFocus) else Modifier)
+                firstControlModifier = if (restoreKey == null) Modifier.focusRequester(initialFocus) else Modifier)
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
