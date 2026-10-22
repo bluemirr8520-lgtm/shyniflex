@@ -1,6 +1,8 @@
 # 네이티브 대응 소스
 
-shyniflex 1.0.20은 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. 전체 대응 소스는 APK와 함께 제공하는 `shyniflex-1.0.20-corresponding-source.zip`이며, 그 안의 `app-source.zip`이 해당 빌드의 앱 소스입니다.
+shyniflex 1.0.21은 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. 전체 대응 소스는 개발 APK와 함께 로컬 `outputs/`에 제공하는 `shyniflex-1.0.21-corresponding-source.zip`이며, 그 안의 `app-source.zip`이 해당 빌드의 앱 소스입니다.
+
+최근 공개 1.0.20 배포본:
 
 - [APK와 CPU별 설치 파일](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.20)
 - [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.20/shyniflex-1.0.20-corresponding-source.zip)

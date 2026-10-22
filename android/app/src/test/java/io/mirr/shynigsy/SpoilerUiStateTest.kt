@@ -57,6 +57,19 @@ class SpoilerUiStateTest {
         assertEquals(state.playback, locked.playback)
     }
 
+    @Test fun lockingSearchRemovesPrivateResultsWhileKeepingPublicResultsAndTheQuery() {
+        val state = AppState(loggedIn = true, searchOpen = true, searchQuery = "공통 제목",
+            libraries = listOf(publicLibrary, privateLibrary), spoilerUnlocked = true,
+            searchItems = listOf(privateItem, publicItem), searchFailureCount = 1, busy = true)
+        val locked = withoutSpoilerContent(state)
+        assertTrue(locked.searchOpen)
+        assertEquals("공통 제목", locked.searchQuery)
+        assertEquals(listOf(publicItem), locked.searchItems)
+        assertEquals(listOf(publicLibrary), locked.libraries)
+        assertEquals(0, locked.searchFailureCount)
+        assertFalse(locked.busy)
+    }
+
     private fun playback(item: MediaItem) = PlaybackSpec("test", "https://example.invalid/test", itemId = item.id,
         libraryId = item.libraryId, partId = 1, sourceItem = item)
 }

@@ -167,7 +167,7 @@ fun ShyniApp(
             viewModel.consumePlayback()
         }
     }
-    BackHandler(enabled = state.loggedIn && (detail != null || state.library != null)) {
+    BackHandler(enabled = state.loggedIn && (detail != null || state.library != null || state.searchOpen)) {
         viewModel.back()
     }
     MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
@@ -179,11 +179,11 @@ fun ShyniApp(
                     if (!tv) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { scope.launch { drawer.open() } },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) { Text("☰  메뉴") }
-                        Text(detail?.item?.title ?: state.library?.title ?: "shyniflex", Modifier.weight(1f).padding(start = 8.dp),
+                        Text(detail?.item?.title ?: state.library?.title ?: if (state.searchOpen) "검색" else "shyniflex", Modifier.weight(1f).padding(start = 8.dp),
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    else if (detail != null || state.library != null) TvHeader(
-                        title = detail?.item?.title ?: state.library?.title,
+                    else if (detail != null || state.library != null || state.searchOpen) TvHeader(
+                        title = detail?.item?.title ?: state.library?.title ?: "검색",
                     )
                     }
                 } else
@@ -216,20 +216,22 @@ fun ShyniApp(
                             onLogout = { logoutConfirm = true },
                             libraries = state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler },
                             selectedLibraryId = state.library?.id,
-                            homeSelected = state.library == null && detail == null,
+                            homeSelected = state.library == null && detail == null && !state.searchOpen,
                             onHome = { viewModel.openHome(); scope.launch { drawer.close() } },
                             onLibrary = { viewModel.selectLibrary(it); scope.launch { drawer.close() } },
                             showLocked = !state.spoilerUnlocked,
                             spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler,
-                            onUpdate = onUpdate)
+                            onUpdate = onUpdate, searchSelected = state.searchOpen,
+                            onSearch = { viewModel.openSearch(); scope.launch { drawer.close() } })
                         }
                         val content: @Composable () -> Unit = {
                         Box(Modifier.fillMaxSize()) {
                         val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
-                            ?: state.library?.let { "library:${it.id}" } ?: "home"
+                            ?: if (state.searchOpen) "search" else state.library?.let { "library:${it.id}" } ?: "home"
                         tvScreens.SaveableStateProvider(screenKey) {
                             when {
                                 detail != null -> TvDetail(state, viewModel, onWatchOptions)
+                                state.searchOpen -> GlobalSearchScreen(state, viewModel, onWatchOptions)
                                 state.library != null -> TvLibrary(state, viewModel, onWatchOptions)
                                 else -> TvHome(state, viewModel, onWatchOptions)
                             }

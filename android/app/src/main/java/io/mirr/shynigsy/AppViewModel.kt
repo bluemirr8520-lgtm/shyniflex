@@ -36,6 +36,10 @@ data class AppState(
     val items: List<MediaItem> = emptyList(),
     val total: Int = 0,
     val query: String = "",
+    val searchOpen: Boolean = false,
+    val searchQuery: String = "",
+    val searchItems: List<MediaItem> = emptyList(),
+    val searchFailureCount: Int = 0,
     val librarySort: LibrarySort = LibrarySort.TITLE_ASC,
     val libraryContentType: LibraryContentType = LibraryContentType.MOVIES,
     val libraryBrowseRevision: Long = 0,
@@ -96,6 +100,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         seriesCountRevision = state.seriesCountRevision + 1,
         libraries = state.libraries.filterNot { it.isSpoiler }, recentItems = state.recentItems.filterNot { it.isSpoiler },
         continueItems = state.continueItems.filterNot { it.isSpoiler },
+        searchItems = state.searchItems.filterNot { it.isSpoiler }, searchFailureCount = 0,
         continueDetails = state.continueDetails?.takeUnless { it.isSpoiler },
         library = state.library?.takeUnless { it.isSpoiler },
         items = if (privateScreen) emptyList() else state.items.filterNot { it.isSpoiler },
@@ -114,6 +119,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
 /** A naturally ended video returns to home without changing account or private-access state. */
 internal fun homeAfterPlayback(state: AppState): AppState = state.copy(
     library = null, items = emptyList(), total = 0, query = "", detailStack = emptyList(),
+    searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0,
     versions = emptyList(), selectedPartId = null, playback = null, continueDetails = null,
     busy = false, error = null, homeLoading = false, continueLoading = false, continueError = null, recentLoading = false,
 )
@@ -171,7 +177,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (active != null && !active.spoilerUnlocked &&
                     (snapshot.spoilerUnlocked || snapshot.spoilerPromptOpen || snapshot.spoilerBusy ||
                         snapshot.libraries.any { it.isSpoiler } || snapshot.recentItems.any { it.isSpoiler } ||
-                        snapshot.continueItems.any { it.isSpoiler } || snapshot.library?.isSpoiler == true ||
+                        snapshot.continueItems.any { it.isSpoiler } || snapshot.searchItems.any { it.isSpoiler } || snapshot.library?.isSpoiler == true ||
                         snapshot.detailStack.any { it.item.isSpoiler })) clearSpoilerUi()
             }
         }
@@ -340,7 +346,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 state.copy(continueItems = continueItems, spoilerUnlocked = unlocked,
                     continueLoading = false, continueError = continueError,
                     continueDetails = selected?.let { row -> state.continueDetails?.let { continueMetadata(row, it) } },
-                    error = if (navigationRevision == revision && state.library == null && state.detailStack.isEmpty())
+                    error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
                         listOfNotNull(publicRecent?.second, continueError).distinct().joinToString("\n").ifBlank { null } else state.error)
             }
         }
@@ -352,7 +358,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val rows = visibleContinueWatching(publicLoad.first, privateRecent ?: retainedPrivate,
                 homeLibraries(), active.spoilerUnlocked).map(::collectionWatchState)
             mutableState.update { state -> state.copy(recentItems = rows, recentLoading = false,
-                error = if (navigationRevision == revision && state.library == null && state.detailStack.isEmpty())
+                error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
                     listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error) }
         }
         fun publishLibraries() {
@@ -597,6 +603,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         if (library.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         mutableState.update { it.copy(library = library, items = emptyList(), total = 0,
+            searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0,
             query = "", librarySort = LibrarySort.TITLE_ASC,
             libraryContentType = LibraryContentType.defaultFor(library),
             libraryBrowseRevision = it.libraryBrowseRevision + 1,
@@ -710,7 +717,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     val invalidated = previous - collectionWatch.keys
                     fun uncertain(candidate: MediaItem) = if (continueIdentity(candidate) in invalidated)
                         candidate.copy(watched = false) else candidate
-                    mutableState.update { state -> state.copy(items = state.items.map(::uncertain),
+                    mutableState.update { state -> state.copy(items = state.items.map(::uncertain), searchItems = state.searchItems.map(::uncertain),
                         recentItems = state.recentItems.map(::uncertain), detailStack = state.detailStack.map { detail ->
                             detail.copy(item = uncertain(detail.item), children = detail.children.map(::uncertain))
                         }) }
@@ -739,7 +746,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 clearContinueSelection()
                 mutableState.update { state ->
-                    state.copy(items = state.items.map(::updated), recentItems = state.recentItems.map(::updated),
+                    state.copy(items = state.items.map(::updated), searchItems = state.searchItems.map(::updated),
+                        recentItems = state.recentItems.map(::updated),
                         continueItems = state.continueItems.filterNot(::affected),
                         detailStack = state.detailStack.map { detail ->
                             detail.copy(item = updated(detail.item), children = detail.children.map(::updated), seasons = detail.seasons.map(::updated))
@@ -782,10 +790,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         refresh()
     }
 
+    fun openSearch() {
+        requestJob?.cancel(); revision++
+        clearContinueSelection(clearCache = false)
+        mutableState.update { it.copy(searchOpen = true, library = null, items = emptyList(), total = 0, query = "",
+            detailStack = emptyList(), versions = emptyList(), selectedPartId = null, busy = false, error = null,
+            homeLoading = false) }
+    }
+
+    fun searchAll(query: String) {
+        val active = client ?: return
+        if (!mutableState.value.loggedIn || !mutableState.value.searchOpen) return
+        val normalized = query.trim()
+        mutableState.update { it.copy(searchQuery = normalized, searchItems = emptyList(), searchFailureCount = 0,
+            detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
+        if (normalized.isEmpty()) {
+            requestJob?.cancel(); revision++
+            mutableState.update { it.copy(busy = false, error = null) }
+            return
+        }
+        launchRequest { loadSearch(active, normalized) }
+    }
+
+    private suspend fun loadSearch(active: ShyniClient, query: String) {
+        if (query.isBlank()) return
+        val navigationRevision = revision
+        val accountToken = active.token
+        val accessRevision = spoilerRevision
+        val grantRevision = SpoilerAccessRegistry.changes.value
+        val publicLibraries = active.libraries().filterNot { it.isSpoiler }
+        var privateCatalogFailed = false
+        val privateLibraries = if (active.spoilerUnlocked) try { active.spoilerLibraries() }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) {
+                if (error is ApiException && error.status == 401) throw error
+                privateCatalogFailed = true
+                emptyList()
+            } else emptyList()
+        val privateIds = privateLibraries.map { it.id }.toSet() + mutableState.value.libraries.filter { it.isSpoiler }.map { it.id }
+        val libraries = (publicLibraries.filterNot { it.id in privateIds } + privateLibraries).distinctBy { it.id }
+        val result = active.searchLibraries(libraries, query)
+        if (active !== client || active.token != accountToken || navigationRevision != revision ||
+            accessRevision != spoilerRevision || grantRevision != SpoilerAccessRegistry.changes.value) return
+        mutableState.update { state ->
+            if (!state.loggedIn || !state.searchOpen || state.searchQuery != query) state
+            else state.copy(libraries = libraries.filter { !it.isSpoiler || active.spoilerUnlocked },
+                searchItems = result.items.filter { !it.isSpoiler || (state.spoilerUnlocked && active.spoilerUnlocked) }
+                    .map(::collectionWatchState), searchFailureCount = result.failedLibraryCount + if (privateCatalogFailed) 1 else 0)
+        }
+    }
+
     fun openHome() {
         requestJob?.cancel(); revision++
         mutableState.update { it.copy(detailStack = emptyList(), library = null, items = emptyList(),
-            total = 0, query = "", busy = false, error = null, versions = emptyList(), selectedPartId = null) }
+            total = 0, query = "", searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0,
+            busy = false, error = null, versions = emptyList(), selectedPartId = null) }
     }
 
     fun back() {
@@ -793,7 +852,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update {
             if (it.detailStack.isNotEmpty()) it.copy(detailStack = it.detailStack.dropLast(1),
                 busy = false, versions = emptyList(), selectedPartId = null, error = null)
-            else it.copy(library = null, items = emptyList(), total = 0, query = "", busy = false, error = null)
+            else it.copy(library = null, items = emptyList(), total = 0, query = "",
+                searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0, busy = false, error = null)
         }
     }
 
@@ -833,7 +893,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         val versions = active.versions(item)
                         mutableState.update { it.copy(versions = versions) }
                     }
-                } else snapshot.library?.let { library ->
+                } else if (snapshot.searchOpen) loadSearch(active, snapshot.searchQuery)
+                else snapshot.library?.let { library ->
                     val page = active.items(library, query = snapshot.query, sort = snapshot.librarySort,
                         contentType = snapshot.libraryContentType)
                     mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }

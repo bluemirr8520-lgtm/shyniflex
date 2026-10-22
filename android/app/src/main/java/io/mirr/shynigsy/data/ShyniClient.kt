@@ -401,6 +401,62 @@ class ShyniClient(
         withProgress(recent)
     }
 
+    /** Fan out only to known authorized Views; no global endpoint or fake search offset. */
+    suspend fun searchLibraries(libraries: List<Library>, query: String): LibrarySearchResult = withContext(Dispatchers.Default) {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) return@withContext LibrarySearchResult(emptyList())
+        val accountToken = token
+        val grantRevision = SpoilerAccessRegistry.changes.value
+        fun privateAccessUnchanged() = spoilerUnlocked && SpoilerAccessRegistry.changes.value == grantRevision
+        fun checkAccount() {
+            if (token != accountToken) throw CancellationException("검색 요청이 종료되었습니다.")
+        }
+        data class Identity(val libraryId: Int, val type: String, val id: Int, val viewItemId: Int?)
+        fun preferPrivate(items: List<MediaItem>): List<MediaItem> {
+            val selected = linkedMapOf<Identity, MediaItem>()
+            for (item in items) {
+                val identity = Identity(item.libraryId, item.type, item.id, item.viewItemId)
+                val previous = selected[identity]
+                if (previous == null || (item.isSpoiler && !previous.isSpoiler)) selected[identity] = item
+            }
+            return selected.values.toList()
+        }
+        // A private View cannot become a public shadow simply because its grant expired.
+        val privateIds = libraries.filter { it.id > 0 && it.isSpoiler }.mapTo(HashSet()) { it.id }
+        val scopes = libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") &&
+            (it.isSpoiler || it.id !in privateIds) && (!it.isSpoiler || privateAccessUnchanged()) }
+            .distinctBy { it.id }
+        val slots = Semaphore(3)
+        val outcomes = coroutineScope {
+            scopes.map { library -> async {
+                slots.withPermit {
+                    try {
+                        checkAccount()
+                        currentCoroutineContext().ensureActive()
+                        if (library.isSpoiler && !privateAccessUnchanged()) throw ApiException("스포일러 표시가 잠겼습니다.", 403)
+                        val catalog = browseCatalog(library, LibraryContentType.defaultFor(library), LibrarySort.TITLE_ASC, normalizedQuery)
+                        checkAccount()
+                        currentCoroutineContext().ensureActive()
+                        val visible = preferPrivate(catalog).take(200).filter { !it.isSpoiler || privateAccessUnchanged() }
+                        val results = withProgress(visible)
+                        checkAccount()
+                        if (library.isSpoiler && !privateAccessUnchanged()) LibrarySearchResult(emptyList())
+                        else LibrarySearchResult(results)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) {
+                        checkAccount()
+                        if (error is ApiException && error.status == 401) throw error
+                        LibrarySearchResult(emptyList(), failedLibraryCount = 1)
+                    }
+                }
+            } }.awaitAll()
+        }
+        checkAccount()
+        currentCoroutineContext().ensureActive()
+        LibrarySearchResult(preferPrivate(outcomes.flatMap { it.items }).filter { !it.isSpoiler || privateAccessUnchanged() },
+            outcomes.sumOf { it.failedLibraryCount })
+    }
+
     /** Movies/shows are full arrays in beta4; paginate them locally, never fake API offsets. */
     suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort = LibrarySort.TITLE_ASC,
         genre: String? = null, year: Int? = null,
@@ -448,9 +504,19 @@ class ShyniClient(
         val path = if (query.isNotEmpty() && !nested)
             "/libraries/${library.id}/search?q=${encode(query)}&limit=200&metadata_type=${if (contentType == LibraryContentType.SHOWS) "2" else "1"}"
         else "/libraries/${library.id}/${contentType.route}?${sort.query(library, contentType)}"
-        val parsed = rows(request(path, spoiler = library.isSpoiler, responseLimit = 16L * 1024 * 1024), "items", "results")
+        val value = request(path, spoiler = library.isSpoiler, responseLimit = 16L * 1024 * 1024)
+        val catalogRows = if (query.isNotEmpty() && !nested) {
+            val array = when (value) {
+                is JSONArray -> value
+                is JSONObject -> value.optJSONArray("items") ?: value.optJSONArray("results")
+                    ?: throw ApiException("검색 응답 형식이 올바르지 않습니다.")
+                else -> throw ApiException("검색 응답 형식이 올바르지 않습니다.")
+            }
+            (0 until array.length()).map { array.optJSONObject(it) ?: throw ApiException("검색 응답 형식이 올바르지 않습니다.") }
+        } else rows(value, "items", "results")
+        val parsed = catalogRows
             .filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
-            .map { parseMedia(it, library.id, contentType.itemType).copy(isSpoiler = library.isSpoiler) }
+            .map { row -> parseMedia(row, library.id, contentType.itemType).let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) } }
         val enriched = if (nested && inheritFacets && parsed.isNotEmpty()) {
             val shows = browseCatalog(library, LibraryContentType.SHOWS, LibrarySort.TITLE_ASC, "")
             val byView = shows.filter { it.viewItemId != null }.associateBy { it.viewItemId }

@@ -94,14 +94,17 @@ class TvNavigationTest {
 
     @Test fun sidebarCanBeEnteredFromContentAndMovesBetweenActions() {
         var refreshes = 0
+        var searches = 0
         var chosenLibrary: Int? = null
         compose.setContent {
             val content = remember { FocusRequester() }
+            var searching by remember { mutableStateOf(false) }
             MaterialTheme {
                 Row {
                     TvSidebar(onLibraries = {}, onRefresh = { refreshes++ }, onLogout = {},
                         libraries = listOf(Library(1, "드라마", "show"), Library(2, "영화", "movie")),
-                        onLibrary = { chosenLibrary = it.id })
+                        onLibrary = { chosenLibrary = it.id }, homeSelected = !searching, searchSelected = searching,
+                        onSearch = { searches++; searching = true })
                     TvAction("작품", Modifier.focusRequester(content)) {}
                 }
             }
@@ -110,6 +113,11 @@ class TvNavigationTest {
         compose.onNodeWithText("작품").performKeyInput { pressKey(Key.DirectionLeft) }
         compose.onNodeWithText("홈").assertIsFocused()
         compose.onNodeWithText("홈").performKeyInput { pressKey(Key.DirectionDown) }
+        compose.onNodeWithTag("sidebar-search").assertIsFocused()
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        compose.onNodeWithTag("sidebar-search").assertIsSelected()
+        compose.runOnIdle { assertEquals(1, searches) }
+        compose.onNodeWithTag("sidebar-search").performKeyInput { pressKey(Key.DirectionDown) }
         compose.onNodeWithText("드라마").assertIsFocused()
         compose.onNodeWithText("드라마").performKeyInput { pressKey(Key.DirectionCenter) }
         compose.runOnIdle { assertEquals(1, chosenLibrary) }

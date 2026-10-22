@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -52,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -99,13 +101,15 @@ internal fun TvHeader(title: String?) {
 internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout: () -> Unit,
     libraries: List<Library> = emptyList(), selectedLibraryId: Int? = null, homeSelected: Boolean = true,
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
-    spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {}) {
+    spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
+    onSearch: () -> Unit = {}, searchSelected: Boolean = false) {
     Column(Modifier.width(156.dp).fillMaxHeight().background(Color(0xFF0B1018))
         .padding(horizontal = 8.dp, vertical = 8.dp).focusRestorer().focusGroup().testTag("tv-sidebar"),
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text("shyniflex", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome)
+        TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
         Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
             style = MaterialTheme.typography.labelMedium, color = Color(0xFF929BA9))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -127,10 +131,11 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
 }
 
 @Composable
-private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     var focused by remember { mutableStateOf(false) }
     val foreground = if (focused) Color(0xFF101318) else if (selected) Color.White else Color(0xFFB3BAC6)
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp)
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().heightIn(min = 36.dp)
+        .semantics { this.selected = selected }
         .onFocusChanged { focused = it.isFocused }, shape = RectangleShape,
         color = if (focused) Color.White else if (selected) Color(0xFF30353E) else Color.Transparent) {
         Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,

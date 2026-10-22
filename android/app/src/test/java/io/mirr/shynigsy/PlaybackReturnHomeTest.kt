@@ -13,7 +13,8 @@ class PlaybackReturnHomeTest {
 
     @Test fun endedPlaybackClearsLibraryDetailVersionAndSearchNavigation() {
         val state = AppState(library = Library(8, "영화", "movie"), items = listOf(item), total = 45,
-            query = "검색어", detailStack = listOf(MediaDetails(item)),
+            query = "검색어", searchOpen = true, searchQuery = "제목", searchItems = listOf(item), searchFailureCount = 1,
+            detailStack = listOf(MediaDetails(item)),
             versions = listOf(MediaVersion(90, "선택한 파일")), selectedPartId = 90,
             playback = PlaybackSpec(item.title, "https://example.invalid/video", itemId = item.id,
                 libraryId = item.libraryId, partId = 90, sourceItem = item),
@@ -23,6 +24,10 @@ class PlaybackReturnHomeTest {
         assertTrue(home.items.isEmpty())
         assertEquals(0, home.total)
         assertEquals("", home.query)
+        assertFalse(home.searchOpen)
+        assertEquals("", home.searchQuery)
+        assertTrue(home.searchItems.isEmpty())
+        assertEquals(0, home.searchFailureCount)
         assertTrue(home.detailStack.isEmpty())
         assertTrue(home.versions.isEmpty())
         assertNull(home.selectedPartId)
