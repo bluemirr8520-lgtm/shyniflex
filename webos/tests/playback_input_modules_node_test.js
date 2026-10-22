@@ -588,6 +588,74 @@ function testPlayerUsesHlsJsAfterNativeHlsFailure() {
   player.destroy();
 }
 
+function testPlayerRecoversPlaybackStalls() {
+  var timers = [];
+  var nextTimerId = 1;
+  function fakeSetTimeout(callback, delay) {
+    var timer = { id: nextTimerId, callback: callback, delay: delay, active: true };
+    nextTimerId += 1;
+    timers.push(timer);
+    return timer.id;
+  }
+  function fakeClearTimeout(id) {
+    timers.forEach(function (timer) {
+      if (timer.id === id) { timer.active = false; }
+    });
+  }
+  function runTimer(delay) {
+    var timer = timers.filter(function (candidate) {
+      return candidate.active && candidate.delay === delay;
+    })[0];
+    assert.ok(timer, 'expected active timer with delay ' + delay);
+    timer.active = false;
+    timer.callback();
+  }
+
+  var document = makeDocument();
+  var sandbox = loadScripts(['player.js'], {
+    document: document,
+    setTimeout: fakeSetTimeout,
+    clearTimeout: fakeClearTimeout
+  });
+  var video = new FakeVideo(new FakeElement('div'));
+  video.readyState = 2;
+  var player = new sandbox.ShyniFlexWebOS.Player(video, { stallRecoveryDelay: 900 });
+  player.load({
+    hlsUrl: 'https://media.example/stream.m3u8',
+    autoplay: true
+  });
+  assert.strictEqual(video.playCount, 1);
+  video.currentTime = 40;
+  video.dispatch('waiting', { type: 'waiting' });
+  runTimer(900);
+  assert.strictEqual(video.playCount, 2);
+  assert.strictEqual(player._stallRecoveryAttempts, 1);
+
+  video.currentTime = 41;
+  video.dispatch('timeupdate', { type: 'timeupdate' });
+  assert.strictEqual(player._stallTimer, null);
+  assert.strictEqual(player._stallRecoveryAttempts, 0);
+
+  video.dispatch('waiting', { type: 'waiting' });
+  player.pause();
+  assert.strictEqual(player._stallTimer, null);
+  player.destroy();
+
+  var directVideo = new FakeVideo(new FakeElement('div'));
+  directVideo.readyState = 4;
+  var directPlayer = new sandbox.ShyniFlexWebOS.Player(directVideo, { stallRecoveryDelay: 900 });
+  directPlayer.load({
+    directUrl: 'https://media.example/movie.mp4',
+    autoplay: true
+  });
+  assert.strictEqual(directVideo.playCount, 1);
+  directVideo.currentTime = 20;
+  directVideo.dispatch('stalled', { type: 'stalled' });
+  runTimer(900);
+  assert.strictEqual(directVideo.playCount, 2);
+  directPlayer.destroy();
+}
+
 function focusable(rect) {
   var element = new FakeElement('button', rect);
   element.getAttribute = function () {
@@ -673,6 +741,7 @@ Promise.resolve()
     testPlayerFallbackProgressAndMediaKeys();
     testPlayerAutoplayTimingAndUnload();
     testPlayerUsesHlsJsAfterNativeHlsFailure();
+    testPlayerRecoversPlaybackStalls();
     testRemoteGeometryMediaAndBack();
     console.log('playback_input_modules_node_test: PASS');
   })

@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.3';
+  var APP_VERSION = '1.0.4';
   var PRODUCT = 'ShyniFlex webOS';
   var PLEX_TV_URL = 'https://plex.tv';
   var PLEX_AUTH_URL = 'https://plex.tv/link/';

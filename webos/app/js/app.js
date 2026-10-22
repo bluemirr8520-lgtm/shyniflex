@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '1.0.3';
+  var APP_VERSION = '1.0.4';
   var STORAGE = {
     connection: 'shyniflex.webos.connection.v1',
     libraryOrder: 'shyniflex.webos.library-order.v1',

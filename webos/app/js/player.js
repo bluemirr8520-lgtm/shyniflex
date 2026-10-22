@@ -125,6 +125,9 @@
     this._destroyed = false;
     this._generation = 0;
     this._startupTimer = null;
+    this._stallTimer = null;
+    this._stallPosition = 0;
+    this._stallRecoveryAttempts = 0;
     this._bindVideoEvents();
   }
 
@@ -166,6 +169,9 @@
 
     this._listen('timeupdate', function (event) {
       if (self._pendingStartTime > 0 && self._metadataReady) { self._applyPendingStartTime(); }
+      if (Math.abs(finiteNumber(self.video.currentTime, 0) - self._stallPosition) >= 0.2) {
+        self._clearStallRecovery();
+      }
       progress(event);
     });
     this._listen('durationchange', progress);
@@ -202,7 +208,10 @@
       }
     };
     this._listen('loadeddata', retryPendingStart);
-    this._listen('canplay', retryPendingStart);
+    this._listen('canplay', function (event) {
+      retryPendingStart(event);
+      self._recoverStalledPlayback();
+    });
     this._listen('play', function (event) {
       self._emitState('starting', event);
     });
@@ -215,17 +224,21 @@
       self._emitState('playing', event);
     });
     this._listen('pause', function (event) {
+      self._clearStallRecovery();
       if (!self.video.ended && self._source) {
         self._emitState('paused', event);
       }
     });
     this._listen('waiting', function (event) {
       self._emitState('buffering', event);
+      self._armStallRecovery();
     });
     this._listen('stalled', function (event) {
       self._emitState('buffering', event);
+      self._armStallRecovery();
     });
     this._listen('ended', function (event) {
+      self._clearStallRecovery();
       self._emitState('ended', event);
       self._call('onEnded', event || null);
     });
@@ -266,6 +279,7 @@
   Player.prototype._setNativeSource = function (url, attempt, type) {
     this._generation += 1;
     this._clearStartupTimer();
+    this._clearStallRecovery();
     this._destroyHls();
     this._attempt = attempt;
     this._activeUrl = url;
@@ -310,6 +324,81 @@
   Player.prototype._clearStartupTimer = function () {
     if (this._startupTimer !== null) { global.clearTimeout(this._startupTimer); }
     this._startupTimer = null;
+  };
+
+  Player.prototype._clearStallRecovery = function () {
+    if (this._stallTimer !== null) { global.clearTimeout(this._stallTimer); }
+    this._stallTimer = null;
+    this._stallPosition = Math.max(0, finiteNumber(this.video.currentTime, 0));
+    this._stallRecoveryAttempts = 0;
+  };
+
+  Player.prototype._bufferedAhead = function () {
+    var position = Math.max(0, finiteNumber(this.video.currentTime, 0));
+    var ranges = this.video.buffered;
+    var end = position;
+    var i;
+    if (!ranges || typeof ranges.length !== 'number') { return 0; }
+    try {
+      for (i = 0; i < ranges.length; i += 1) {
+        if (ranges.start(i) <= position + 0.25 && ranges.end(i) >= position) {
+          end = Math.max(end, ranges.end(i));
+        }
+      }
+    } catch (ignore) {
+      return 0;
+    }
+    return Math.max(0, end - position);
+  };
+
+  Player.prototype._isRecoverablePlaybackStall = function () {
+    return Boolean(
+      this._source &&
+      !this._destroyed &&
+      !this._reportedFinalError &&
+      (this._attempt === 'direct' || this._attempt === 'hls-native' || this._attempt === 'hls-js') &&
+      !this.video.paused &&
+      !this.video.ended
+    );
+  };
+
+  Player.prototype._recoverStalledPlayback = function () {
+    if (!this._isRecoverablePlaybackStall() || this._stallTimer === null) { return false; }
+    if (Math.abs(finiteNumber(this.video.currentTime, 0) - this._stallPosition) >= 0.2) {
+      this._clearStallRecovery();
+      return false;
+    }
+    if (this._bufferedAhead() < 0.75) {
+      // Give the decoder one wake-up even when webOS reports stale readyState
+      // data, then wait for a real forward buffer before trying again.
+      if (this._stallRecoveryAttempts > 0 || finiteNumber(this.video.readyState, 0) < 3) {
+        return false;
+      }
+    }
+    this._stallRecoveryAttempts += 1;
+    this.play({ suppressError: true });
+    return true;
+  };
+
+  Player.prototype._armStallRecovery = function () {
+    if (!this._isRecoverablePlaybackStall() || this._stallTimer !== null) { return; }
+    var self = this;
+    var generation = this._generation;
+    var delay = Math.max(500, finiteNumber(this.options.stallRecoveryDelay, 900));
+    this._stallPosition = Math.max(0, finiteNumber(this.video.currentTime, 0));
+    var retry = function () {
+      if (self._generation !== generation || !self._isRecoverablePlaybackStall()) {
+        self._clearStallRecovery();
+        return;
+      }
+      self._recoverStalledPlayback();
+      if (self._stallTimer === null) { return; }
+      self._stallTimer = global.setTimeout(
+        retry,
+        delay * Math.min(3, Math.max(1, self._stallRecoveryAttempts))
+      );
+    };
+    this._stallTimer = global.setTimeout(retry, delay);
   };
 
   Player.prototype._armStartupTimer = function () {
@@ -379,6 +468,7 @@
     try {
       hls = new Hls(this.options.hlsConfig || {});
       this._destroyHls();
+      this._clearStallRecovery();
       this._hls = hls;
       this._generation += 1;
       this._attempt = 'hls-js';
@@ -449,6 +539,7 @@
     }
     this._reportedFinalError = true;
     this._clearStartupTimer();
+    this._clearStallRecovery();
     this._autoplayRequested = false;
     this._generation += 1;
     this._source = null;
@@ -522,6 +613,7 @@
     }
 
     this._generation += 1;
+    this._clearStallRecovery();
     this._source = normalized;
     this._reportedFinalError = false;
     this._pendingStartTime = Math.max(0, normalized.startTime);
@@ -586,6 +678,7 @@
   Player.prototype.pause = function () {
     this._autoplayRequested = false;
     this._clearStartupTimer();
+    this._clearStallRecovery();
     this.video.pause();
     return this;
   };
@@ -600,6 +693,7 @@
   };
 
   Player.prototype.stop = function () {
+    this._clearStallRecovery();
     this.video.pause();
     this.seekTo(0);
     this._emitState('stopped');
@@ -624,6 +718,7 @@
     }
     this._generation += 1;
     this._clearStartupTimer();
+    this._clearStallRecovery();
     this._autoplayRequested = false;
     this._autoplayAttempt = '';
     this._autoplayRetryCount = 0;
