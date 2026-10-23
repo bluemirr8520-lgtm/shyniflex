@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="theme-color" content="#111318">
+    <title>ShyniFlex</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header id="app-header" class="app-header setup-header">
+        <div class="brand" aria-label="ShyniFlex webOS">
+          <img src="assets/icon80.png" alt="" class="brand-icon">
+          <span>ShyniFlex</span>
+          <span class="platform-pill">webOS</span>
+        </div>
+        <div class="header-actions">
+          <time id="system-clock" class="system-clock" aria-label="현재 시각"></time>
+          <span id="network-status" class="status-chip" aria-live="polite">준비 중</span>
+        </div>
+      </header>
+
+      <main id="content" class="content setup-content" aria-live="polite">
+        <nav id="side-navigation" class="side-navigation hidden" aria-label="주 메뉴" data-nav-layout="column">
+          <div class="side-navigation-brand" aria-hidden="true">
+            <img src="assets/icon80.png" alt="">
+            <span>ShyniFlex</span>
+          </div>
+          <div class="side-navigation-items" data-nav-scroll="true">
+            <button id="nav-refresh" class="focusable side-navigation-item" tabindex="0" data-action="refresh-current" aria-label="새로고침" data-nav-right=".view:not(.hidden) .focusable">
+              <span class="side-navigation-icon"><svg class="ui-symbol" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5"></path><path d="M18.5 9A7 7 0 0 0 5.6 6.6L4 8m16 8-1.6 1.4A7 7 0 0 1 5.5 15"></path></svg></span><span class="side-navigation-label">새로고침</span>
+            </button>
+            <button id="nav-home" class="focusable side-navigation-item selected" tabindex="0" data-action="show-home" aria-label="홈" data-nav-right="#home-preview-rows .media-card">
+              <span class="side-navigation-icon"><svg class="ui-symbol" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5.5 10v10h13V10M9.5 20v-6h5v6"></path></svg></span><span class="side-navigation-label">홈</span>
+            </button>
+            <button id="nav-search" class="focusable side-navigation-item" tabindex="0" data-action="show-search" aria-label="검색" data-nav-right="#search-input">
+              <span class="side-navigation-icon"><svg class="ui-symbol" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg></span><span class="side-navigation-label">검색</span>
+            </button>
+            <button id="nav-libraries" class="focusable side-navigation-item" tabindex="0" data-action="show-libraries" aria-label="라이브러리" data-nav-right="#library-browse-grid .media-card">
+              <span class="side-navigation-icon"><svg class="ui-symbol" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="7" height="7" rx="1"></rect><rect x="14" y="4" width="7" height="7" rx="1"></rect><rect x="3" y="15" width="7" height="5" rx="1"></rect><rect x="14" y="15" width="7" height="5" rx="1"></rect></svg></span><span class="side-navigation-label">라이브러리</span>
+            </button>
+            <div id="side-library-items" class="side-library-items" aria-label="내 라이브러리"></div>
+          </div>
+          <button id="nav-settings" class="focusable side-navigation-item side-navigation-bottom" tabindex="0" data-action="open-settings" aria-label="설정" data-nav-right="#settings-view .setting-row.focusable">
+            <span class="side-navigation-icon" aria-hidden="true">
+              <svg class="ui-symbol" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4A2 2 0 0 0 4 9.9l.2.1a2 2 0 0 1 1 1.7v.6a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.6a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </span><span class="side-navigation-label">설정</span>
+          </button>
+        </nav>
+
+        <div id="tv-workspace" class="tv-workspace">
+          <section id="setup-view" class="view setup-view">
+            <div class="auth-shell">
+              <aside class="auth-brand" aria-label="ShyniFlex webOS">
+                <img src="assets/icon130.png" alt="" class="auth-brand-icon">
+                <strong>ShyniFlex</strong>
+                <span>webOS TV</span>
+              </aside>
+              <div class="setup-card login-card">
+              <div id="login-heading" class="login-heading hidden">
+                <p id="auth-eyebrow" class="eyebrow">LG TV 연결</p>
+                <h1 id="auth-title">로그인 방법 선택</h1>
+                <p id="auth-description" class="muted">Shyni 서버의 영화와 시리즈를 LG webOS TV에서 재생합니다.</p>
+              </div>
+
+              <section id="provider-choice-step" class="auth-step hidden" aria-hidden="true" aria-labelledby="auth-title">
+                <div class="provider-options" role="list" aria-label="미디어 서비스 선택">
+                  <button id="provider-plex" class="focusable provider-option" tabindex="0" type="button" data-action="select-plex" data-initial-focus="true" data-nav-down="#provider-jellyfin">
+                    <span class="provider-badge plex-badge" aria-hidden="true">P</span>
+                    <span class="provider-copy"><strong>Plex 로그인</strong><small>TV 코드를 Plex 계정에서 승인합니다.</small></span>
+                    <span class="provider-chevron" aria-hidden="true">›</span>
+                  </button>
+                  <button id="provider-jellyfin" class="focusable provider-option" tabindex="0" type="button" data-action="select-jellyfin" data-nav-up="#provider-plex" data-nav-down="#provider-emby">
+                    <span class="provider-badge jellyfin-badge" aria-hidden="true">J</span>
+                    <span class="provider-copy"><strong>Jellyfin 연결</strong><small>서버를 확인한 뒤 계정 또는 Quick Connect로 로그인합니다.</small></span>
+                    <span class="provider-chevron" aria-hidden="true">›</span>
+                  </button>
+                  <button id="provider-emby" class="focusable provider-option" tabindex="0" type="button" data-action="select-emby" data-nav-up="#provider-jellyfin" data-nav-down="#open-token-login">
+                    <span class="provider-badge emby-badge" aria-hidden="true">E</span>
+                    <span class="provider-copy"><strong>Emby 연결</strong><small>서버를 확인한 뒤 아이디와 비밀번호로 로그인합니다.</small></span>
+                    <span class="provider-chevron" aria-hidden="true">›</span>
+                  </button>
+                </div>
+                <div class="auth-divider"><span>고급 연결</span></div>
+                <button id="open-token-login" class="focusable secondary advanced-login-button" tabindex="0" type="button" data-action="open-token-login" data-nav-up="#provider-emby">기존 토큰 / API 키로 연결</button>
+              </section>
+
+              <section id="media-login-step" class="auth-step" aria-hidden="false" aria-labelledby="media-login-title">
+                <button id="media-login-back" class="focusable auth-back-button" tabindex="-1" type="button" data-action="auth-back" disabled>입력 초기화</button>
+                <div class="auth-step-heading">
+                  <span id="media-backend-badge" class="provider-badge jellyfin-badge" aria-hidden="true">J</span>
+                  <div><p class="eyebrow">Shyni 계정 로그인</p><h2 id="media-login-title">Shyni 연결</h2></div>
+                </div>
+                <form id="media-login-form" autocomplete="off" novalidate>
+                  <div id="media-url-panel">
+                    <label id="server-url-field" class="login-field-label" for="server-url">
+                      <span class="field-caption"><span>서버 주소</span><span id="server-url-state" class="input-state">입력 대기</span></span>
+                      <input id="server-url" class="focusable login-input" tabindex="-1" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="192.168.0.10:8096" disabled required>
+                    </label>
+                    <p class="form-help">Shyni 서버의 전체 주소를 입력하세요. 외부 접속은 HTTPS 사용을 권장합니다.</p>
+                    <div class="form-actions login-actions">
+                      <button id="find-server" class="focusable primary wide-action" tabindex="-1" type="submit" disabled>서버 찾기</button>
+                    </div>
+                  </div>
+
+                  <div id="media-credentials-panel" class="hidden" aria-hidden="true">
+                    <div id="detected-server-panel" class="detected-server-card">
+                      <span class="detected-server-icon" aria-hidden="true">✓</span>
+                      <span class="detected-server-copy"><strong id="detected-server-name">서버 확인됨</strong><small id="detected-server-meta"></small></span>
+                      <button id="change-media-server" class="focusable text-action" tabindex="-1" type="button" data-action="change-media-server" disabled>변경</button>
+                    </div>
+                    <label id="server-username-field" class="login-field-label" for="server-username">
+                      <span class="field-caption"><span>아이디</span><span id="server-username-state" class="input-state">입력 대기</span></span>
+                      <input id="server-username" class="focusable login-input" tabindex="-1" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="사용자 아이디" disabled required>
+                    </label>
+                    <label id="server-password-field" class="login-field-label" for="server-password">
+                      <span class="field-caption"><span>비밀번호</span><span id="server-password-state" class="input-state">입력 대기</span></span>
+                      <span class="password-input-row">
+                        <input id="server-password" class="focusable login-input" tabindex="-1" type="password" autocomplete="current-password" placeholder="비밀번호가 없으면 비워 두세요" disabled>
+                        <button id="password-visibility" class="focusable password-visibility" tabindex="-1" type="button" data-action="toggle-password-visibility" aria-pressed="false" disabled>표시</button>
+                      </span>
+                    </label>
+                    <label id="server-totp-field" class="login-field-label hidden" for="server-totp">
+                      <span class="field-caption"><span>2단계 인증 코드</span><span id="server-totp-state" class="input-state">입력 대기</span></span>
+                      <input id="server-totp" class="focusable login-input" tabindex="-1" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="인증 앱 코드" disabled>
+                    </label>
+                    <p id="auth-help" class="form-help">비밀번호는 저장하지 않으며 로그인 후 발급된 토큰만 이 TV에 저장합니다.</p>
+                    <div class="form-actions login-actions stacked-actions">
+                      <button id="connection-submit" class="focusable primary wide-action" tabindex="-1" type="submit" disabled>로그인</button>
+                      <button id="quick-connect-button" class="focusable secondary wide-action hidden" tabindex="-1" type="button" data-action="start-quick-connect" disabled>Quick Connect 사용</button>
+                    </div>
+                  </div>
+                </form>
+              </section>
+
+              <section id="quick-connect-step" class="auth-step centered-auth-step hidden" aria-hidden="true" aria-labelledby="quick-connect-title">
+                <p class="eyebrow">Jellyfin Quick Connect</p>
+                <h2 id="quick-connect-title">다른 기기에서 이 코드를 승인하세요</h2>
+                <div id="quick-connect-code" class="approval-code" aria-live="polite">------</div>
+                <p id="quick-connect-status" class="muted">Jellyfin의 Quick Connect 화면에서 코드를 입력하세요.</p>
+                <button id="quick-connect-cancel" class="focusable secondary wide-action" tabindex="-1" type="button" data-action="cancel-quick-connect" disabled>취소하고 아이디로 로그인</button>
+              </section>
+
+              <section id="plex-login-step" class="auth-step centered-auth-step hidden" aria-hidden="true" aria-labelledby="plex-login-title">
+                <button id="plex-login-back" class="focusable auth-back-button" tabindex="-1" type="button" data-action="auth-back" disabled>← 다른 연결 방법</button>
+                <p class="eyebrow">Plex TV 로그인</p>
+                <h2 id="plex-login-title">Plex 계정에서 TV 코드를 승인하세요</h2>
+                <div class="plex-approval-layout">
+                  <div id="plex-qr" class="plex-qr" aria-label="Plex 로그인 QR 코드"></div>
+                  <div class="plex-code-copy">
+                    <span>plex.tv/link</span>
+                    <strong id="plex-login-code" class="approval-code" aria-live="polite">----</strong>
+                  </div>
+                </div>
+                <p id="plex-login-status" class="muted">인증 코드를 만드는 중입니다…</p>
+                <div id="saved-connection-actions" class="stacked-actions hidden">
+                  <button id="saved-connection-retry" class="focusable primary wide-action" data-action="retry-saved-connection">저장된 연결로 다시 시도</button>
+                  <button class="focusable secondary wide-action" data-action="change-saved-connection">다른 계정으로 연결</button>
+                </div>
+                <button id="plex-login-retry" class="focusable primary wide-action hidden" tabindex="-1" type="button" data-action="retry-plex-login" disabled>코드 다시 만들기</button>
+              </section>
+
+              <section id="plex-server-step" class="auth-step hidden" aria-hidden="true" aria-labelledby="plex-server-title">
+                <button id="plex-server-back" class="focusable auth-back-button" tabindex="-1" type="button" data-action="auth-back" disabled>← 서비스 선택</button>
+                <p class="eyebrow">Plex 서버 선택</p>
+                <h2 id="plex-server-title">연결할 서버를 선택하세요</h2>
+                <div id="plex-server-list" class="plex-server-list" role="list"></div>
+                <form id="plex-server-form" autocomplete="off">
+                  <label id="plex-server-url-field" class="login-field-label" for="plex-server-url">
+                    <span class="field-caption"><span>직접 서버 주소 입력</span><span id="plex-server-url-state" class="input-state">선택 사항</span></span>
+                    <input id="plex-server-url" class="focusable login-input" tabindex="-1" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="http://192.168.0.10:32400" disabled>
+                  </label>
+                  <div class="form-actions login-actions">
+                    <button id="plex-server-submit" class="focusable secondary wide-action" tabindex="-1" type="submit" disabled>입력한 주소로 연결</button>
+                  </div>
+                </form>
+              </section>
+
+              <section id="token-login-step" class="auth-step hidden" aria-hidden="true" aria-labelledby="token-login-title">
+                <button id="token-login-back" class="focusable auth-back-button" tabindex="-1" type="button" data-action="auth-back" disabled>← 서비스 선택</button>
+                <p class="eyebrow">고급 연결</p>
+                <h2 id="token-login-title">기존 토큰 / API 키 사용</h2>
+                <form id="token-login-form" autocomplete="off">
+                  <label class="login-field-label" for="server-kind">
+                    <span class="field-caption"><span>서버 종류</span></span>
+                    <select id="server-kind" class="focusable login-input" tabindex="-1" disabled>
+                      <option value="plex">Plex</option>
+                      <option value="jellyfin">Jellyfin</option>
+                      <option value="emby">Emby</option>
+                    </select>
+                  </label>
+                  <label id="token-server-url-field" class="login-field-label" for="token-server-url">
+                    <span class="field-caption"><span>서버 주소</span><span id="token-server-url-state" class="input-state">입력 대기</span></span>
+                    <input id="token-server-url" class="focusable login-input" tabindex="-1" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="http://192.168.0.10:32400" disabled required>
+                  </label>
+                  <label id="server-token-field" class="login-field-label" for="server-token">
+                    <span class="field-caption"><span>액세스 토큰 / API 키</span><span id="server-token-state" class="input-state">입력 대기</span></span>
+                    <input id="server-token" class="focusable login-input" tabindex="-1" type="password" autocomplete="off" placeholder="토큰 입력" disabled required>
+                  </label>
+                  <label id="user-id-field" class="login-field-label hidden" for="server-user-id">
+                    <span class="field-caption"><span>사용자 ID</span><span class="input-state">선택 사항</span></span>
+                    <input id="server-user-id" class="focusable login-input" tabindex="-1" autocomplete="off" placeholder="비워두면 자동 확인" disabled>
+                  </label>
+                  <p class="form-help">일반 로그인에 문제가 있을 때만 사용하세요. Plex 계정 비밀번호는 이 앱에서 받지 않습니다.</p>
+                  <div class="form-actions login-actions">
+                    <button id="token-submit" class="focusable primary wide-action" tabindex="-1" type="submit" disabled>연결하고 시작</button>
+                  </div>
+                </form>
+              </section>
+
+                <p id="connection-error" class="error-message login-error" role="alert" aria-live="assertive"></p>
+              </div>
+            </div>
+          </section>
+
+          <section id="home-view" class="view tv-view home-view hidden">
+            <div id="home-spotlight" class="home-spotlight">
+              <div id="home-backdrop" class="spotlight-backdrop" aria-hidden="true"></div>
+              <div class="spotlight-shade" aria-hidden="true"></div>
+              <div class="spotlight-copy">
+                <p class="eyebrow">내 라이브러리 · 홈</p>
+                <h1 id="home-hero-title">내 미디어</h1>
+                <p id="home-hero-meta" class="spotlight-meta">라이브러리를 선택해 감상을 시작하세요.</p>
+                <p id="home-hero-summary" class="spotlight-summary">Shyni 라이브러리와 이어보기를 TV 화면에 맞게 탐색합니다.</p>
+              </div>
+              <div id="home-hubs" class="home-hubs" aria-label="홈 콘텐츠" data-nav-scroll="true">
+                <div id="home-preview-rows" class="home-preview-rows"></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="libraries-view" class="view tv-view library-browse-view hidden">
+            <div class="page-backdrop" aria-hidden="true"></div>
+            <div class="page-content">
+              <div class="view-heading tv-page-heading">
+                <div>
+                  <p class="eyebrow">미디어</p>
+                  <h1>라이브러리</h1>
+                </div>
+                <div class="view-actions" data-nav-layout="rail" data-nav-down="#libraries-view .library-tab.selected">
+                  <button class="focusable secondary" tabindex="0" data-action="reorder-libraries">순서 변경</button>
+                </div>
+              </div>
+              <div class="library-tabs" aria-label="라이브러리 보기" data-nav-layout="rail" data-nav-up="#libraries-view .view-actions .focusable" data-nav-down="#library-browse-grid .media-card" data-nav-left="#nav-libraries">
+                <button class="focusable library-tab" data-action="library-mode" data-library-mode="recommendations">추천</button>
+                <button class="focusable library-tab selected" data-action="library-mode" data-library-mode="browse">탐색</button>
+                <button class="focusable library-tab" data-action="library-mode" data-library-mode="collections">컬렉션</button>
+                <button class="focusable library-tab" data-action="library-mode" data-library-mode="playlists">재생목록</button>
+              </div>
+              <div id="library-browse-grid" class="card-grid library-grid" data-nav-layout="grid" data-nav-left="#nav-libraries" data-nav-up="#libraries-view .library-tab.selected"></div>
+            </div>
+          </section>
+
+          <section id="search-view" class="view tv-view search-view hidden">
+            <div class="page-backdrop" aria-hidden="true"></div>
+            <div class="page-content">
+              <div class="view-heading tv-page-heading">
+                <div><p class="eyebrow">전체 미디어</p><h1>검색</h1></div>
+              </div>
+              <form id="search-form" class="search-form" role="search" data-nav-layout="rail" data-nav-down="#search-grid .media-card" data-nav-left="#nav-search">
+                <input id="search-input" class="focusable" tabindex="0" type="search" inputmode="search" autocomplete="off" placeholder="영화, 시리즈, 에피소드 검색" aria-label="검색어">
+                <button class="focusable primary" type="submit">검색</button>
+              </form>
+              <div id="search-grid" class="card-grid media-grid" data-nav-layout="grid" data-nav-left="#nav-search" data-nav-up="#search-input"></div>
+              <div id="search-empty" class="empty-state">검색어를 입력하세요.</div>
+            </div>
+          </section>
+
+          <section id="items-view" class="view tv-view items-view hidden">
+            <div id="items-backdrop" class="page-backdrop" aria-hidden="true"></div>
+            <div class="page-content">
+              <div class="view-heading tv-page-heading">
+                <div>
+                  <p id="breadcrumb" class="eyebrow">라이브러리</p>
+                  <h1 id="items-title">항목</h1>
+                </div>
+                <div class="view-actions" data-nav-layout="rail" data-nav-down="#items-view .library-tab.selected">
+                  <button id="items-sort" class="focusable secondary" tabindex="0" data-action="toggle-sort">제목순</button>
+                  <button class="focusable secondary" tabindex="0" data-action="go-back">뒤로</button>
+                </div>
+              </div>
+              <div class="library-tabs compact-tabs" aria-label="항목 보기" data-nav-layout="rail" data-nav-up="#items-sort" data-nav-down="#item-grid .media-card" data-nav-left="#nav-libraries">
+                <button class="focusable library-tab" data-action="library-mode" data-library-mode="recommendations">추천</button>
+                <button class="focusable library-tab selected" data-action="library-mode" data-library-mode="browse">탐색</button>
+                <button class="focusable library-tab" data-action="library-mode" data-library-mode="collections">컬렉션</button>
+                <button class="focusable library-tab" data-action="library-mode" data-library-mode="playlists">재생목록</button>
+              </div>
+              <div id="item-grid" class="card-grid media-grid" data-nav-layout="grid" data-nav-left="#nav-libraries" data-nav-up="#items-view .library-tab.selected"></div>
+              <div id="empty-state" class="empty-state hidden">표시할 항목이 없습니다.</div>
+            </div>
+          </section>
+
+          <section id="detail-view" class="view tv-view detail-view hidden">
+            <div id="detail-backdrop" class="detail-backdrop" aria-hidden="true"></div>
+            <div class="detail-shade" aria-hidden="true"></div>
+            <div class="detail-content">
+              <button id="detail-back" class="focusable detail-back" tabindex="0" data-action="close-detail" aria-label="뒤로" data-nav-down="#detail-primary-action" data-nav-right="#detail-primary-action" data-nav-up="#detail-back">← 뒤로</button>
+              <p class="eyebrow">상세 정보</p>
+              <h1 id="detail-title">제목</h1>
+              <p id="detail-meta" class="spotlight-meta"></p>
+              <p id="detail-summary" class="detail-summary"></p>
+              <div class="detail-actions" data-nav-layout="rail" data-nav-up="#detail-back" data-nav-down="#detail-child-rail .media-card">
+                <button id="detail-primary-action" class="focusable primary detail-play" tabindex="0" data-action="play-detail">▶ 재생</button>
+                <button id="detail-restart" class="focusable secondary hidden" tabindex="0" data-action="play-from-start">처음부터 재생</button>
+              </div>
+            </div>
+            <section id="detail-related" class="detail-related hidden" aria-labelledby="detail-related-title">
+              <div class="rail-heading">
+                <div>
+                  <p class="eyebrow">계속 탐색</p>
+                  <h2 id="detail-related-title">시즌 및 에피소드</h2>
+                </div>
+              </div>
+              <div id="detail-child-rail" class="card-rail detail-child-rail" data-nav-layout="grid" data-nav-scroll="true" data-nav-up="#detail-primary-action"></div>
+            </section>
+          </section>
+
+          <section id="settings-view" class="view tv-view settings-view hidden">
+            <div class="page-content settings-page-content" data-nav-layout="column" data-nav-left="#nav-settings">
+              <div class="view-heading tv-page-heading">
+                <div>
+                  <p class="eyebrow">ShyniFlex webOS</p>
+                  <h1>설정</h1>
+                </div>
+                <button class="focusable secondary" tabindex="0" data-action="show-home">완료</button>
+              </div>
+              <div class="settings-sections">
+                <section class="settings-section">
+                  <h2>재생 환경설정</h2>
+                  <button id="playback-settings-button" class="focusable setting-row" tabindex="0" data-action="open-playback-settings" data-initial-focus="true">
+                    <span><strong>비디오 재생</strong><small id="playback-settings-summary">자동 (TV 권장) · 10초 이동 · 이어보기 켬 · 영상 전체 보기</small></span><span>›</span>
+                  </button>
+                </section>
+                <section class="settings-section">
+                  <h2>라이브러리</h2>
+                  <button class="focusable setting-row" tabindex="0" data-action="reorder-libraries">
+                    <span><strong>홈 라이브러리 순서</strong><small>홈과 라이브러리 화면의 표시 순서를 바꿉니다.</small></span><span>›</span>
+                  </button>
+                </section>
+                <section class="settings-section">
+                  <h2>서버</h2>
+                  <button class="focusable setting-row" tabindex="0" data-action="disconnect">
+                    <span><strong>서버 연결 변경</strong><small>현재 연결을 지우고 다른 Shyni 서버에 연결합니다.</small></span><span>›</span>
+                  </button>
+                </section>
+                <section class="settings-section">
+                  <h2>정보</h2>
+                  <div class="setting-row static-row">
+                    <span><strong>ShyniFlex webOS 1.0.4</strong><small id="device-capability">디스플레이 확인 중 · Shyni 재생 티켓 · 리모컨 · 외부 폰트 · 세로 자막</small></span>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <section id="playback-settings-view" class="view tv-view settings-view playback-settings-view hidden">
+            <div class="page-content settings-page-content" data-nav-layout="column" data-nav-left="#nav-settings">
+              <div class="view-heading tv-page-heading">
+                <div>
+                  <p class="eyebrow">설정</p>
+                  <h1>비디오 재생</h1>
+                </div>
+                <button class="focusable secondary" tabindex="0" data-action="cancel-playback-settings">뒤로</button>
+              </div>
+              <div class="settings-sections playback-settings-sections">
+                <section class="settings-section">
+                  <h2>화질</h2>
+                  <label class="setting-row playback-setting-row" for="playback-quality">
+                    <span>
+                      <strong>최대 스트리밍 화질</strong>
+                      <small>Shyni 서버 호환 변환 화질의 상한을 정합니다.</small>
+                    </span>
+                    <select id="playback-quality" class="focusable" tabindex="0" data-initial-focus="true">
+                      <option value="auto">자동 (TV 권장)</option>
+                      <option value="compatible">호환 재생 (H.264/AAC · 최대 1080p)</option>
+                      <option value="fullhd">Full HD (최대 1080p)</option>
+                      <option value="hd">HD (최대 720p)</option>
+                    </select>
+                  </label>
+                  <p class="playback-settings-help">구형 webOS TV에서는 Shyni 서버의 1080p H.264/AAC 호환 변환을 기본으로 사용합니다. 변환 권한과 서버 인코더가 필요할 수 있습니다. 선택 항목은 좌우 키로 변경하세요.</p>
+                </section>
+                <section class="settings-section">
+                  <h2>탐색 및 이어보기</h2>
+                  <label class="setting-row playback-setting-row" for="playback-seek-seconds">
+                    <span><strong>건너뛰기 시간</strong><small>화면 버튼과 리모컨 되감기·빨리감기에 함께 적용됩니다.</small></span>
+                    <select id="playback-seek-seconds" class="focusable" tabindex="0">
+                      <option value="5">5초</option>
+                      <option value="10">10초</option>
+                      <option value="15">15초</option>
+                      <option value="30">30초</option>
+                      <option value="60">60초</option>
+                    </select>
+                  </label>
+                  <label class="setting-row playback-setting-row" for="playback-resume">
+                    <span><strong>이어보기</strong><small>서버에 저장된 마지막 위치에서 재생합니다.</small></span>
+                    <select id="playback-resume" class="focusable" tabindex="0">
+                      <option value="on">켬</option>
+                      <option value="off">끔</option>
+                    </select>
+                  </label>
+                  <label class="setting-row playback-setting-row" for="playback-rewind-on-resume">
+                    <span><strong>이어보기 시 되감기</strong><small>마지막 위치보다 조금 앞에서 재생을 시작합니다.</small></span>
+                    <select id="playback-rewind-on-resume" class="focusable" tabindex="0">
+                      <option value="0">사용 안 함</option>
+                      <option value="5">5초</option>
+                      <option value="10">10초</option>
+                    </select>
+                  </label>
+                </section>
+                <section class="settings-section">
+                  <h2>화면</h2>
+                  <label class="setting-row playback-setting-row" for="playback-video-fit">
+                    <span><strong>기본 화면 비율</strong><small>재생을 시작할 때 사용할 영상 맞춤 방식을 정합니다.</small></span>
+                    <select id="playback-video-fit" class="focusable" tabindex="0">
+                      <option value="contain">영상 전체 보기</option>
+                      <option value="cover">화면 채우기</option>
+                    </select>
+                  </label>
+                </section>
+                <div class="playback-settings-actions">
+                  <button class="focusable primary" tabindex="0" data-action="save-playback-settings">저장</button>
+                  <button class="focusable secondary" tabindex="0" data-action="cancel-playback-settings">취소</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <section id="player-view" class="player-view hidden" aria-label="재생 화면">
+        <video id="video" preload="metadata" playsinline></video>
+        <div id="subtitle-overlay" class="shyniflex-subtitle-overlay" aria-live="off"></div>
+        <div id="player-message" class="player-message hidden" role="alert"></div>
+        <div id="player-osd" class="player-osd visible">
+          <div class="player-top-chrome">
+            <button id="player-close" class="focusable player-icon-button" tabindex="0" data-player-action="close" aria-label="재생 화면 닫기" data-nav-down="#player-toggle"><svg class="transport-symbol" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 5l-7 7 7 7M7 12h14"/></svg></button>
+            <div class="player-title-copy">
+              <p class="eyebrow">지금 재생 중</p>
+              <h2 id="player-title">제목</h2>
+            </div>
+            <span id="playback-mode" class="status-chip">Direct Play</span>
+          </div>
+          <div class="player-bottom-chrome">
+            <div class="timeline-row">
+              <span id="current-time">00:00</span>
+              <input id="timeline" class="focusable timeline" tabindex="0" type="range" min="0" max="1000" value="0" aria-label="재생 위치" data-nav-down="#player-toggle">
+              <span id="duration">00:00</span>
+            </div>
+            <div class="player-command-row">
+              <div class="transport-actions">
+                <button id="player-rewind" class="focusable player-icon-button seek-button" tabindex="0" data-player-action="rewind" aria-label="10초 뒤로" data-nav-right="#player-toggle" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path d="M15 7 6 16l9 9M7 16h18c9.4 0 17 7.6 17 17"/></svg><small aria-hidden="true">10</small></button>
+                <button id="player-toggle" class="focusable primary player-toggle" tabindex="0" data-state="paused" data-player-action="toggle" aria-label="재생 또는 일시정지" data-nav-left="#player-rewind" data-nav-right="#player-forward" data-nav-up="#timeline"><svg class="transport-symbol play-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M10 5l18 11-18 11z"/></svg><svg class="transport-symbol pause-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M10 6v20M22 6v20"/></svg></button>
+                <button id="player-forward" class="focusable player-icon-button seek-button" tabindex="0" data-player-action="forward" aria-label="10초 앞으로" data-nav-left="#player-toggle" data-nav-right="#player-next" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path d="m33 7 9 9-9 9M41 16H23c-9.4 0-17 7.6-17 17"/></svg><small aria-hidden="true">10</small></button>
+                <button id="player-next" class="focusable player-option-button player-next-button hidden" tabindex="0" data-player-action="next" aria-label="다음 영상" data-nav-left="#player-forward" data-nav-right="#player-subtitles" data-nav-up="#timeline"><svg class="transport-symbol" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path class="next-fill" d="M5 6l17 10L5 26z"/><path d="M25 6v20"/></svg><span>다음 영상</span></button>
+              </div>
+              <div class="player-option-actions">
+                <button id="player-subtitles" class="focusable player-option-button" tabindex="0" data-action="open-subtitles" data-nav-left="#player-next" data-nav-right="#player-fit" data-nav-up="#timeline">자막</button>
+                <button id="player-fit" class="focusable player-option-button" tabindex="0" data-player-action="fit" data-nav-left="#player-subtitles" data-nav-up="#timeline">화면 맞춤</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div id="modal-backdrop" class="modal-backdrop hidden">
+        <section id="reorder-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reorder-title">
+          <div class="modal-heading">
+            <h2 id="reorder-title">라이브러리 순서</h2>
+            <button class="focusable icon-button" tabindex="0" data-action="close-modal" aria-label="닫기">×</button>
+          </div>
+          <p class="muted">항목을 선택한 뒤 위·아래 버튼으로 옮기세요.</p>
+          <div id="reorder-list" class="reorder-list"></div>
+          <div class="form-actions">
+            <button class="focusable primary" tabindex="0" data-action="save-library-order">저장</button>
+          </div>
+        </section>
+
+        <section id="subtitle-modal" class="modal wide-modal subtitle-sheet hidden" data-nav-layout="column" data-nav-scroll="true" role="dialog" aria-modal="true" aria-labelledby="subtitle-title">
+          <div class="modal-heading">
+            <h2 id="subtitle-title">자막 설정</h2>
+            <button class="focusable icon-button" tabindex="0" data-action="close-modal" aria-label="닫기">×</button>
+          </div>
+          <p class="muted">위아래: 항목 이동 · 좌우: 값 변경 · 뒤로: 닫기</p>
+          <div class="subtitle-preview-stage" aria-label="자막 미리보기"><div id="subtitle-preview" data-writing-mode="horizontal">자막 미리보기 · 가나다 ABC</div></div>
+          <div class="settings-grid two-column subtitle-basic-settings">
+            <label>자막 선택<select id="subtitle-track" class="focusable" tabindex="0" data-initial-focus="true"><option value="off">자막 끄기</option></select></label>
+            <label for="subtitle-orientation">쓰기 방향 <output id="subtitle-direction-value" aria-hidden="true">가로쓰기</output><select id="subtitle-orientation" class="focusable" aria-label="쓰기 방향" tabindex="0"><option value="horizontal">가로쓰기</option><option value="vertical">세로쓰기</option></select></label>
+            <label>자막 폰트<select id="subtitle-font-family" class="focusable" tabindex="0"><option value="cinema">Shyni 한글 (내장)</option><option value="default">TV 기본 자막 폰트</option><option value="external">외부 폰트</option></select></label>
+            <label for="subtitle-size">자막 크기 <output id="subtitle-size-value" aria-hidden="true">46px</output><input id="subtitle-size" class="focusable" aria-label="자막 크기" tabindex="0" type="range" min="24" max="84" step="2" value="46"></label>
+            <label for="subtitle-offset">자막 싱크 <output id="subtitle-offset-value" aria-hidden="true">0.0초</output><input id="subtitle-offset" class="focusable" aria-label="자막 싱크" tabindex="0" type="range" min="-10" max="10" step="0.1" value="0"><small>+는 자막을 늦게, −는 빠르게 표시</small></label>
+            <label>줄 간격<input id="subtitle-line-height" class="focusable" tabindex="0" type="range" min="80" max="220" value="125"></label>
+            <label>가로 위치<input id="subtitle-x" class="focusable" tabindex="0" type="range" min="5" max="95" value="50"></label>
+            <label>세로 위치<input id="subtitle-y" class="focusable" tabindex="0" type="range" min="5" max="95" value="82"></label>
+            <button class="focusable secondary" tabindex="0" data-action="toggle-subtitle-move">재생 화면에서 위치 이동</button>
+            <button class="focusable secondary" tabindex="0" data-action="reset-subtitles">모양·위치 초기화</button>
+          </div>
+          <p id="subtitle-track-status" class="muted">SRT/VTT 텍스트 자막을 지원합니다.</p>
+          <h3>외부 자막·폰트</h3>
+          <div class="settings-grid two-column">
+            <label>
+              자막 주소 (VTT/SRT)
+              <input id="subtitle-url" class="focusable" tabindex="0" inputmode="url" placeholder="https://…/subtitle.vtt">
+            </label>
+            <button class="focusable secondary align-end" tabindex="0" data-action="load-subtitle-url">주소에서 불러오기</button>
+            <label>
+              외부 자막 파일
+              <input id="subtitle-file" class="focusable" tabindex="0" type="file" accept=".vtt,.srt,text/vtt,application/x-subrip">
+            </label>
+            <label>
+              외부 폰트 파일
+              <input id="font-file" class="focusable" tabindex="0" type="file" accept=".ttf,.otf,.woff,.woff2,font/*">
+            </label>
+            <label>
+              폰트 URL
+              <input id="font-url" class="focusable" tabindex="0" inputmode="url" placeholder="https://…/font.woff2">
+            </label>
+            <button class="focusable secondary align-end" tabindex="0" data-action="load-font-url">폰트 적용</button>
+          </div>
+          <p class="muted">외부 자막은 SRT/VTT 형식, 최대 2MB입니다. 위치 이동 모드에서는 방향키로 옮기고 확인 버튼으로 저장합니다.</p>
+        </section>
+      </div>
+
+      <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+      <div id="startup-error" class="startup-error hidden" role="alert" aria-live="assertive">
+        <strong>화면을 시작하지 못했습니다.</strong>
+        <span id="startup-error-message">앱을 다시 실행해 주세요.</span>
+      </div>
+    </div>
+
+    <script src="js/boot.js"></script>
+    <script src="webOSTVjs-1.2.13/webOSTV.js"></script>
+    <script src="js/vendor/es6-promise.auto-4.2.8.min.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/subtitles.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/remote.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

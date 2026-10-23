@@ -1,0 +1,13 @@
+{
+  "name": "shyniflex-webos-build",
+  "version": "1.0.4",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js && node tests/playback_input_modules_node_test.js",
+    "package": "ares-package --no-minify -o dist app",
+    "inspect": "ares-package -I"
+  },
+  "devDependencies": {
+    "@webos-tools/cli": "3.2.5"
+  }
+}

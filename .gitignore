@@ -3,6 +3,8 @@
 /data/
 /artifacts/
 /outputs/
+/webos/dist/
+/webos/node_modules/
 /windows-prototype/
 
 # Runtime downloads and generated native libraries are recreated by setup-mpv.ps1.
