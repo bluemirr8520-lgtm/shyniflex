@@ -58,6 +58,83 @@ class Native4kStreamingTest {
 
     @Test fun fourKHevcRecoversAfterAThreeSecondNetworkStall() = benchmark(stall = true)
 
+    @Test fun fullSourceDurationSurvivesAShorterNativeTimelineUntilRealEof() {
+        val context = instrumentation.targetContext
+        assumeTrue("Only the isolated synthetic QA app may run this regression", context.packageName.endsWith(".spoilerqa"))
+        assertFalse((context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked)
+        assertTrue(NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("127.0.0.1"))
+        val clip = instrumentation.context.assets.open("media3/$FIXTURE").use { it.readBytes() }
+        StreamingFixture(clip, hold = false).use { server ->
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                var player: MpvPlayer? = null
+                var view: PlayerView? = null
+                val timings = Timings()
+                try {
+                    scenario.onActivity { activity ->
+                        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        val video = PlayerView(activity).apply { useController = false }
+                        activity.setContentView(video)
+                        val active = MpvPlayer(activity, sourceDurationMs = 120_000).apply {
+                            volume = 0f
+                            setAudioAttributes(AudioAttributes.DEFAULT, false)
+                            addListener(object : Player.Listener {
+                                override fun onPlayerError(error: PlaybackException) { timings.error.set(error.errorCodeName) }
+                            })
+                        }
+                        player = active; view = video; video.player = active
+                        active.setMediaItem(MediaItem.fromUri(server.url)); active.prepare()
+                    }
+                    val active = player!!
+                    await("A paused source must prepare without replacing its full-source duration", 15_000, server, timings) {
+                        main { active.playbackState == Player.STATE_READY && active.videoSize.width == 3840 }
+                    }
+                    main {
+                        assertEquals(120_000L, active.duration)
+                        assertTrue("The native fixture must really be shorter than the supplied full source", nativeNumber("duration")!! in 11.0..13.0)
+                        assertFalse(active.playWhenReady)
+                        assertFalse(active.isPlaying)
+                        active.seekTo(6_000)
+                    }
+                    await("A paused midpoint seek must keep the source clock and full duration", 8_000, server, timings) {
+                        main { active.playbackState == Player.STATE_READY && kotlin.math.abs(active.currentPosition - 6_000) < 500 }
+                    }
+                    main {
+                        assertEquals(120_000L, active.duration)
+                        assertFalse(active.isPlaying)
+                        assertTrue("Half of a short native timeline is not 95 percent of the full source", active.currentPosition < active.duration * 95 / 100)
+                        active.play()
+                    }
+                    await("Actual playback must advance after the midpoint seek", 5_000, server, timings) {
+                        main { active.isPlaying && active.currentPosition >= 6_500 }
+                    }
+                    main {
+                        assertEquals(120_000L, active.duration)
+                        assertTrue(active.currentPosition < active.duration * 95 / 100)
+                        active.pause(); active.seekTo(11_000)
+                    }
+                    await("A paused near-end seek must not be confused with source completion", 8_000, server, timings) {
+                        main { active.playbackState == Player.STATE_READY && kotlin.math.abs(active.currentPosition - 11_000) < 500 }
+                    }
+                    main {
+                        assertFalse(active.isPlaying)
+                        assertEquals(120_000L, active.duration)
+                        assertTrue(active.currentPosition < active.duration * 95 / 100)
+                        active.play()
+                    }
+                    await("Real native EOF must end playback despite a longer full-source duration", 8_000, server, timings) {
+                        main { active.playbackState == Player.STATE_ENDED }
+                    }
+                    main {
+                        assertEquals(120_000L, active.duration)
+                        assertEquals(true, MPVLib.getPropertyBoolean("eof-reached"))
+                        assertNull(active.playerError)
+                    }
+                    server.assertHealthy()
+                } finally { main { view?.player = null; player?.release() } }
+            }
+        }
+    }
+
     @Test fun delayedResumeWaitsForNativeRestartBeforePlayingOrAdvancingItsClock() {
         val context = instrumentation.targetContext
         assumeTrue("Only the isolated synthetic QA app may run this regression", context.packageName.endsWith(".spoilerqa"))

@@ -245,7 +245,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (spec.sourceItem?.isSpoiler == true) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         subtitleLoader = SubtitleLoader(headersFor = client::headersFor)
         lastPosition = savedInstanceState?.getLong("position", spec.resumeMs) ?: spec.resumeMs
-        lastDuration = savedInstanceState?.getLong("duration", spec.durationMs) ?: spec.durationMs
+        lastDuration = maxOf(0L, spec.durationMs, savedInstanceState?.getLong("duration", spec.durationMs) ?: 0L)
         speed = (savedInstanceState?.getFloat("speed", settings.getFloat("playback_speed", 1f)) ?: settings.getFloat("playback_speed", 1f))
             .takeIf { it.isFinite() }?.coerceIn(.25f, 4f) ?: 1f
         resizeMode = settings.getInt("resize_mode", AspectRatioFrameLayout.RESIZE_MODE_FIT)
@@ -653,7 +653,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     completed = false
                     resolvePendingEmbeddedSubtitle()
                     restorePendingTextPreference()
-                    if (created.duration != C.TIME_UNSET && created.duration > 0) lastDuration = created.duration
+                    if (created.duration != C.TIME_UNSET && created.duration > 0) preserveFullDuration(created.duration)
                 } else if (state == Player.STATE_ENDED && !exiting && !refreshing) {
                     handler.post {
                         if (player === created && !exiting && !refreshing && created.reconcilePlaybackCompletion())
@@ -1427,8 +1427,9 @@ class NativePlayerActivity : AppCompatActivity() {
         val subtitle = if (!subtitlesEnabled || nativeText != null) null else
             replacementSubtitle(preferredText, refreshed.subtitles) ?: preferredSubtitle(refreshed)
         spec = refreshed.copy(resumeMs = previous.position)
-        lastDuration = refreshed.durationMs.takeIf { it > 0 }
-            ?: previous.duration.takeIf { refreshed.itemId == previous.spec.itemId && refreshed.partId == previous.spec.partId } ?: 0
+        val sameSource = refreshed.itemId == previous.spec.itemId && refreshed.partId == previous.spec.partId &&
+            refreshed.libraryId == previous.spec.libraryId && refreshed.viewItemId == previous.spec.viewItemId
+        lastDuration = maxOf(0L, refreshed.durationMs, if (sameSource) previous.duration else 0L)
         playerView.findViewById<TextView>(R.id.player_title).text = spec.title
         externalSubtitleId = subtitle?.takeUnless { it.isEmbedded }?.id
         embeddedServerSubtitleId = subtitle?.takeIf { it.isEmbedded }?.id
@@ -1775,11 +1776,16 @@ class NativePlayerActivity : AppCompatActivity() {
         toast("현재 위치에서 음성과 영상을 다시 맞춥니다.")
     }
 
+    /** A decoder estimate or a renewed fragment cannot shorten this source's full timeline. */
+    private fun preserveFullDuration(observedDurationMs: Long) {
+        lastDuration = maxOf(0L, lastDuration, spec.durationMs, observedDurationMs)
+    }
+
     private fun capturePosition() {
         val active = player ?: return
         if (completed) return
         pendingSeek?.let { lastPosition = it; return }
-        if (active.duration != C.TIME_UNSET && active.duration > 0) lastDuration = active.duration
+        if (active.duration != C.TIME_UNSET && active.duration > 0) preserveFullDuration(active.duration)
         if (!gestures.isSeekGestureActive && prepared) {
             lastPosition = active.currentPosition.coerceAtLeast(0)
             completionGate().observe(lastPosition, lastDuration, watchingSince != null || (visible && active.isPlaying))

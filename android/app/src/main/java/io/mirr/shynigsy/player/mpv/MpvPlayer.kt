@@ -55,6 +55,7 @@ class MpvPlayer(
     private val playbackProfile = MpvPlaybackProfile.forDevice(app, preferSoftwareDecode)
     val isServerConverted: Boolean = serverConversion
     private val conversionTimeline = if (serverConversion) ServerConversionTimeline(sourceDurationMs) else null
+    private val originalDuration = MpvSourceDuration(sourceDurationMs)
     private val main = Handler(Looper.getMainLooper())
     private val audio = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val requestHeaders = headers.toMap().also { values ->
@@ -255,7 +256,8 @@ class MpvPlayer(
         pendingStartMs = startPositionMs.takeUnless { it == C.TIME_UNSET }?.coerceAtLeast(0) ?: 0
         rewriteConversionSource()
         positionMs = pendingStartMs; positionUpdatedAt = SystemClock.elapsedRealtime()
-        bufferedMs = positionMs; durationMs = conversionTimeline?.duration(null) ?: C.TIME_UNSET
+        originalDuration.reset()
+        bufferedMs = positionMs; durationMs = conversionTimeline?.duration(null) ?: originalDuration.durationMs ?: C.TIME_UNSET
         seekable = isServerConverted && durationMs > 0
         loaded = false; loading = false; status = Player.STATE_IDLE; failure = null
         startObserved = false; firstFrame = false; readiness.reset()
@@ -504,7 +506,7 @@ class MpvPlayer(
                 positionMs = conversionTimeline?.sourcePosition(nativePosition) ?: nativePosition
                 positionUpdatedAt = SystemClock.elapsedRealtime(); onNativePosition?.invoke(positionMs)
             }
-            "duration" -> durationMs = sourceDuration((value * 1000).toLong())
+            "duration" -> durationMs = sourceDuration(value)
             "demuxer-cache-duration" -> {
                 val cacheDuration = (value * 1000).toLong().coerceAtLeast(0)
                 bufferedMs = conversionTimeline?.let { timeline ->
@@ -551,7 +553,7 @@ class MpvPlayer(
                 if (!isExpectedNativeSource()) return@dispatchNative
                 loaded = true
                 configuredVideoLayout?.let { setVideoLayout(it.first, it.second, it.third) }
-                durationMs = sourceDuration(MPVLib.getPropertyDouble("duration")?.times(1000)?.toLong())
+                durationMs = sourceDuration(MPVLib.getPropertyDouble("duration"))
                 seekable = if (isServerConverted) durationMs > 0 else MPVLib.getPropertyBoolean("seekable") == true
                 nativePaused = MPVLib.getPropertyBoolean("pause") ?: (!requestedPlay || focusSuppressed)
                 readiness.fileLoaded(MPVLib.getPropertyBoolean("paused-for-cache") == true)
@@ -697,9 +699,9 @@ class MpvPlayer(
     }
     private fun abandonFocus() { if (focused || focusSuppressed) audio.abandonAudioFocusRequest(focusRequest); focused = false; ducked = false }
     private fun applyGain() { if (alive) MPVLib.setPropertyDouble("volume", (gain * if (ducked) 20 else 100).toDouble()) }
-    private fun sourceDuration(nativeDurationMs: Long?): Long =
-        if (isServerConverted) conversionTimeline?.duration(nativeDurationMs) ?: C.TIME_UNSET
-        else nativeDurationMs?.takeIf { it > 0 } ?: C.TIME_UNSET
+    private fun sourceDuration(nativeDurationSeconds: Double?): Long =
+        if (isServerConverted) conversionTimeline?.duration(MpvSourceDuration.nativeMilliseconds(nativeDurationSeconds)) ?: C.TIME_UNSET
+        else originalDuration.observe(nativeDurationSeconds) ?: C.TIME_UNSET
 
     /** Main-thread reconciliation for hosts; never infers EOF from the progress clock. */
     fun reconcilePlaybackCompletion(): Boolean {
