@@ -141,6 +141,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var spoilerReauthenticationJob: Job? = null
     private var spoilerRotationJob: Job? = null
     private var spoilerRecovery: ConversionRestore? = null
+    private var spoilerPreparing = false
     private val playbackAuthentication = PlaybackAuthenticationEpoch()
     @Volatile private var progressDeliveryJob: Job? = null
     private var exiting = false
@@ -396,7 +397,7 @@ class NativePlayerActivity : AppCompatActivity() {
             onSubtitleDragEnd = ::finishSubtitleDrag
             onSeekFailed = { target ->
                 lastPosition = target; pendingSeek = target
-                showError("이동한 위치를 불러오지 못했습니다. 이 위치에서 다시 재생해 주세요.")
+                if (!spoilerPreparing) showError("이동한 위치를 불러오지 못했습니다. 이 위치에서 다시 재생해 주세요.")
             }
         }
         root.addView(gestures, FrameLayout.LayoutParams(-1, -1))
@@ -544,6 +545,8 @@ class NativePlayerActivity : AppCompatActivity() {
         val down = event.action == KeyEvent.ACTION_DOWN
         val firstDown = down && event.repeatCount == 0
         val ready = prepared && !exiting && !refreshing && !navigationLoading && !conversionLoading
+        val canSetPlaybackIntent = prepared && !exiting && !navigationLoading && !conversionLoading &&
+            (!refreshing || spoilerPreparing)
         if (remoteSeek != null && event.keyCode == remoteSeekKey) {
             remoteSeekLastEventAt = SystemClock.elapsedRealtime()
             if (event.action == KeyEvent.ACTION_UP) finishRemoteSeeking()
@@ -553,7 +556,7 @@ class NativePlayerActivity : AppCompatActivity() {
             event.keyCode != KeyEvent.KEYCODE_DPAD_RIGHT && event.keyCode != KeyEvent.KEYCODE_MEDIA_REWIND &&
             event.keyCode != KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) finishRemoteSeeking()
         when (val action = tvRemoteAction(event.keyCode, playerView.isControllerFullyVisible)) {
-            TvRemoteAction.PLAY, TvRemoteAction.PAUSE, TvRemoteAction.TOGGLE_PLAY -> if (firstDown && ready) {
+            TvRemoteAction.PLAY, TvRemoteAction.PAUSE, TvRemoteAction.TOGGLE_PLAY -> if (firstDown && canSetPlaybackIntent) {
                 val play = when (action) {
                     TvRemoteAction.PLAY -> true
                     TvRemoteAction.PAUSE -> false
@@ -672,6 +675,12 @@ class NativePlayerActivity : AppCompatActivity() {
             override fun onPlayerError(error: PlaybackException) {
                 if (player !== created) return
                 settleWatchTime(false)
+                // Unlock revokes the old grant. If the old connection closes while
+                // its replacement is being prepared, finish that one handoff.
+                if (spoilerPreparing && spoilerRotationJob?.isActive == true) {
+                    capturePosition()
+                    return
+                }
                 if (conversionRestore != null && !exiting) {
                     handler.post { if (player === created) restoreConversion("서버에서 변환 영상을 재생하지 못했습니다.") }
                     return
@@ -720,7 +729,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun refreshTicketAndRestart() {
         if (refreshing || navigationLoading || exiting || closeLockedSpoilerPlayback()) return
         capturePosition(); settleWatchTime(false); enqueueProgress("paused")
-        val previous = spec
+        val previous = specWithCurrentSourceAudioCodec()
         val audioIndex = if (previous.isServerConversion) previous.selectedAudioStreamIndex else
             player?.selectedAudioStreamIndex() ?: previous.selectedAudioStreamIndex
         releasePlayer(); refreshing = true
@@ -1044,6 +1053,22 @@ class NativePlayerActivity : AppCompatActivity() {
                 ?.let(group::getTrackFormat)?.let { PlaybackTrackPreference(it.language, it.label) }
         }
 
+    private fun specWithCurrentSourceAudioCodec(): PlaybackSpec {
+        // A converted response exposes its AAC output, not the original selected track.
+        if (spec.isServerConversion) return spec
+        val format = player?.currentTracks?.groups?.firstNotNullOfOrNull { group ->
+            if (group.type != C.TRACK_TYPE_AUDIO) null else (0 until group.length)
+                .firstOrNull { group.isTrackSelected(it) }?.let(group::getTrackFormat)
+        }
+        val codec = format?.codecs?.takeIf { it.isNotBlank() } ?: when (format?.sampleMimeType) {
+            "audio/eac3", "audio/eac3-joc" -> "eac3"
+            "audio/ac3" -> "ac3"
+            "audio/mp4a-latm" -> "aac"
+            else -> null
+        }
+        return codec?.let { spec.copy(selectedAudioCodec = it) } ?: spec
+    }
+
     private fun restorePendingTextPreference() {
         val preference = pendingTextPreference ?: return
         val active = player ?: return
@@ -1095,7 +1120,7 @@ class NativePlayerActivity : AppCompatActivity() {
             while (activityStarted && !exiting && player === current && prepared &&
                 spec.partId == currentSpec.partId && spec.libraryId == currentSpec.libraryId &&
                 spec.viewItemId == currentSpec.viewItemId && spec.sessionId == currentSpec.sessionId) {
-                if (refreshing || conversionLoading || navigationLoading) { delay(500); continue }
+                if (refreshing || conversionLoading || navigationLoading || gestures.isSeekGestureActive) { delay(500); continue }
                 val remaining = client.spoilerRemainingMs
                 if (remaining <= 0) { closeLockedSpoilerPlayback(); return@launch }
                 val wait = SpoilerPlaybackReauthenticationPolicy.delayMs(remaining, client.spoilerLifetimeMs)
@@ -1110,22 +1135,27 @@ class NativePlayerActivity : AppCompatActivity() {
         val active = player ?: return
         if (!activityStarted || exiting || !prepared || refreshing || conversionLoading || navigationLoading ||
             spoilerRotationJob?.isActive == true || spec.sourceItem?.isSpoiler != true) return
-        val wasPlaying = gestures.playWhenReadyBeforeSeek ?: active.playWhenReady
-        finishRemoteSeeking()
-        gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
-        capturePosition(); settleWatchTime(false)
-        val previous = ConversionRestore(spec, lastPosition, wasPlaying,
-            spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
-            selectedTrackPreference(C.TRACK_TYPE_AUDIO),
-            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
-                selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
-            if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
-            lastDuration)
+        fun snapshot(): ConversionRestore {
+            capturePosition()
+            return ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition,
+                gestures.playWhenReadyBeforeSeek ?: active.playWhenReady,
+                spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
+                selectedTrackPreference(C.TRACK_TYPE_AUDIO),
+                if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+                    selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
+                if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
+                lastDuration)
+        }
+        val previous = snapshot()
         spoilerRecovery = previous
-        refreshing = true; conversionResumeWhenVisible = wasPlaying; resumeWhenVisible = wasPlaying
-        active.pause(); playerView.hideController(); hideLockControl(); updatePlaybackButtons()
+        spoilerPreparing = true; refreshing = true
+        conversionResumeWhenVisible = null
+        resumeWhenVisible = previous.playing
+        updatePlaybackButtons()
         val acknowledgement = CompletableDeferred<Boolean>()
-        submitProgress(ProgressUpdate(previous.spec, previous.position, previous.duration, "paused", watchedMs, acknowledgement))
+        settleWatchTime(visible && active.isPlaying)
+        submitProgress(ProgressUpdate(previous.spec, previous.position, previous.duration,
+            if (active.isPlaying) "playing" else "paused", watchedMs, acknowledgement))
         spoilerRotationJob = scope.launch {
             var rotation: Long? = null
             try {
@@ -1136,26 +1166,50 @@ class NativePlayerActivity : AppCompatActivity() {
                 rotation = epoch
                 progressDeliveryJob?.cancel()
                 neighborsJob?.cancel()
-                subtitleJob?.cancel(); subtitleSelectionRevision++; subtitleTimeline = null
-                prepared = false
-                releasePlayer()
-                hideSpoilerPlaybackMedia()
-                showError("비공개 재생 권한을 다시 확인하고 있습니다…")
-                errorPanel.getChildAt(1).apply { visibility = View.GONE; isEnabled = false }
-                if (television) errorPanel.getChildAt(2).requestFocus()
+                cancelPlaybackMetadata()
+                settleWatchTime(visible && active.isPlaying)
+                val watchedBeforePreparation = watchedMs
+                // Keep the existing decoder and buffered frames while the network
+                // prepares fresh authority. No old-context progress crosses unlock.
                 val budget = SpoilerPlaybackReauthenticationPolicy.timeoutMs(client.spoilerRemainingMs)
                 if (budget <= 0) throw ApiException("비공개 재생 권한을 다시 확인해야 합니다.", 403)
                 val refreshed = withTimeoutOrNull(budget) {
                     client.reauthenticateSpoilerPlayback(previous.spec, previous.position, previous.audioIndex)
                 } ?: throw ApiException("비공개 재생 권한 확인 시간이 초과되었습니다.")
-                if (!activityStarted || exiting || spoilerRecovery !== previous || !playbackAuthentication.isCurrent(epoch)) return@launch
+                if (!activityStarted || exiting || player !== active || spoilerRecovery !== previous ||
+                    !playbackAuthentication.isCurrent(epoch)) return@launch
                 if (refreshed.itemId != previous.spec.itemId || refreshed.partId != previous.spec.partId ||
                     refreshed.libraryId != previous.spec.libraryId || refreshed.viewItemId != previous.spec.viewItemId ||
                     refreshed.sourceItem?.isSpoiler != true) throw ApiException("비공개 재생 정보를 다시 확인해야 합니다.")
+                if (closeLockedSpoilerPlayback()) return@launch
+                val ended = !gestures.isSeekGestureActive && active.reconcilePlaybackCompletion()
+                finishRemoteSeeking()
+                gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
+                val latest = snapshot()
+                settleWatchTime(false)
+                val watchedDuringPreparation = (watchedMs - watchedBeforePreparation).coerceAtLeast(0)
+                active.pause()
+                spoilerPreparing = false
+                subtitleJob?.cancel(); subtitleSelectionRevision++; subtitleTimeline = null
                 if (!playbackAuthentication.completeRotation(epoch)) return@launch
                 refreshing = false; conversionResumeWhenVisible = null
-                applyConversionPlayback(refreshed, previous)
-                spoilerRecovery = null
+                if (ended) {
+                    // The old source can finish during a slow authorization reply.
+                    // Record its end with fresh authority rather than reload its tail.
+                    spec = refreshed.copy(resumeMs = latest.position)
+                    lastPosition = latest.position
+                    lastDuration = maxOf(latest.duration, refreshed.durationMs)
+                    watchedMs = watchedDuringPreparation
+                    spoilerRecovery = null
+                    spoilerRotationJob = null
+                    finishCompletedPlayback()
+                } else {
+                    // MPV rewrites converted start_ms from this latest source position.
+                    lastSyncAt = 0
+                    applyConversionPlayback(refreshed, latest)
+                    watchedMs = watchedDuringPreparation
+                    spoilerRecovery = null
+                }
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (_: Exception) {
@@ -1165,7 +1219,10 @@ class NativePlayerActivity : AppCompatActivity() {
                     else showSpoilerReauthenticationFailure()
                 }
             } finally {
-                spoilerRotationJob = null
+                if (spoilerRotationJob === currentCoroutineContext()[Job]) {
+                    spoilerRotationJob = null
+                    spoilerPreparing = false
+                }
                 if (!exiting && !isDestroyed) updatePlaybackButtons()
             }
         }
@@ -1179,7 +1236,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun showSpoilerReauthenticationFailure() {
-        prepared = false; refreshing = false; conversionResumeWhenVisible = null
+        capturePosition(); settleWatchTime(false)
+        prepared = false; refreshing = false; spoilerPreparing = false; conversionResumeWhenVisible = null
         if (playbackAuthentication.captureProgress() != null) {
             playbackAuthentication.beginRotation()
             progressDeliveryJob?.cancel()
@@ -1192,6 +1250,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun cancelSpoilerPlaybackReauthentication() {
+        spoilerPreparing = false
         spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
         if (spoilerRotationJob?.isActive == true || spoilerRecovery != null) {
             playbackAuthentication.beginRotation()
@@ -1261,7 +1320,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val retainedSeek = gestures.cancelSeekGesture()
         retainedSeek?.let { lastPosition = it; pendingSeek = it }
         capturePosition()
-        val previous = ConversionRestore(spec, lastPosition, wasPlaying,
+        val previous = ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition, wasPlaying,
             spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
             selectedTrackPreference(C.TRACK_TYPE_AUDIO),
             if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
@@ -1366,7 +1425,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val retainedSeek = gestures.cancelSeekGesture()
         retainedSeek?.let { lastPosition = it; pendingSeek = it }
         capturePosition()
-        val snapshot = ConversionRestore(spec, lastPosition, wasPlaying,
+        val snapshot = ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition, wasPlaying,
             spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
             selectedTrackPreference(C.TRACK_TYPE_AUDIO),
             if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)

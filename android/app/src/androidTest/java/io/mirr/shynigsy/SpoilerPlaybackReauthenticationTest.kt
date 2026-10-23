@@ -35,6 +35,7 @@ import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -126,7 +127,183 @@ class SpoilerPlaybackReauthenticationTest {
         }
     }
 
-    private fun withFixture(denyReauthentication: Boolean = false, test: (FixtureServer, ShyniClient, Intent) -> Unit) {
+    @Test fun delayedPreparationKeepsPlayingThenPreservesTheLatestPausedSeek() =
+        withFixture(delayDecision = true, initialSpeed = .25f) { fixture, _, intent ->
+            ActivityScenario.launch<NativePlayerActivity>(intent).use { scenario ->
+                val original = waitForPlayingSource(scenario)
+                assertTrue("The real reauthentication request must reach the delayed decision", fixture.decisionEntered.await(18, TimeUnit.SECONDS))
+                val preparationBoundary = fixture.requests().size
+                val originalSession = currentSpec(scenario).sessionId
+                var before = 0L
+                scenario.onActivity { activity ->
+                    assertSame("Preparing tickets must retain the existing native player", original, field<Player?>(activity, "player"))
+                    assertTrue("The old source must keep playing while the decision is pending", original.isPlaying)
+                    assertEquals(View.GONE, field<View>(activity, "errorPanel").visibility)
+                    assertEquals(View.VISIBLE, field<PlayerView>(activity, "playerView").visibility)
+                    before = original.currentPosition
+                }
+                Thread.sleep(1_000)
+                scenario.onActivity { activity ->
+                    assertSame(original, field<Player?>(activity, "player"))
+                    assertTrue("The actual source clock must advance during HTTP preparation", original.currentPosition >= before + 100)
+                    assertTrue(original.isPlaying)
+                    assertEquals(View.GONE, field<View>(activity, "errorPanel").visibility)
+                    // These changes happen after preparation captured its initial snapshot.
+                    original.pause()
+                    original.seekTo(4_000)
+                }
+                waitFor(scenario, "The latest paused seek must settle on the old player before releasing the response", 4_000) { activity ->
+                    field<Player?>(activity, "player") === original && original.playbackState == Player.STATE_READY &&
+                        !original.playWhenReady && abs(original.currentPosition - 4_000) < 500
+                }
+                var latestPosition = 0L
+                scenario.onActivity { latestPosition = original.currentPosition }
+                fixture.releaseDecision()
+                waitFor(scenario, "A completed preparation must hand off once and retain the latest user intent", 12_000) { activity ->
+                    val replacement = field<Player?>(activity, "player")
+                    field<PlaybackSpec>(activity, "spec").progressToken == CONTEXT_2 && replacement != null && replacement !== original &&
+                        replacement.playbackState == Player.STATE_READY && !field<Boolean>(activity, "refreshing")
+                }
+                scenario.onActivity { activity ->
+                    val replacement = field<Player?>(activity, "player")!!
+                    assertFalse("A pause during preparation must survive the handoff", replacement.playWhenReady)
+                    assertTrue("The handoff must use the latest position, not the earlier HTTP snapshot", abs(replacement.currentPosition - latestPosition) < 750)
+                    assertEquals(.25f, replacement.playbackParameters.speed, .001f)
+                    assertEquals(View.GONE, field<View>(activity, "errorPanel").visibility)
+                    assertFalse(activity.isFinishing)
+                }
+                val replacementSpec = currentSpec(scenario)
+                assertNotEquals("A fresh authority must use a new watch session", originalSession, replacementSpec.sessionId)
+                waitUntil("The handoff must immediately publish the paused latest position with fresh authority", 4_000) {
+                    fixture.requests().any { request ->
+                        request.method == "POST" && request.path == "/playback/progress" &&
+                            request.body.optString("playback_context_token") == CONTEXT_2 &&
+                            request.body.optString("client_session_id") == replacementSpec.sessionId &&
+                            request.body.optString("state") == "paused" &&
+                            abs(request.body.optLong("position_ms") - latestPosition) < 750
+                    }
+                }
+                val handoffUpdates = fixture.requests().drop(preparationBoundary).filter {
+                    it.method == "POST" && it.path == "/playback/progress"
+                }
+                assertTrue("The test must observe a real post-handoff write", handoffUpdates.isNotEmpty())
+                assertTrue("Queued old-epoch writes must not cross the authorization preparation", handoffUpdates.all {
+                    it.body.optString("playback_context_token") == CONTEXT_2 &&
+                        it.body.optString("client_session_id") == replacementSpec.sessionId
+                })
+                assertEquals(2, fixture.unlocks.get())
+                assertEquals(1, fixture.requests().count { it.path == "/playback/decision" })
+                assertTrue(fixture.requests().any { it.path == "/stream/$PART_ID" && it.query["ticket"] == TICKET_2 })
+                fixture.assertNoNewRenewEndpoint()
+                fixture.assertHealthy()
+            }
+        }
+
+    @Test fun naturalEofDuringPreparationSendsFreshCompletionWithoutOpeningAnotherStream() =
+        withFixture(delayDecision = true, initialSpeed = .25f) { fixture, _, intent ->
+            ActivityScenario.launchActivityForResult<NativePlayerActivity>(intent).use { scenario ->
+                val original = waitForPlayingSource(scenario)
+                val originalSession = currentSpec(scenario).sessionId
+                assertTrue("Authorization preparation must be in flight before the old source ends", fixture.decisionEntered.await(18, TimeUnit.SECONDS))
+                scenario.onActivity { activity ->
+                    assertSame(original, field<Player?>(activity, "player"))
+                    // Seek below 95%, then decode the real final frames at normal speed.
+                    original.pause()
+                    original.seekTo(5_600)
+                    original.setPlaybackSpeed(1f)
+                    original.play()
+                }
+                waitFor(scenario, "The original source must reach native EOF while the HTTP response is still held", 5_000) { activity ->
+                    field<Player?>(activity, "player") === original && original.playbackState == Player.STATE_ENDED &&
+                        original.currentPosition >= 5_900 && !activity.isFinishing
+                }
+                assertFalse("A pending decision must not load a replacement stream", fixture.requests().any {
+                    it.path == "/stream/$PART_ID" && it.query["ticket"] == TICKET_2
+                })
+                fixture.releaseDecision()
+                waitUntil("Finished playback must return to its caller after fresh authority arrives", 10_000) {
+                    scenario.state == Lifecycle.State.DESTROYED
+                }
+                assertEquals(android.app.Activity.RESULT_OK, scenario.result.resultCode)
+                assertFalse(scenario.result.resultData?.getBooleanExtra("return_home", false) == true)
+                waitUntil("Completion must drain with the fresh context instead of replaying the old tail", 5_000) {
+                    fixture.requests().any { request ->
+                        request.method == "POST" && request.path == "/playback/progress" &&
+                            request.body.optString("playback_context_token") == CONTEXT_2 &&
+                            request.body.optString("client_session_id").let { it.isNotBlank() && it != originalSession } &&
+                            request.body.optString("state") == "completed_candidate" &&
+                            request.body.optLong("position_ms") in 5_900L..6_100L
+                    }
+                }
+                assertFalse("A completed old source must never request the newly prepared media body", fixture.requests().any {
+                    it.path == "/stream/$PART_ID" && it.query["ticket"] == TICKET_2
+                })
+                assertEquals(2, fixture.unlocks.get())
+                assertEquals(1, fixture.requests().count { it.path == "/playback/decision" })
+                fixture.assertNoNewRenewEndpoint()
+                fixture.assertHealthy()
+            }
+        }
+
+    @Test fun backgroundDuringPreparationDiscardsTheLateResponseAndReusablePin() =
+        withFixture(delayDecision = true, initialSpeed = .25f) { fixture, client, intent ->
+            ActivityScenario.launch<NativePlayerActivity>(intent).use { scenario ->
+                waitForPlayingSource(scenario)
+                val originalSpec = currentSpec(scenario)
+                assertTrue("The delayed decision must be in flight before backgrounding", fixture.decisionEntered.await(18, TimeUnit.SECONDS))
+                scenario.moveToState(Lifecycle.State.CREATED)
+                waitUntil("Backgrounding during preparation must revoke access", 3_000) { !client.spoilerUnlocked }
+                fixture.releaseDecision()
+                if (scenario.state != Lifecycle.State.DESTROYED) runCatching {
+                    scenario.moveToState(Lifecycle.State.RESUMED)
+                }.getOrElse { if (scenario.state != Lifecycle.State.DESTROYED) throw it }
+                waitUntil("A late decision must not reopen a background-locked player", 4_000) { scenario.state == Lifecycle.State.DESTROYED }
+                val attempts = fixture.unlocks.get()
+                val error = runBlocking { runCatching { client.reauthenticateSpoilerPlayback(originalSpec, 1_000) }.exceptionOrNull() }
+                assertTrue("The remembered PIN must be gone", error is ApiException && error.status == 403)
+                Thread.sleep(400)
+                assertEquals("Cancellation must not trigger another PIN request", attempts, fixture.unlocks.get())
+                assertFalse("A canceled preparation must never open the replacement stream", fixture.requests().any {
+                    it.path == "/stream/$PART_ID" && it.query["ticket"] == TICKET_2
+                })
+                assertFalse("Background revocation must not be relabeled as a PIN failure", client.spoilerPlaybackReauthenticationFailed)
+                fixture.assertNoNewRenewEndpoint()
+                fixture.assertHealthy()
+            }
+        }
+
+    @Test fun deniedPreparedDecisionStopsTheOldStreamWithoutRetryingPin() =
+        withFixture(delayDecision = true, denyDecision = true, initialSpeed = .25f) { fixture, client, intent ->
+            ActivityScenario.launch<NativePlayerActivity>(intent).use { scenario ->
+                val original = waitForPlayingSource(scenario)
+                assertTrue("The authorization denial must be delayed until the old source is playing", fixture.decisionEntered.await(18, TimeUnit.SECONDS))
+                scenario.onActivity { activity ->
+                    assertSame(original, field<Player?>(activity, "player"))
+                    assertTrue(original.isPlaying)
+                    assertEquals(View.GONE, field<View>(activity, "errorPanel").visibility)
+                }
+                fixture.releaseDecision()
+                waitFor(scenario, "A denied prepared context must remove the sensitive old source", 8_000) { activity ->
+                    client.spoilerPlaybackReauthenticationFailed && !client.spoilerUnlocked &&
+                        field<Player?>(activity, "player") == null && !field<Boolean>(activity, "refreshing") &&
+                        field<View>(activity, "errorPanel").visibility == View.VISIBLE
+                }
+                scenario.onActivity { activity ->
+                    assertFalse(activity.isFinishing)
+                    assertNotEquals(View.VISIBLE, field<PlayerView>(activity, "playerView").visibility)
+                    assertNotEquals(View.VISIBLE, field<View>(activity, "subtitleOverlay").visibility)
+                }
+                Thread.sleep(400)
+                assertEquals("A denied decision must not cause a second automatic PIN attempt", 2, fixture.unlocks.get())
+                assertEquals(1, fixture.requests().count { it.path == "/playback/decision" })
+                assertFalse(fixture.requests().any { it.path == "/stream/$PART_ID" && it.query["ticket"] == TICKET_2 })
+                fixture.assertNoNewRenewEndpoint()
+                fixture.assertHealthy()
+            }
+        }
+
+    private fun withFixture(denyReauthentication: Boolean = false, delayDecision: Boolean = false,
+        denyDecision: Boolean = false, initialSpeed: Float = 1f, test: (FixtureServer, ShyniClient, Intent) -> Unit) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         assumeTrue("This test may only touch the dedicated synthetic QA package", context.packageName.endsWith(".spoilerqa"))
@@ -137,11 +314,11 @@ class SpoilerPlaybackReauthenticationTest {
         val oldSpeed = settings.getFloat("playback_speed", 1f)
         val sessions = SessionStore(context)
         val clip = instrumentation.context.assets.open("media3/gesture-av.mp4").use { it.readBytes() }
-        FixtureServer(clip, denyReauthentication).use { fixture ->
+        FixtureServer(clip, denyReauthentication, delayDecision, denyDecision).use { fixture ->
             SpoilerAccessRegistry.clearAll()
             // Allow any previous test Activity's delayed background clear to finish before unlocking.
             Thread.sleep(500)
-            settings.edit().putString("device_id", DEVICE_ID).putFloat("playback_speed", 1f).commit()
+            settings.edit().putString("device_id", DEVICE_ID).putFloat("playback_speed", initialSpeed).commit()
             val client = ShyniClient(fixture.origin, SESSION, deviceId = DEVICE_ID)
             try {
                 sessions.save(fixture.origin, SESSION, "합성 QA 계정")
@@ -165,6 +342,19 @@ class SpoilerPlaybackReauthenticationTest {
                 }.commit()
             }
         }
+    }
+
+    private fun waitForPlayingSource(scenario: ActivityScenario<NativePlayerActivity>): Player {
+        var original: Player? = null
+        waitFor(scenario, "The slow synthetic source must really be playing before automatic preparation", 7_000) { activity ->
+            activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            val active = field<Player?>(activity, "player") ?: return@waitFor false
+            active.volume = 0f
+            if (!active.isPlaying || active.playbackState != Player.STATE_READY || !field<Boolean>(activity, "prepared")) return@waitFor false
+            original = active
+            true
+        }
+        return original!!
     }
 
     private fun pauseAtFixturePosition(scenario: ActivityScenario<NativePlayerActivity>): Long {
@@ -215,12 +405,15 @@ class SpoilerPlaybackReauthenticationTest {
         val headers: Map<String, String>, val body: JSONObject)
 
     /** A bounded HTTP fixture; it never resolves or contacts a non-loopback address. */
-    private class FixtureServer(private val clip: ByteArray, private val denyReauthentication: Boolean) : AutoCloseable {
+    private class FixtureServer(private val clip: ByteArray, private val denyReauthentication: Boolean,
+        delayDecision: Boolean, private val denyDecision: Boolean) : AutoCloseable {
         private val server = ServerSocket(0, 12, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 200 }
         private val workers = Executors.newFixedThreadPool(4) { runnable -> Thread(runnable, "spoiler-qa-http").apply { isDaemon = true } }
         private val records = Collections.synchronizedList(mutableListOf<Request>())
         private val failure = AtomicReference<Throwable?>()
         val unlocks = AtomicInteger()
+        val decisionEntered = CountDownLatch(1)
+        private val decisionGate = CountDownLatch(if (delayDecision) 1 else 0)
         val origin: String get() = "http://127.0.0.1:${server.localPort}"
         private val listener = thread(name = "spoiler-qa-loopback", isDaemon = true) {
             while (!server.isClosed) {
@@ -232,12 +425,14 @@ class SpoilerPlaybackReauthenticationTest {
         }
 
         fun requests(): List<Request> = synchronized(records) { records.toList() }
+        fun releaseDecision() = decisionGate.countDown()
         fun assertHealthy() { failure.get()?.let { throw AssertionError("Synthetic HTTP fixture failed", it) } }
         fun assertNoNewRenewEndpoint() = assertFalse("Use the existing unlock endpoint only", requests().any { it.path.contains("renew") })
 
         private fun handle(socket: Socket) {
             socket.use { connection ->
                 var streaming = false
+                var cancellableDecision = false
                 try {
                     connection.soTimeout = 3_000
                     val input = BufferedInputStream(connection.getInputStream())
@@ -272,20 +467,34 @@ class SpoilerPlaybackReauthenticationTest {
                             if (attempt == 2 && denyReauthentication) json(connection, 403, JSONObject().put("detail", "합성 PIN 재인증 거부"))
                             else json(connection, 200, JSONObject().put("token", if (attempt == 1) GRANT_1 else GRANT_2).put("expires_in", 15))
                         }
-                        "/playback/decision" -> json(connection, 200, JSONObject().put("decision", "direct_play")
-                            .put("library_view_id", VIEW_ID).put("view_item_id", VIEW_ITEM_ID).put("playback_context_token", CONTEXT_2)
-                            .put("selected", JSONObject().put("part_id", PART_ID).put("metadata_item_id", ITEM_ID).put("duration_ms", 6_000)))
+                        "/playback/decision" -> {
+                            cancellableDecision = true
+                            decisionEntered.countDown()
+                            check(decisionGate.await(15, TimeUnit.SECONDS)) { "The test did not release the delayed decision" }
+                            if (denyDecision) json(connection, 403, JSONObject().put("detail", "합성 재생 권한 거부"))
+                            else json(connection, 200, JSONObject().put("decision", "direct_play")
+                                .put("library_view_id", VIEW_ID).put("view_item_id", VIEW_ITEM_ID).put("playback_context_token", CONTEXT_2)
+                                .put("selected", JSONObject().put("part_id", PART_ID).put("metadata_item_id", ITEM_ID).put("duration_ms", 6_000)))
+                        }
                         "/stream-ticket/$PART_ID" -> json(connection, 200, JSONObject().put("ticket", TICKET_2)
                             .put("library_view_id", VIEW_ID).put("view_item_id", VIEW_ITEM_ID).put("part_id", PART_ID))
                         "/subtitles/$PART_ID" -> json(connection, 200, JSONObject().put("subtitles", org.json.JSONArray()))
                         "/playback/progress" -> json(connection, 200, if (request.method == "GET") JSONObject().put("items", org.json.JSONArray()) else JSONObject().put("ok", true))
-                        "/libraries/$VIEW_ID/media_info/$PART_ID" -> json(connection, 200, JSONObject())
+                        "/libraries/$VIEW_ID/media_info/$PART_ID" -> json(connection, 200, JSONObject()
+                            .put("item", JSONObject().put("id", ITEM_ID))
+                            .put("parts", org.json.JSONArray().put(JSONObject().put("id", PART_ID).put("metadata_item_id", ITEM_ID))))
+                        "/continue-watching/$ITEM_ID/watch-state" -> {
+                            check(request.method == "PUT" && request.body.optBoolean("watched"))
+                            check(request.body.getInt("part_id") == PART_ID && request.body.getInt("library_view_id") == VIEW_ID &&
+                                request.body.getInt("view_item_id") == VIEW_ITEM_ID)
+                            json(connection, 200, JSONObject().put("ok", true).put("watched", true))
+                        }
                         "/stream/$PART_ID" -> { streaming = true; video(connection, request) }
                         else -> error("Unexpected synthetic endpoint: ${request.method} ${request.path}")
                     }
                 } catch (error: SocketException) {
                     // Native seek/release may cancel an already authorized range response.
-                    if (!streaming && !server.isClosed) failure.compareAndSet(null, error)
+                    if (!streaming && !cancellableDecision && !server.isClosed) failure.compareAndSet(null, error)
                 } catch (error: Throwable) { if (!server.isClosed) failure.compareAndSet(null, error) }
             }
         }
@@ -333,6 +542,7 @@ class SpoilerPlaybackReauthenticationTest {
         }
 
         override fun close() {
+            releaseDecision()
             server.close(); listener.join(1_000)
             workers.shutdown(); workers.awaitTermination(2, TimeUnit.SECONDS); workers.shutdownNow()
         }

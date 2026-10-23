@@ -1,6 +1,7 @@
 package io.mirr.shynigsy.data
 
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -231,9 +232,6 @@ class SpoilerClientTest {
         respond("""{"token":"spc_rotated-grant","expires_in":1800}""")
         respond("""{"selected":{"part_id":$selectedPart,"duration_ms":120000},"library_view_id":8,
             "view_item_id":501,"playback_context_token":"fresh-context","decision":"direct_play"}""")
-        respond("""{"ticket":"initial-fresh-ticket"}""")
-        respondMetadata("/subtitles/$selectedPart", "[]")
-        respondMetadata("/playback/progress", "{}")
         if (mode != null) respond("""{"ticket":"fresh-conversion-ticket"}""")
         respond("""{"ticket":"final-fresh-ticket","library_view_id":8,"view_item_id":501}""")
         respondMetadata("/subtitles/$selectedPart", """[{"id":4,"source":"external","format":"ass","playable":true}]""")
@@ -247,7 +245,7 @@ class SpoilerClientTest {
             // The player client shares this installation/account's memory-only PIN.
             val player = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
             val refreshed = player.reauthenticateSpoilerPlayback(current, 45_000, 5)
-            val requests = List(if (mode == null) 7 else 8) { server.takeRequest(2, TimeUnit.SECONDS)!! }
+            val requests = List(if (mode == null) 4 else 5) { server.takeRequest(2, TimeUnit.SECONDS)!! }
             assertEquals("/spoiler/client/unlock", requests.first().path)
             assertEquals("1234", org.json.JSONObject(requests.first().body.readUtf8()).getString("pin"))
             assertNull(requests.first().getHeader("X-Shyni-Spoiler"))
@@ -259,10 +257,15 @@ class SpoilerClientTest {
             assertEquals(90, decision.getInt("part_id"))
             assertEquals(8, decision.getInt("library_view_id"))
             assertEquals(501, decision.getInt("view_item_id"))
+            assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/playback/decision" })
+            assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/stream-ticket/90" })
+            assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/subtitles/90" })
+            assertFalse(requests.any { it.requestUrl!!.encodedPath == "/playback/progress" })
             assertEquals(90, refreshed.partId)
             assertEquals(8, refreshed.libraryId)
             assertEquals(501, refreshed.viewItemId)
             assertEquals("fresh-context", refreshed.progressToken)
+            assertEquals(decision.getString("client_session_id"), refreshed.sessionId)
             assertNotEquals("old-session", refreshed.sessionId)
             assertEquals(45_000L, refreshed.resumeMs)
             assertEquals(5, refreshed.selectedAudioStreamIndex)
@@ -283,6 +286,126 @@ class SpoilerClientTest {
             assertEquals(1_800_000L, player.spoilerLifetimeMs)
             assertTrue(player.spoilerRemainingMs in 1..1_800_000L)
         }
+    }
+
+    @Test fun knownEac3ReauthenticationUsesOneFreshSignedAacDecisionAndOnlyFinalTickets() = runBlocking {
+        unlock()
+        val current = privateCurrent("video").copy(selectedAudioCodec = "eac3", selectedAudioLanguage = "kor",
+            selectedAudioStreamIndex = 5, aacConversionContext = true)
+        respond("""{"token":"spc_rotated-grant","expires_in":1800}""")
+        respond("""{"decision":"video_transcode","selected":{"part_id":90,"audio_codec":"eac3"},
+            "library_view_id":8,"view_item_id":501,"selected_audio_stream_index":5,"selected_audio_language":"ko",
+            "playback_context_token":"fresh-aac-context","transcode":{"mode":"video","max_height":720},
+            "playback_info":{"playback_method":"video_transcode","is_transcoding":true,
+                "audio":{"source_codec":"eac3","output_codec":"aac"}}}""")
+        respond("""{"ticket":"aac-video-ticket"}""")
+        respond("""{"ticket":"aac-subtitle-ticket","library_view_id":8,"view_item_id":501}""")
+        respondMetadata("/subtitles/90", "[]")
+        val before = server.requestCount
+        val refreshed = client.reauthenticateSpoilerPlayback(current, 45_000, 5)
+        val requests = List(5) { server.takeRequest(2, TimeUnit.SECONDS)!! }
+        assertEquals(before + 5, server.requestCount)
+        val selection = org.json.JSONObject(requests[1].body.readUtf8())
+        assertEquals(90, selection.getInt("part_id"))
+        assertEquals(720, selection.getInt("max_video_height"))
+        assertTrue(selection.has("client_profile"))
+        assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/playback/decision" })
+        assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/stream-ticket/90" })
+        assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/subtitles/90" })
+        requests.drop(2).forEach { assertTrue(it.path!!.contains("playback_context_token=fresh-aac-context")) }
+        assertEquals("fresh-aac-context", refreshed.progressToken)
+        assertEquals(selection.getString("client_session_id"), refreshed.sessionId)
+        assertTrue(refreshed.aacConversionContext)
+        assertEquals(5, refreshed.selectedAudioStreamIndex)
+        assertEquals(45_000L, refreshed.resumeMs)
+        assertFalse(refreshed.toJson().contains("old-context"))
+    }
+
+    @Test fun oldAacProofCannotReplaceTheFreshSignedVideoProofAfterGrantRotation() = runBlocking {
+        unlock()
+        val current = privateCurrent("video").copy(selectedAudioCodec = "eac3", selectedAudioStreamIndex = 5,
+            aacConversionContext = true)
+        respond("""{"token":"spc_rotated-grant","expires_in":1800}""")
+        respond("""{"decision":"video_transcode","selected":{"part_id":90,"audio_codec":"eac3"},
+            "library_view_id":8,"view_item_id":501,"selected_audio_stream_index":5,
+            "playback_context_token":"fresh-aac-context","transcode":{"mode":"video"},
+            "playback_info":{"playback_method":"video_transcode","is_transcoding":true,
+                "audio":{"source_codec":"eac3","output_codec":"eac3"}}}""")
+        val before = server.requestCount
+        assertTrue(runCatching { client.reauthenticateSpoilerPlayback(current, 1_000, 5) }.exceptionOrNull() is ApiException)
+        repeat(2) { server.takeRequest(2, TimeUnit.SECONDS)!! }
+        assertEquals(before + 2, server.requestCount)
+        assertFalse(client.spoilerUnlocked)
+        assertTrue(client.spoilerPlaybackReauthenticationFailed)
+    }
+
+    @Test fun exactEpisodeIdentityRecoveryReusesItsAuthorizedOriginalTicket() = runBlocking {
+        for (mode in listOf(null, "video")) {
+            unlock()
+            val original = privateCurrent(mode)
+            val current = original.copy(progressToken = null,
+                sourceItem = original.sourceItem!!.copy(type = "episode", playbackPartId = 90))
+            respond("""{"token":"spc_rotated-grant","expires_in":1800}""")
+            respond("""{"detail":"에피소드 정체성을 확인할 수 없습니다"}""", 404)
+            respond("""{"ticket":"recovered-original-ticket","part_id":90,"library_view_id":8,"view_item_id":501}""")
+            if (mode != null) respond("""{"ticket":"recovered-video-ticket"}""")
+            respondMetadata("/subtitles/90", """[{"id":4,"source":"external","format":"srt","playable":true}]""")
+            val before = server.requestCount
+            val refreshed = client.reauthenticateSpoilerPlayback(current, 45_000, 5)
+            val requests = List(if (mode == null) 4 else 5) { server.takeRequest(2, TimeUnit.SECONDS)!! }
+            assertEquals(before + requests.size, server.requestCount)
+            assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/stream-ticket/90" })
+            assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/subtitles/90" })
+            assertFalse(requests.any { it.requestUrl!!.encodedPath == "/playback/progress" })
+            assertEquals("8", requests[2].requestUrl!!.queryParameter("library_view_id"))
+            assertEquals("501", requests[2].requestUrl!!.queryParameter("view_item_id"))
+            assertNull(refreshed.progressToken)
+            assertEquals(90, refreshed.partId)
+            assertEquals(501, refreshed.viewItemId)
+            assertEquals(45_000L, refreshed.resumeMs)
+            assertTrue(refreshed.subtitles.single().url.contains("recovered-original-ticket"))
+            assertTrue(refreshed.url.contains(if (mode == null) "recovered-original-ticket" else "recovered-video-ticket"))
+        }
+    }
+
+    @Test fun recoveryNeverAcceptsAnotherViewItemOrFallsThroughAnAuthorizationDenial() = runBlocking {
+        for (deny in listOf(false, true)) {
+            unlock()
+            val current = privateCurrent().let { it.copy(progressToken = null, sourceItem = it.sourceItem!!.copy(type = "episode")) }
+            respond("""{"token":"spc_rotated-grant","expires_in":1800}""")
+            respond(if (deny) """{"detail":"synthetic denied"}""" else
+                """{"detail":"에피소드 정체성을 확인할 수 없습니다"}""", if (deny) 403 else 404)
+            if (!deny) respond("""{"ticket":"wrong-view-ticket","library_view_id":8,"view_item_id":502}""")
+            val before = server.requestCount
+            val failure = runCatching { client.reauthenticateSpoilerPlayback(current, 1_000) }.exceptionOrNull() as ApiException
+            val expected = if (deny) 2 else 3
+            repeat(expected) { server.takeRequest(2, TimeUnit.SECONDS)!! }
+            assertEquals(403, failure.status)
+            assertEquals(before + expected, server.requestCount)
+            assertFalse(client.spoilerUnlocked)
+            assertTrue(client.spoilerPlaybackReauthenticationFailed)
+        }
+    }
+
+    @Test fun backgroundCancellationAfterGrantRotationCannotIssueFinalTicketsOrRestoreThePin() = runBlocking {
+        unlock()
+        respond("""{"token":"spc_rotated-grant","expires_in":1800}""")
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val before = server.requestCount
+        // Blocking MockWebServer inspection must not occupy the coroutine's
+        // event loop between unlock's response and the decision request.
+        val job = launch(Dispatchers.Default) { client.reauthenticateSpoilerPlayback(privateCurrent(), 1_000) }
+        assertEquals("/spoiler/client/unlock", (server.takeRequest(5, TimeUnit.SECONDS)
+            ?: error("Synthetic unlock request did not arrive")).path)
+        assertEquals("/playback/decision", (server.takeRequest(5, TimeUnit.SECONDS)
+            ?: error("Synthetic decision request did not arrive")).path)
+        SpoilerAccessRegistry.clearAll()
+        job.cancelAndJoin()
+        assertEquals(before + 2, server.requestCount)
+        assertFalse(client.spoilerUnlocked)
+        assertFalse(client.spoilerPlaybackReauthenticationFailed)
+        assertTrue(runCatching { client.reauthenticateSpoilerPlayback(privateCurrent(), 1_000) }.exceptionOrNull() is ApiException)
+        assertEquals(before + 2, server.requestCount)
     }
 
     @Test fun statusCannotExtendTheLocalGrantLifetime() = runBlocking {
@@ -418,13 +541,10 @@ class SpoilerClientTest {
             respond("""{"token":"spc_rotated","expires_in":1800}""")
             respond("""{"selected":{"part_id":$part},"library_view_id":8,"view_item_id":501,
                 "playback_context_token":"${if (part == 90) "old-context" else "fresh-context"}"}""")
-            respond("""{"ticket":"new-ticket"}""")
-            respondMetadata("/subtitles/$part", "[]")
-            respondMetadata("/playback/progress", "{}")
             val before = server.requestCount
             assertTrue(runCatching { client.reauthenticateSpoilerPlayback(privateCurrent(), 1_000) }.exceptionOrNull() is ApiException)
-            repeat(5) { server.takeRequest() }
-            assertEquals(before + 5, server.requestCount)
+            repeat(2) { server.takeRequest() }
+            assertEquals(before + 2, server.requestCount)
             assertFalse(client.spoilerUnlocked)
             assertTrue(client.spoilerPlaybackReauthenticationFailed)
         }

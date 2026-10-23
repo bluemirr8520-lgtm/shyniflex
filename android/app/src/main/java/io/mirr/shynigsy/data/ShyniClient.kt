@@ -206,16 +206,12 @@ class ShyniClient(
             ownedGrant = SpoilerAccessRegistry.completeReauthentication(identity, attempt, grant, seconds, started)
                 ?: throw ApiException("스포일러 표시 요청이 종료되었습니다. PIN을 다시 입력해 주세요.", 403)
             clearBrowseCache()
-            val fresh = playback(source, current.partId)
+            val (fresh, originalTicket) = reauthenticatedPlaybackSource(current, source, audioStreamIndex, ::requireCurrent)
             currentCoroutineContext().ensureActive()
             requireCurrent(); requireSameSource(fresh)
-            if (current.progressToken != null && fresh.progressToken == current.progressToken) {
-                throw ApiException("새 스포일러 재생 권한을 확인하지 못했습니다.", 403)
-            }
-            // Only delivery-mode hints come from the previous URL; no old ticket/context survives.
-            val result = renewPlayback(fresh.copy(url = current.url, conversionHeight = current.conversionHeight,
-                durationMs = current.durationMs.takeIf { it > 0 } ?: fresh.durationMs,
-                navigationQuery = current.navigationQuery), positionMs, audioStreamIndex)
+            // Negotiate only the final delivery: no discarded initial ticket,
+            // subtitle list or historical progress lookup delays this handoff.
+            val result = renewPlayback(fresh, positionMs, audioStreamIndex, originalTicket, preserveSessionId = true)
             currentCoroutineContext().ensureActive()
             requireCurrent(); requireSameSource(result)
             if (!SpoilerAccessRegistry.cacheReauthenticatedPin(identity, ownedGrant, attempt)) {
@@ -231,6 +227,69 @@ class ShyniClient(
         } finally {
             SpoilerAccessRegistry.finishReauthentication(identity, attempt)
         }
+    }
+
+    /** Authorization only; the caller obtains exactly one final set of transport resources. */
+    private suspend fun reauthenticatedPlaybackSource(
+        current: PlaybackSpec, item: MediaItem, audioStreamIndex: Int?, requireAuthorization: () -> Unit,
+    ): Pair<PlaybackSpec, JSONObject?> {
+        val url = current.url.toHttpUrl()
+        val progressive = url.encodedPath == "/transcode/${current.partId}"
+        val mode = if (url.encodedPath == "/transcode/music/${current.partId}") "music"
+            else if (progressive || current.conversionHeight != null)
+                (url.queryParameter("mode") ?: if (current.conversionHeight != null) "video" else "audio") else null
+        if (mode == "video" && isEac3Codec(current.selectedAudioCodec)) {
+            val height = current.conversionHeight
+                ?: url.queryParameter("max_height")?.toIntOrNull()?.takeIf { it > 0 } ?: 1080
+            // This exact-source signed AAC decision also authorizes the fresh
+            // context, so a separate generic decision would only be discarded.
+            return aacVideoConversionContext(current.copy(aacConversionContext = false), height,
+                audioStreamIndex, requireAuthorization) to null
+        }
+        val sessionId = UUID.randomUUID().toString()
+        currentCoroutineContext().ensureActive(); requireAuthorization()
+        val decision = try {
+            request("/playback/decision", decisionBody(item, current.partId).put("client_session_id", sessionId),
+                spoiler = true).objectValue()
+        } catch (error: ApiException) {
+            // The already-authorized exact episode file retains the same narrow
+            // legacy recovery as ordinary playback; permission errors never fall through.
+            if (item.type != "episode" || !error.isEpisodeIdentityFailure()) throw error
+            null
+        }
+        currentCoroutineContext().ensureActive(); requireAuthorization()
+        val original = if (decision == null) {
+            request("/stream-ticket/${current.partId}?library_view_id=${current.libraryId}&view_item_id=${current.viewItemId}",
+                JSONObject(), spoiler = true).objectValue().also {
+                currentCoroutineContext().ensureActive(); requireAuthorization()
+                if (it.exactPositiveInt("library_view_id") != current.libraryId ||
+                    it.exactPositiveInt("view_item_id") != current.viewItemId ||
+                    (it.has("part_id") && it.exactPositiveInt("part_id") != current.partId) ||
+                    it.stringOrNull("ticket") == null) {
+                    throw ApiException("파일 재생 권한의 라이브러리 항목 정보가 일치하지 않습니다.", 403)
+                }
+            }
+        } else null
+        val selected = decision?.optJSONObject("selected")
+        if (decision != null && (selected?.exactPositiveInt("part_id") != current.partId ||
+                decision.exactPositiveInt("library_view_id") != current.libraryId ||
+                decision.exactPositiveInt("view_item_id") != current.viewItemId)) {
+            throw ApiException("스포일러 재생 파일이나 라이브러리 항목이 변경되었습니다.", 403)
+        }
+        val context = decision?.stringOrNull("playback_context_token")
+        if (decision != null && (context == null || context == current.progressToken)) {
+            throw ApiException("새 스포일러 재생 권한을 확인하지 못했습니다.", 403)
+        }
+        val duration = current.durationMs.takeIf { it > 0 }
+            ?: selected?.optLong("duration_ms")?.takeIf { it > 0 }
+            ?: selected?.optDouble("duration_sec", 0.0)?.times(1000)?.toLong()?.takeIf { it > 0 }
+            ?: item.durationMs
+        return current.copy(sessionId = sessionId, progressToken = context, durationMs = duration,
+            headers = emptyMap(), selectedAudioCodec = current.selectedAudioCodec ?: selected?.stringOrNull("audio_codec"),
+            selectedAudioLanguage = current.selectedAudioLanguage ?: decision?.stringOrNull("selected_audio_language"),
+            // Old AAC proof is bound to the revoked grant. playbackTransport must negotiate anew.
+            aacConversionContext = false,
+            sourceItem = item.copy(durationMs = duration)) to original
     }
 
     suspend fun lockSpoiler() {
@@ -1118,6 +1177,7 @@ class ShyniClient(
             selectedAudioStreamIndex = decision?.indexOrNull("selected_audio_stream_index"),
             selectedAudioStreamOrdinal = if (mode != null) 0 else decision?.indexOrNull("selected_audio_stream_ordinal"),
             selectedAudioLanguage = decision?.stringOrNull("selected_audio_language"),
+            selectedAudioCodec = selected?.stringOrNull("audio_codec"),
             selectedSubtitleId = decision?.optJSONObject("subtitle")?.intOrNull("id"),
             requestedPartId = requestedPart,
             conversionHeight = if (mode == "video") transcode?.intOrNull("max_height") else null,
@@ -1138,11 +1198,15 @@ class ShyniClient(
         maxHeight: Int?,
         positionMs: Long,
         audioStreamIndex: Int? = current.selectedAudioStreamIndex,
-    ): PlaybackSpec = withContext(Dispatchers.Default) {
-        if (maxHeight != null && maxHeight !in setOf(480, 720, 1080)) {
-            throw ApiException("변환 화질은 480p, 720p, 1080p 중에서 선택하세요.")
+    ): PlaybackSpec {
+        val authorization = playbackTransportAuthorization(current)
+        return withContext(Dispatchers.Default) {
+            if (maxHeight != null && maxHeight !in setOf(480, 720, 1080)) {
+                throw ApiException("변환 화질은 480p, 720p, 1080p 중에서 선택하세요.")
+            }
+            playbackTransport(current, if (maxHeight == null) null else "video", maxHeight, positionMs,
+                audioStreamIndex, requireAuthorization = authorization)
         }
-        playbackTransport(current, if (maxHeight == null) null else "video", maxHeight, positionMs, audioStreamIndex)
     }
 
     /** Refresh the active delivery method; a retry must not silently restore the original. */
@@ -1150,22 +1214,101 @@ class ShyniClient(
         current: PlaybackSpec,
         positionMs: Long,
         audioStreamIndex: Int? = current.selectedAudioStreamIndex,
-    ): PlaybackSpec = withContext(Dispatchers.Default) {
-        val url = runCatching { current.url.toHttpUrl() }.getOrNull()
-        val progressive = url?.encodedPath == "/transcode/${current.partId}"
-        val music = url?.encodedPath == "/transcode/music/${current.partId}"
-        if (!progressive && !music && current.conversionHeight == null) {
-            return@withContext playbackTransport(current, null, null, positionMs, audioStreamIndex)
+    ): PlaybackSpec = renewPlayback(current, positionMs, audioStreamIndex, null)
+
+    private suspend fun renewPlayback(
+        current: PlaybackSpec,
+        positionMs: Long,
+        audioStreamIndex: Int?,
+        originalStreamTicket: JSONObject?,
+        preserveSessionId: Boolean = false,
+    ): PlaybackSpec {
+        val authorization = playbackTransportAuthorization(current)
+        return withContext(Dispatchers.Default) {
+            val url = runCatching { current.url.toHttpUrl() }.getOrNull()
+            val progressive = url?.encodedPath == "/transcode/${current.partId}"
+            val music = url?.encodedPath == "/transcode/music/${current.partId}"
+            if (!progressive && !music && current.conversionHeight == null) {
+                return@withContext playbackTransport(current, null, null, positionMs, audioStreamIndex,
+                    requireAuthorization = authorization, originalStreamTicket = originalStreamTicket,
+                    preserveSessionId = preserveSessionId)
+            }
+            val mode = if (music) "music" else url?.queryParameter("mode")
+                ?: if (current.conversionHeight != null) "video" else "audio"
+            if (mode !in setOf("remux", "audio", "video", "music")) {
+                throw ApiException("현재 변환 방식의 재생 정보를 갱신할 수 없습니다.")
+            }
+            val height = if (mode == "video") current.conversionHeight
+                ?: url?.queryParameter("max_height")?.toIntOrNull()?.takeIf { it > 0 } ?: 1080 else null
+            val musicBitrate = if (mode == "music") url?.queryParameter("bitrate_kbps")?.toIntOrNull()?.takeIf { it > 0 } ?: 320 else null
+            playbackTransport(current, mode, height, positionMs, audioStreamIndex, musicBitrate, authorization,
+                originalStreamTicket, preserveSessionId)
         }
-        val mode = if (music) "music" else url?.queryParameter("mode")
-            ?: if (current.conversionHeight != null) "video" else "audio"
-        if (mode !in setOf("remux", "audio", "video", "music")) {
-            throw ApiException("현재 변환 방식의 재생 정보를 갱신할 수 없습니다.")
+    }
+
+    /** Capture before the dispatcher hop; a late response cannot cross an account/grant change. */
+    private fun playbackTransportAuthorization(current: PlaybackSpec): () -> Unit {
+        val account = token
+        val identity = if (current.sourceItem?.isSpoiler == true) spoilerKey() else null
+        val grant = if (identity != null) spoilerGrant() else null
+        return {
+            if (account != token) throw ApiException("로그인 정보가 변경되었습니다. 다시 재생해 주세요.", 401)
+            if (identity != null && (identity != spoilerKey() || grant == null || !SpoilerAccessRegistry.isCurrent(identity, grant))) {
+                throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+            }
         }
-        val height = if (mode == "video") current.conversionHeight
-            ?: url?.queryParameter("max_height")?.toIntOrNull()?.takeIf { it > 0 } ?: 1080 else null
-        val musicBitrate = if (mode == "music") url?.queryParameter("bitrate_kbps")?.toIntOrNull()?.takeIf { it > 0 } ?: 320 else null
-        playbackTransport(current, mode, height, positionMs, audioStreamIndex, musicBitrate)
+    }
+
+    private suspend fun aacVideoConversionContext(
+        current: PlaybackSpec, height: Int, audioStreamIndex: Int?, requireAuthorization: () -> Unit,
+    ): PlaybackSpec {
+        if (current.aacConversionContext && !current.progressToken.isNullOrBlank() &&
+            audioStreamIndex == current.selectedAudioStreamIndex) return current
+        val viewItem = current.viewItemId?.takeIf { it > 0 }
+            ?: throw ApiException("AAC 변환에 필요한 라이브러리 항목 정보가 없습니다. 영상을 다시 열어 주세요.")
+        current.sourceItem?.let {
+            if (!it.playable || it.id != current.itemId || it.libraryId != current.libraryId || it.viewItemId != viewItem) {
+                throw ApiException("AAC 변환의 재생 파일 정보가 일치하지 않습니다.", 403)
+            }
+        }
+        currentCoroutineContext().ensureActive(); requireAuthorization()
+        val sessionId = UUID.randomUUID().toString()
+        val response = request("/playback/decision", JSONObject().apply {
+            put("part_id", current.partId); put("library_view_id", current.libraryId); put("view_item_id", viewItem)
+            put("platform", "mobile"); put("client_app", "android"); put("device_id", deviceId)
+            put("client_session_id", sessionId)
+            put("max_video_height", height); put("client_profile", aacConversionProfile(height))
+        }, spoiler = current.sourceItem?.isSpoiler == true).objectValue()
+        currentCoroutineContext().ensureActive(); requireAuthorization()
+        val selected = response.optJSONObject("selected")
+        if (selected?.exactPositiveInt("part_id") != current.partId ||
+            response.exactPositiveInt("library_view_id") != current.libraryId ||
+            response.exactPositiveInt("view_item_id") != viewItem) {
+            throw ApiException("AAC 변환의 파일이나 라이브러리 항목이 변경되었습니다.", 403)
+        }
+        val index = response.exactNonNegativeInt("selected_audio_stream_index")
+            ?: throw ApiException("AAC 변환의 원본 오디오 선택을 확인할 수 없습니다.")
+        val language = response.stringOrNull("selected_audio_language")
+        if ((audioStreamIndex != null && index != audioStreamIndex) ||
+            (conversionLanguage(current.selectedAudioLanguage) != null &&
+                conversionLanguage(current.selectedAudioLanguage) != conversionLanguage(language))) {
+            throw ApiException("AAC 변환에서 선택한 오디오가 변경되었습니다. 원본 오디오를 유지할 수 없습니다.")
+        }
+        val info = response.optJSONObject("playback_info")
+        val audio = info?.optJSONObject("audio")
+        // Old servers can report audio_transcode/AAC without retaining the copy restriction
+        // in video tickets. Only the explicit video/AAC response proves this contract.
+        if (response.stringOrNull("decision") != "video_transcode" ||
+            response.optJSONObject("transcode")?.stringOrNull("mode") != "video" ||
+            info?.stringOrNull("playback_method") != "video_transcode" || info?.opt("is_transcoding") != true ||
+            !isEac3Codec(selected.stringOrNull("audio_codec")) || !isEac3Codec(audio?.stringOrNull("source_codec")) ||
+            !audio?.stringOrNull("output_codec").equals("aac", ignoreCase = true)) {
+            throw ApiException("서버가 이 영상의 AAC 오디오 변환을 확인하지 못했습니다. 원본 재생을 사용해 주세요.")
+        }
+        val context = response.stringOrNull("playback_context_token")?.takeIf { it != current.progressToken }
+            ?: throw ApiException("새 AAC 변환 재생 권한을 받지 못했습니다.")
+        return current.copy(progressToken = context, sessionId = sessionId, selectedAudioStreamIndex = index,
+            selectedAudioLanguage = language ?: current.selectedAudioLanguage, aacConversionContext = true)
     }
 
     private suspend fun playbackTransport(
@@ -1175,46 +1318,69 @@ class ShyniClient(
         positionMs: Long,
         audioStreamIndex: Int?,
         musicBitrateKbps: Int? = null,
+        requireAuthorization: () -> Unit,
+        originalStreamTicket: JSONObject? = null,
+        preserveSessionId: Boolean = false,
     ): PlaybackSpec {
-        if (current.partId <= 0 || current.libraryId <= 0 || (audioStreamIndex != null && audioStreamIndex < 0)) {
+        if (current.itemId <= 0 || current.partId <= 0 || current.libraryId <= 0 || (audioStreamIndex != null && audioStreamIndex < 0)) {
             throw ApiException("재생 파일 정보가 올바르지 않습니다.")
         }
+        currentCoroutineContext().ensureActive(); requireAuthorization()
+        val source = if (mode == "video" && isEac3Codec(current.selectedAudioCodec)) {
+            aacVideoConversionContext(current, maxHeight ?: 1080, audioStreamIndex, requireAuthorization)
+        } else current
+        val selectedAudio = if (source.aacConversionContext && mode == "video") source.selectedAudioStreamIndex else audioStreamIndex
         val position = positionMs.coerceAtLeast(0).let {
             if (current.durationMs > 0) it.coerceAtMost(current.durationMs) else it
         }
-        val context = contextQuery(current.progressToken, current.libraryId, current.viewItemId)
+        val context = contextQuery(source.progressToken, source.libraryId, source.viewItemId)
         val transcodeTicket = if (mode != null) {
             request("/playback/transcode-ticket/${current.partId}?$context&mode=${encode(mode)}", JSONObject(), spoiler = current.sourceItem?.isSpoiler == true).objectValue()
                 .stringOrNull("ticket") ?: throw ApiException("변환 재생 티켓을 받지 못했습니다.")
         } else null
+        currentCoroutineContext().ensureActive(); requireAuthorization()
         // A transcode-only ticket cannot authorize original subtitle endpoints.
-        val original = request("/stream-ticket/${current.partId}?$context", JSONObject(), spoiler = current.sourceItem?.isSpoiler == true).objectValue()
+        val original = if (originalStreamTicket != null && source === current) originalStreamTicket else
+            request("/stream-ticket/${current.partId}?$context", JSONObject(), spoiler = current.sourceItem?.isSpoiler == true).objectValue()
+        currentCoroutineContext().ensureActive(); requireAuthorization()
         val originalTicket = original.stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
         val viewId = original.intOrNull("library_view_id") ?: current.libraryId
         val viewItemId = original.intOrNull("view_item_id") ?: current.viewItemId
-        val refreshedContext = contextQuery(current.progressToken, viewId, viewItemId)
+        if (source.aacConversionContext && mode == "video" && (viewId != source.libraryId || viewItemId != source.viewItemId)) {
+            throw ApiException("AAC 변환의 라이브러리 항목이 변경되었습니다.", 403)
+        }
+        val refreshedContext = contextQuery(source.progressToken, viewId, viewItemId)
         val subtitles = rows(request("/subtitles/${current.partId}?$refreshedContext", spoiler = current.sourceItem?.isSpoiler == true), "subtitles")
             .mapNotNull { subtitleTrack(it, originalTicket, refreshedContext) }
             .map { progressiveSubtitle(it, mode != null) }
+        currentCoroutineContext().ensureActive(); requireAuthorization()
         val streamUrl = if (transcodeTicket != null) {
             val parameters = mutableListOf("ticket=${encode(transcodeTicket)}", "mode=${encode(mode!!)}", "start_ms=$position")
             maxHeight?.let { parameters += "max_height=$it" }
             musicBitrateKbps?.let { parameters += "bitrate_kbps=$it" }
-            audioStreamIndex?.let { parameters += "audio_stream_index=$it" }
+            selectedAudio?.let { parameters += "audio_stream_index=$it" }
             val path = if (mode == "music") "/transcode/music/${current.partId}" else "/transcode/${current.partId}"
             absoluteUrl("$path?${parameters.joinToString("&")}")
         } else absoluteUrl("/stream/${current.partId}?ticket=${encode(originalTicket)}")
-        return current.copy(
+        return source.copy(
             url = streamUrl, headers = emptyMap(), libraryId = viewId, viewItemId = viewItemId,
-            resumeMs = position, subtitles = subtitles, sessionId = UUID.randomUUID().toString(),
+            resumeMs = position, subtitles = subtitles,
+            sessionId = if (preserveSessionId || source !== current) source.sessionId else UUID.randomUUID().toString(),
             decision = when (mode) { "video" -> "video_transcode"; "audio", "music" -> "audio_transcode"; "remux" -> "direct_stream"; else -> "direct_play" },
-            selectedAudioStreamIndex = audioStreamIndex,
+            selectedAudioStreamIndex = selectedAudio,
             selectedAudioStreamOrdinal = if (mode == null) null else 0,
             sourceItem = current.sourceItem?.copy(libraryId = viewId, viewItemId = viewItemId, resumeMs = position),
             conversionHeight = if (mode == "video") maxHeight else null,
             streamStartPositionMs = if (mode == null) 0 else position,
+            aacConversionContext = mode == "video" && source.aacConversionContext,
         )
     }
+
+    private fun JSONObject.exactNonNegativeInt(key: String): Int? = runCatching {
+        val raw = opt(key)
+        if (raw !is Number && raw !is String) return@runCatching null
+        java.math.BigDecimal(raw.toString()).intValueExact().takeIf { it >= 0 }
+    }.getOrNull()
 
     private fun progressiveSubtitle(subtitle: SubtitleTrack, progressive: Boolean): SubtitleTrack =
         // Progressive output omits native subtitle streams; extract text on the original clock.

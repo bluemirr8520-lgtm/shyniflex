@@ -183,6 +183,9 @@ data class PlaybackSpec(
     val sourceItem: MediaItem? = null,
     val navigationQuery: String = "",
     val markers: List<PlaybackMarker> = emptyList(),
+    val selectedAudioCodec: String? = null,
+    /** This exact context was negotiated for AAC output; it is never a server permission. */
+    val aacConversionContext: Boolean = false,
 ) {
     /** Automatic audio/remux conversion uses the same offset/reopen transport as video conversion. */
     val isServerConversion: Boolean
@@ -210,6 +213,7 @@ data class PlaybackSpec(
         put("conversionHeight", conversionHeight); put("streamStartPositionMs", streamStartPositionMs)
         put("sourceItem", sourceItem?.asJson()); put("navigationQuery", navigationQuery)
         put("markers", JSONArray(markers.map { it.asJson() }))
+        put("selectedAudioCodec", selectedAudioCodec); put("aacConversionContext", aacConversionContext)
     }.toString()
 
     companion object {
@@ -245,6 +249,8 @@ data class PlaybackSpec(
                 sourceItem = json.optJSONObject("sourceItem")?.let(MediaItem::fromJson),
                 navigationQuery = json.optString("navigationQuery"),
                 markers = PlaybackMarker.parse(json.opt("markers"), json.optLong("durationMs")),
+                selectedAudioCodec = json.stringOrNull("selectedAudioCodec"),
+                aacConversionContext = json.opt("aacConversionContext") == true,
             )
         }
     }
