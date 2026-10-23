@@ -121,9 +121,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private var playbackNeighbors: PlaybackNeighbors? = null
     private var neighborsJob: Job? = null
     private var navigationLoading = false
-    private var neighborRevision = 0
-    private var markersJob: Job? = null
-    private var markerRevision = 0
+    private var playbackMetadataJob: Job? = null
+    private val playbackMetadataGate = PlaybackMetadataGate()
     private var pendingAudioPreference: PlaybackTrackPreference? = null
     private var pendingTextPreference: PlaybackTrackPreference? = null
     private var unlockKeyPending = false
@@ -349,8 +348,6 @@ class NativePlayerActivity : AppCompatActivity() {
             }
         })
         preparePlayback(resumeWhenVisible)
-        refreshPlaybackNeighbors()
-        refreshPlaybackMarkers()
     }
 
     private fun buildViews() {
@@ -609,6 +606,9 @@ class NativePlayerActivity : AppCompatActivity() {
             serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
+        playbackMetadataGate.reset()
+        playbackNeighbors = null
+        updateNavigationButtons()
         applyResizeMode()
         mpvSubtitleController.reset()
         created.nativeSubtitleVisibility = false
@@ -654,6 +654,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     resolvePendingEmbeddedSubtitle()
                     restorePendingTextPreference()
                     if (created.duration != C.TIME_UNSET && created.duration > 0) preserveFullDuration(created.duration)
+                    refreshPlaybackMetadata(created)
                 } else if (state == Player.STATE_ENDED && !exiting && !refreshing) {
                     handler.post {
                         if (player === created && !exiting && !refreshing && created.reconcilePlaybackCompletion())
@@ -1134,7 +1135,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 val epoch = playbackAuthentication.beginRotation()
                 rotation = epoch
                 progressDeliveryJob?.cancel()
-                neighborsJob?.cancel(); markersJob?.cancel()
+                neighborsJob?.cancel()
                 subtitleJob?.cancel(); subtitleSelectionRevision++; subtitleTimeline = null
                 prepared = false
                 releasePlayer()
@@ -1155,7 +1156,6 @@ class NativePlayerActivity : AppCompatActivity() {
                 refreshing = false; conversionResumeWhenVisible = null
                 applyConversionPlayback(refreshed, previous)
                 spoilerRecovery = null
-                refreshPlaybackNeighbors(); refreshPlaybackMarkers()
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (_: Exception) {
@@ -1200,45 +1200,42 @@ class NativePlayerActivity : AppCompatActivity() {
         spoilerRotationJob?.cancel(); spoilerRotationJob = null
     }
 
-    private fun refreshPlaybackNeighbors() {
-        neighborsJob?.cancel()
-        val revision = ++neighborRevision
+    private fun refreshPlaybackMetadata(readyPlayer: MpvPlayer) {
+        if (player !== readyPlayer || exiting || isDestroyed || closeLockedSpoilerPlayback()) return
+        val revision = playbackMetadataGate.takePending() ?: return
         val current = spec
-        playbackNeighbors = null
-        updateNavigationButtons()
-        if (current.sourceItem == null || closeLockedSpoilerPlayback()) return
-        neighborsJob = scope.launch {
-            try {
-                val neighbors = client.playbackNeighbors(current)
-                if (!exiting && !isDestroyed && revision == neighborRevision) {
-                    playbackNeighbors = neighbors
-                    updateNavigationButtons()
+        fun isCurrent() = player === readyPlayer && !exiting && !isDestroyed && playbackMetadataGate.isCurrent(revision)
+        playbackMetadataJob = scope.launch {
+            loadPlaybackMetadataInOrder(
+                loadMarkers = {
+                    if (isCurrent() && !closeLockedSpoilerPlayback() && current.partId > 0 &&
+                        (current.url.startsWith("https://", true) || current.url.startsWith("http://", true))) {
+                        val markers = client.playbackMarkers(current)
+                        currentCoroutineContext().ensureActive()
+                        if (isCurrent() && !closeLockedSpoilerPlayback()) {
+                            spec = spec.copy(markers = markers)
+                            updateSegmentSkipButton()
+                        }
+                    }
+                },
+                loadNeighbors = {
+                    if (isCurrent() && current.sourceItem != null && !closeLockedSpoilerPlayback()) {
+                        val neighbors = client.playbackNeighbors(current)
+                        currentCoroutineContext().ensureActive()
+                        if (isCurrent() && !closeLockedSpoilerPlayback()) {
+                            playbackNeighbors = neighbors
+                            updateNavigationButtons()
+                        }
+                    }
                 }
-            } catch (_: kotlinx.coroutines.CancellationException) {
-            } catch (_: Exception) {
-                // Playback remains available when its ordered catalog cannot be loaded.
-            }
+            )
         }
     }
 
-    private fun refreshPlaybackMarkers() {
-        markersJob?.cancel()
-        val revision = ++markerRevision
-        val current = spec
-        if (closeLockedSpoilerPlayback() || current.partId <= 0 ||
-            (!current.url.startsWith("https://", true) && !current.url.startsWith("http://", true))) return
-        markersJob = scope.launch {
-            try {
-                val markers = client.playbackMarkers(current)
-                if (!exiting && !isDestroyed && revision == markerRevision) {
-                    spec = spec.copy(markers = markers)
-                    updateSegmentSkipButton()
-                }
-            } catch (_: kotlinx.coroutines.CancellationException) {
-            } catch (_: Exception) {
-                // Optional server marker metadata must not interrupt video playback.
-            }
-        }
+    private fun cancelPlaybackMetadata() {
+        playbackMetadataGate.cancel()
+        playbackMetadataJob?.cancel()
+        playbackMetadataJob = null
     }
 
     private fun updateNavigationButtons() {
@@ -1310,7 +1307,6 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 if (!isDestroyed) {
                     updatePlaybackButtons()
-                    if (replaced && !exiting) { refreshPlaybackNeighbors(); refreshPlaybackMarkers() }
                 }
             }
         }
@@ -1456,8 +1452,6 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (exiting || isDestroyed) return@launch
                 refreshing = false
                 applyConversionPlayback(restored, previous)
-                refreshPlaybackNeighbors()
-                refreshPlaybackMarkers()
                 toast("이전 재생 방식으로 돌아왔습니다.")
             } catch (_: kotlinx.coroutines.CancellationException) {
             } catch (_: Exception) {
@@ -1842,7 +1836,8 @@ class NativePlayerActivity : AppCompatActivity() {
         if (lastDuration > 0) lastPosition = lastDuration
         handler.removeCallbacks(ticker)
         handler.removeCallbacks(conversionTimeout)
-        neighborsJob?.cancel(); markersJob?.cancel(); conversionJob?.cancel()
+        cancelPlaybackMetadata()
+        neighborsJob?.cancel(); conversionJob?.cancel()
         playerView.hideController(); hideLockControl()
         segmentSkipButton.visibility = View.GONE
         updatePlaybackButtons()
@@ -1868,6 +1863,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        cancelPlaybackMetadata()
         spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
         subtitleDialog?.dismiss(); subtitleDialog = null
         playerGestureActive = false
@@ -1887,6 +1883,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (exiting) return
         gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
         exiting = true; resumeWhenVisible = false
+        cancelPlaybackMetadata()
         cancelSpoilerPlaybackReauthentication()
         handler.removeCallbacks(ticker)
         capturePosition(); settleWatchTime(false)

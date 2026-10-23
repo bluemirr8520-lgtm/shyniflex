@@ -702,6 +702,23 @@ class ShyniClientTest {
         assertEquals(4, server.requestCount)
     }
 
+    @Test fun unavailableOptionalMarkerFieldPreservesKnownMarkers() = runBlocking {
+        respond("""{"parts":[{"id":90}]}""")
+        val marker = PlaybackMarker("intro", 0, 9_000)
+        val spec = PlaybackSpec("작품", "source", itemId = 23, libraryId = 8, partId = 90,
+            viewItemId = 501, durationMs = 100_000, markers = listOf(marker))
+        assertEquals(listOf(marker), client.playbackMarkers(spec))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun explicitlyEmptySelectedFileMarkersClearKnownMarkers() = runBlocking {
+        respond("""{"markers":[]}""")
+        val spec = PlaybackSpec("작품", "source", itemId = 23, libraryId = 8, partId = 90,
+            viewItemId = 501, durationMs = 100_000, markers = listOf(PlaybackMarker("intro", 0, 9_000)))
+        assertTrue(client.playbackMarkers(spec).isEmpty())
+        assertEquals(1, server.requestCount)
+    }
+
     @Test fun externalSubtitlesKeepOriginalFormatAndConversionFallbackWithScopedContext() = runBlocking {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"part context&?","decision":"direct_play"}""")
         respond("""{"ticket":"ticket &?"}""")

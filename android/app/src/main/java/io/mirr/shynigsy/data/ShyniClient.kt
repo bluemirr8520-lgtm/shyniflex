@@ -382,7 +382,10 @@ class ShyniClient(
 
     /** Optional, read-only marker refresh for the actual selected physical file. */
     suspend fun playbackMarkers(spec: PlaybackSpec): List<PlaybackMarker> = withContext(Dispatchers.Default) {
-        PlaybackMarker.parse(partMediaInfo(spec), spec.durationMs)
+        val info = partMediaInfo(spec)
+        // An omitted optional field is unknown; an explicit [] clears the old markers.
+        val markers = if (info.isNull("markers")) JSONArray(spec.markers.map { it.asJson() }) else info.opt("markers")
+        PlaybackMarker.parse(markers, spec.durationMs)
     }
 
     suspend fun login(username: String, password: String): LoginOutcome = loginResult(
