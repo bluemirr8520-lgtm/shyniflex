@@ -839,7 +839,7 @@ class NativePlayerActivity : AppCompatActivity() {
                                 showResizeNotice()
                             }.setNegativeButton("닫기", null).show()
                     }
-                    addRow("화질", conversionLabel()) { showConversion() }
+                    addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
                     addRow("오디오 트랙", selectedTrackLabel(C.TRACK_TYPE_AUDIO)) { showTracks(C.TRACK_TYPE_AUDIO) }
                     addRow("자막 선택", if (!subtitlesEnabled) "끔" else selectedTrackLabel(C.TRACK_TYPE_TEXT)) { showTracks(C.TRACK_TYPE_TEXT) }
                     addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
@@ -850,7 +850,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 0 -> addRow("배속", speedLabel()) { showSpeed() }
                 1 -> {
-                    addRow("화질", conversionLabel()) { showConversion() }
+                    addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
                     addRow("화면 크기", resizeLabel()) {
                         cycleResizeMode(); selectTab(1)
                     }
@@ -1322,7 +1322,7 @@ class NativePlayerActivity : AppCompatActivity() {
             text = speedLabel(); contentDescription = "배속 설정, $text"; tooltipText = contentDescription
         }
         playerView.findViewById<Button>(R.id.player_conversion).apply {
-            text = "화질"; contentDescription = "화질, ${conversionLabel()}"; tooltipText = contentDescription
+            text = "변환"; contentDescription = "변환 (데이터 절약), ${conversionLabel()}"; tooltipText = contentDescription
             isEnabled = !conversionLoading && !refreshing
         }
         updateNavigationButtons()
@@ -1353,7 +1353,7 @@ class NativePlayerActivity : AppCompatActivity() {
             else -> "480p"
         } }
         val selected = if (spec.isServerConversion && spec.conversionHeight == null) -1 else heights.indexOf(spec.conversionHeight)
-        val dialog = AlertDialog.Builder(this).setTitle("화질")
+        val dialog = AlertDialog.Builder(this).setTitle("변환 (데이터 절약)")
             .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, index ->
                 dialog.dismiss()
                 val height = heights[index]
@@ -1381,7 +1381,7 @@ class NativePlayerActivity : AppCompatActivity() {
         refreshing = true; conversionLoading = true
         conversionResumeWhenVisible = snapshot.playing; resumeWhenVisible = snapshot.playing
         active.pause(); playerView.hideController(); hideLockControl(); updatePlaybackButtons()
-        val loading = AlertDialog.Builder(this).setTitle("화질")
+        val loading = AlertDialog.Builder(this).setTitle("변환 (데이터 절약)")
             .setMessage("현재 시청 위치에서 ${height?.let { "${it}p" } ?: "원본 재생"}을 준비하고 있습니다…")
             .setNegativeButton("취소") { _, _ -> conversionJob?.cancel() }.create()
         loading.setOnCancelListener { conversionJob?.cancel() }

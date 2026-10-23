@@ -144,7 +144,7 @@ class GestureControlsPlaybackTest {
         }
         scenario.onActivity { it.findViewById<View>(R.id.player_settings).performClick() }
         waitForWindow("settings opens with speed row focused") { focusedLabel().startsWith("배속") }
-        listOf("화면 크기", "화질", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
+        listOf("화면 크기", "변환 (데이터 절약)", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
             instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
             waitForWindow("settings focus reaches $label") { focusedLabel().startsWith(label) }
         }

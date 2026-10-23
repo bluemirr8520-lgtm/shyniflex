@@ -78,7 +78,7 @@ class MpvPlayer(
     private var bufferedMs = 0L
     private var pendingStartMs = 0L
     private var nativePaused = true
-    private var cachePaused = false
+    private val readiness = MpvPlaybackReadiness()
     private var seekable = false
     private var playback = PlaybackParameters.DEFAULT
     private var selection = TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
@@ -258,7 +258,7 @@ class MpvPlayer(
         bufferedMs = positionMs; durationMs = conversionTimeline?.duration(null) ?: C.TIME_UNSET
         seekable = isServerConverted && durationMs > 0
         loaded = false; loading = false; status = Player.STATE_IDLE; failure = null
-        startObserved = false; firstFrame = false; cachePaused = false
+        startObserved = false; firstFrame = false; readiness.reset()
         tracks = Tracks.EMPTY; video = VideoSize.UNKNOWN; clearCues()
         return done()
     }
@@ -269,7 +269,7 @@ class MpvPlayer(
         loadGeneration++
         main.removeCallbacks(eofCheck); eofState.reset()
         failure = null; stopRequested = false; startObserved = false; loaded = false; loading = true; status = Player.STATE_BUFFERING
-        firstFrame = false; cachePaused = false; bufferedMs = pendingStartMs
+        firstFrame = false; readiness.reset(); bufferedMs = pendingStartMs
         nativePaused = !requestedPlay || focusSuppressed
         positionMs = pendingStartMs; positionUpdatedAt = SystemClock.elapsedRealtime()
         if (isServerConverted) {
@@ -329,7 +329,7 @@ class MpvPlayer(
         if (loaded) {
             // Drop already-posted callbacks for the old position, including EOF.
             loadGeneration++; eofState.seekStarted()
-            status = Player.STATE_BUFFERING
+            readiness.seekStarted(); status = Player.STATE_BUFFERING; updatePlaybackReadiness()
             MPVLib.command(arrayOf("seek", seconds(target), "absolute+exact"))
         }
         return done()
@@ -364,6 +364,7 @@ class MpvPlayer(
         main.removeCallbacks(eofCheck); eofState.reset()
         positionMs = currentPositionValue(); pendingStartMs = positionMs
         stopRequested = true; loaded = false; loading = false; status = Player.STATE_IDLE
+        readiness.reset()
         MPVLib.command(arrayOf("stop")); clearCues(); abandonFocus()
         return done()
     }
@@ -380,6 +381,7 @@ class MpvPlayer(
         if (alive) { alive = false; MPVLib.destroy() }
         synchronized(OWNER_LOCK) { if (owner === this) owner = null }
         status = Player.STATE_IDLE; loading = false; loaded = false; clearCues()
+        readiness.reset()
         return done()
     }
 
@@ -520,11 +522,18 @@ class MpvPlayer(
                 if (value) reconcileNativeEof()
             }
             "seekable" -> seekable = if (isServerConverted) durationMs > 0 else value
-            "paused-for-cache" -> { cachePaused = value; if (loaded && status != Player.STATE_ENDED) status = if (value) Player.STATE_BUFFERING else Player.STATE_READY }
+            "paused-for-cache" -> {
+                freezePlaybackClock()
+                readiness.cachePausedChanged(value)
+                updatePlaybackReadiness()
+            }
             "eof-reached" -> if (value) reconcileNativeEof(observedEof = true)
             "seeking" -> {
-                eofState.nativeSeekingChanged(value)
-                if (!value) reconcileNativeEof()
+                val seeking = MPVLib.getPropertyBoolean("seeking") ?: value
+                eofState.nativeSeekingChanged(seeking)
+                if (seeking) {
+                    freezePlaybackClock(); readiness.seekStarted(); updatePlaybackReadiness()
+                } else reconcileNativeEof()
             }
         }
         invalidateState()
@@ -533,22 +542,21 @@ class MpvPlayer(
         when (eventId) {
             MPVLib.MpvEvent.MPV_EVENT_START_FILE -> {
                 if (!isExpectedNativeSource()) return@dispatchNative
-                startObserved = true; loaded = false; loading = true; status = Player.STATE_BUFFERING; clearCues()
+                startObserved = true; loaded = false; loading = true; status = Player.STATE_BUFFERING
+                readiness.reset(); clearCues()
             }
             MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
                 // Queued callbacks from the replaced response must not relabel
                 // its old local clock with the new request's source offset.
                 if (!isExpectedNativeSource()) return@dispatchNative
-                loaded = true; loading = false; status = Player.STATE_READY
+                loaded = true
                 configuredVideoLayout?.let { setVideoLayout(it.first, it.second, it.third) }
                 durationMs = sourceDuration(MPVLib.getPropertyDouble("duration")?.times(1000)?.toLong())
                 seekable = if (isServerConverted) durationMs > 0 else MPVLib.getPropertyBoolean("seekable") == true
                 nativePaused = MPVLib.getPropertyBoolean("pause") ?: (!requestedPlay || focusSuppressed)
-                cachePaused = MPVLib.getPropertyBoolean("paused-for-cache") == true
-                if (cachePaused) status = Player.STATE_BUFFERING
-                val nativePosition = MPVLib.getPropertyDouble("time-pos")?.times(1000)?.toLong()?.coerceAtLeast(0)
-                if (nativePosition != null) positionMs = conversionTimeline?.sourcePosition(nativePosition) ?: nativePosition
-                positionUpdatedAt = SystemClock.elapsedRealtime()
+                readiness.fileLoaded(MPVLib.getPropertyBoolean("paused-for-cache") == true)
+                updatePlaybackReadiness()
+                synchronizeNativePosition()
                 refreshTracks(); applyTrackPreferences(selection); updateVideoSize()
                 MPVLib.setPropertyBoolean("sub-visibility", nativeSubtitleVisibility)
                 setText(MPVLib.getPropertyString("sub-text").orEmpty())
@@ -557,9 +565,12 @@ class MpvPlayer(
                 if (status != Player.STATE_ENDED) main.postDelayed(eofCheck, 1_000)
             }
             MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
-                eofState.playbackRestarted()
-                if (loaded && status != Player.STATE_ENDED) {
-                    status = if (cachePaused) Player.STATE_BUFFERING else Player.STATE_READY
+                // A queued restart from an earlier seek must not complete a newer one.
+                if (loaded && !stopRequested && status != Player.STATE_ENDED &&
+                    MPVLib.getPropertyBoolean("seeking") != true) {
+                    eofState.playbackRestarted()
+                    synchronizeNativePosition()
+                    readiness.playbackRestarted(); updatePlaybackReadiness()
                     firstFrame = true
                     // A seek inside one cue may not emit another sub-text change.
                     setText(MPVLib.getPropertyString("sub-text").orEmpty())
@@ -577,7 +588,13 @@ class MpvPlayer(
                 main.removeCallbacks(eofCheck)
                 startObserved = false
             }
-            MPVLib.MpvEvent.MPV_EVENT_SEEK -> { eofState.nativeSeekingChanged(true); clearCues() }
+            MPVLib.MpvEvent.MPV_EVENT_SEEK -> {
+                if (MPVLib.getPropertyBoolean("seeking") != false) {
+                    freezePlaybackClock(); readiness.seekStarted(); updatePlaybackReadiness()
+                    eofState.nativeSeekingChanged(true)
+                }
+                clearCues()
+            }
             MPVLib.MpvEvent.MPV_EVENT_QUEUE_OVERFLOW -> reconcileNativeEof()
         }
         invalidateState()
@@ -652,9 +669,25 @@ class MpvPlayer(
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
 
     private fun currentPositionValue(): Long {
-        val elapsed = if (loaded && requestedPlay && !nativePaused && !cachePaused && !focusSuppressed && status == Player.STATE_READY) SystemClock.elapsedRealtime() - positionUpdatedAt else 0
+        val elapsed = if (loaded && readiness.ready && requestedPlay && !nativePaused && !focusSuppressed && status == Player.STATE_READY) SystemClock.elapsedRealtime() - positionUpdatedAt else 0
         val value = positionMs + (elapsed * playback.speed).toLong()
         return if (durationMs > 0) value.coerceIn(0, durationMs) else value.coerceAtLeast(0)
+    }
+    private fun freezePlaybackClock() {
+        positionMs = currentPositionValue()
+        positionUpdatedAt = SystemClock.elapsedRealtime()
+    }
+    private fun synchronizeNativePosition() {
+        MPVLib.getPropertyDouble("time-pos")?.takeIf { it.isFinite() && it >= 0 }?.let { nativeTime ->
+            val nativePosition = (nativeTime * 1000).toLong()
+            positionMs = conversionTimeline?.sourcePosition(nativePosition) ?: nativePosition
+        }
+        positionUpdatedAt = SystemClock.elapsedRealtime()
+    }
+    private fun updatePlaybackReadiness() {
+        if (!loaded || stopRequested || failure != null || status == Player.STATE_ENDED || status == Player.STATE_IDLE) return
+        status = if (readiness.ready) Player.STATE_READY else Player.STATE_BUFFERING
+        loading = !readiness.ready
     }
     private fun requestFocus(): Boolean {
         if (!handleFocus || gain == 0f) return true

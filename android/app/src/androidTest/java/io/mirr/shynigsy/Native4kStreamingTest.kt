@@ -58,6 +58,83 @@ class Native4kStreamingTest {
 
     @Test fun fourKHevcRecoversAfterAThreeSecondNetworkStall() = benchmark(stall = true)
 
+    @Test fun delayedResumeWaitsForNativeRestartBeforePlayingOrAdvancingItsClock() {
+        val context = instrumentation.targetContext
+        assumeTrue("Only the isolated synthetic QA app may run this regression", context.packageName.endsWith(".spoilerqa"))
+        assertFalse((context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked)
+        assertTrue(NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("127.0.0.1"))
+        val clip = instrumentation.context.assets.open("media3/$FIXTURE").use { it.readBytes() }
+        for (paused in listOf(false, true)) {
+            StreamingFixture(clip, hold = false, startupHold = true).use { server ->
+                ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                    var player: MpvPlayer? = null
+                    var view: PlayerView? = null
+                    val timings = Timings()
+                    val released = AtomicBoolean()
+                    val prematurelyPlaying = AtomicBoolean()
+                    try {
+                        scenario.onActivity { activity ->
+                            activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                            val video = PlayerView(activity).apply { useController = false }
+                            activity.setContentView(video)
+                            val active = MpvPlayer(activity).apply {
+                                volume = 0f
+                                setAudioAttributes(AudioAttributes.DEFAULT, false)
+                                addListener(object : Player.Listener {
+                                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                                        if (isPlaying && !released.get()) prematurelyPlaying.set(true)
+                                    }
+                                    override fun onRenderedFirstFrame() { timings.firstFrameAt.compareAndSet(0, SystemClock.elapsedRealtime()) }
+                                    override fun onPlayerError(error: PlaybackException) { timings.error.set(error.errorCodeName) }
+                                })
+                            }
+                            player = active; view = video; video.player = active
+                            active.setMediaItem(MediaItem.fromUri(server.url), 8_000)
+                            active.prepare()
+                            if (!paused) active.play()
+                        }
+                        val active = player!!
+                        await("Metadata must load while the requested resume frame is still withheld", 10_000, server, timings) {
+                            server.startupBlocked.count == 0L && main {
+                                active.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
+                            }
+                        }
+                        val waitingPosition = main {
+                            assertEquals(Player.STATE_BUFFERING, active.playbackState)
+                            assertFalse("A pending native restart must not count as watched playback", active.isPlaying)
+                            active.currentPosition
+                        }
+                        Thread.sleep(1_100)
+                        main {
+                            assertEquals(Player.STATE_BUFFERING, active.playbackState)
+                            assertFalse(active.isPlaying)
+                            assertTrue("The pending resume clock must not include loading time", kotlin.math.abs(active.currentPosition - waitingPosition) < 150)
+                        }
+                        assertFalse("No transient READY state may start the watch-time clock before native restart", prematurelyPlaying.get())
+                        assertEquals(0L, timings.firstFrameAt.get())
+                        released.set(true); server.releaseStartup()
+                        await("Native restart must make both playing and paused preparation ready", 15_000, server, timings) {
+                            timings.firstFrameAt.get() > 0 && main { active.playbackState == Player.STATE_READY }
+                        }
+                        if (paused) {
+                            val readyPosition = main { assertFalse(active.isPlaying); assertFalse(active.playWhenReady); active.currentPosition }
+                            Thread.sleep(400)
+                            assertTrue(main { kotlin.math.abs(active.currentPosition - readyPosition) < 150 })
+                        } else {
+                            await("The source clock must advance after restart, without adding loading time", 3_000, server, timings) {
+                                main { active.isPlaying && active.currentPosition >= waitingPosition + 250 && active.currentPosition < 10_500 }
+                            }
+                        }
+                        server.assertHealthy()
+                    } finally {
+                        server.releaseStartup()
+                        main { view?.player = null; player?.release() }
+                    }
+                }
+            }
+        }
+    }
+
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
     private fun benchmark(stall: Boolean) {
@@ -264,7 +341,8 @@ class Native4kStreamingTest {
     }
 
     /** Every range shares one gate so opening a replacement connection cannot bypass the gap. */
-    private class StreamingFixture(private val clip: ByteArray, private val hold: Boolean) : AutoCloseable {
+    private class StreamingFixture(private val clip: ByteArray, private val hold: Boolean,
+        private val startupHold: Boolean = false) : AutoCloseable {
         private val server = ServerSocket(0, 12, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 200 }
         private val executor = Executors.newFixedThreadPool(4) { runnable -> Thread(runnable, "4k-qa-http").apply { isDaemon = true } }
         private val closed = AtomicBoolean()
@@ -276,6 +354,8 @@ class Native4kStreamingTest {
         val payloadBytes = AtomicLong()
         val stallStartedAt = AtomicLong()
         val stallFinishedAt = AtomicLong()
+        val startupBlocked = CountDownLatch(1)
+        private val startupGate = CountDownLatch(if (startupHold) 1 else 0)
         val url: String get() = "http://127.0.0.1:${server.localPort}/fixture.mp4"
         private val listener = thread(name = "4k-qa-loopback", isDaemon = true) {
             while (!closed.get()) {
@@ -287,6 +367,7 @@ class Native4kStreamingTest {
 
         fun assertHealthy() { failure.get()?.let { throw AssertionError("Synthetic 4K HTTP fixture failed", it) } }
         fun requestSummary(): JSONArray = synchronized(requests) { JSONArray(requests.toList()) }
+        fun releaseStartup() = startupGate.countDown()
 
         private fun respond(socket: Socket) = socket.use { connection ->
             try {
@@ -324,15 +405,23 @@ class Native4kStreamingTest {
                 if (request[0] == "HEAD") return@use
                 var position = start
                 while (position <= end && !closed.get()) {
-                    if (hold && position >= prefixBytes) gate()
+                    if (startupHold && position >= prefixBytes) startupGate()
+                    else if (hold && position >= prefixBytes) gate()
                     val chunk = minOf(32_768, end - position + 1,
-                        if (hold && position < prefixBytes) prefixBytes - position else Int.MAX_VALUE)
+                        if ((hold || startupHold) && position < prefixBytes) prefixBytes - position else Int.MAX_VALUE)
                     output.write(clip, position, chunk); output.flush()
                     payloadBytes.addAndGet(chunk.toLong()); position += chunk
                 }
             } catch (_: SocketException) {
                 // Pause/release and FFmpeg probe replacement can cancel an HTTP range.
             } catch (error: Throwable) { if (!closed.get()) failure.compareAndSet(null, error) }
+        }
+
+        private fun startupGate() {
+            startupBlocked.countDown()
+            val deadline = SystemClock.elapsedRealtime() + 20_000
+            while (!closed.get() && !startupGate.await(50, TimeUnit.MILLISECONDS))
+                check(SystemClock.elapsedRealtime() < deadline) { "The startup regression did not release its fixture" }
         }
 
         private fun gate() {
@@ -360,7 +449,7 @@ class Native4kStreamingTest {
         }
 
         override fun close() {
-            closed.set(true); firstFrame.countDown(); server.close(); listener.join(1_000)
+            closed.set(true); firstFrame.countDown(); releaseStartup(); server.close(); listener.join(1_000)
             executor.shutdownNow(); executor.awaitTermination(2, TimeUnit.SECONDS)
         }
     }
