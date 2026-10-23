@@ -15,10 +15,13 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
-import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import coil3.bitmapFactoryMaxParallelism
+import coil3.network.NetworkFetcher
+import coil3.network.okhttp.asNetworkClient
 import io.mirr.shynigsy.player.NativePlayerActivity
 import io.mirr.shynigsy.player.PlaybackCompletionSignals
 import io.mirr.shynigsy.ui.ShyniApp
+import io.mirr.shynigsy.ui.ArtworkNetworkClient
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
@@ -48,11 +51,14 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
         // Artwork cannot redirect authenticated image requests to another origin.
         SingletonImageLoader.setSafe { context ->
-            ImageLoader.Builder(context).components {
-                add(OkHttpNetworkFetcherFactory(callFactory = {
-                    OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()
-                }))
-            }.build()
+            val artworkHttp = OkHttpClient.Builder()
+                .followRedirects(false).followSslRedirects(false).build()
+            val artworkNetwork = ArtworkNetworkClient(artworkHttp.asNetworkClient())
+            ImageLoader.Builder(context)
+                .bitmapFactoryMaxParallelism(2)
+                .components {
+                    add(NetworkFetcher.Factory(networkClient = { artworkNetwork }))
+                }.build()
         }
         model = ViewModelProvider(this)[AppViewModel::class.java]
         updates = ViewModelProvider(this)[UpdateViewModel::class.java]

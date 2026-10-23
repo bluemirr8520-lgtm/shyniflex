@@ -88,6 +88,7 @@ class MpvPlayer(
     private var ducked = false
     private var video = VideoSize.UNKNOWN
     private var tracks = Tracks.EMPTY
+    private var nativeTracks = emptyList<MpvNativeTrack>()
     private var cues = CueGroup.EMPTY_TIME_ZERO
     private var surfaceSize = Size.ZERO
     private var configuredVideoLayout: Triple<Boolean, Boolean, Float>? = null
@@ -108,6 +109,11 @@ class MpvPlayer(
     @Volatile private var loadGeneration = 0
     private var expectedNativePath: String? = null
     private val eofState = MpvEofState()
+    private var stateUpdatePosted = false
+    private val stateUpdate = Runnable {
+        stateUpdatePosted = false
+        if (alive && !released) invalidateState()
+    }
     private val eofCheck = object : Runnable {
         override fun run() {
             if (!alive || released || !loaded || stopRequested || status == Player.STATE_ENDED) return
@@ -207,7 +213,7 @@ class MpvPlayer(
             observe("eof-reached", MPVLib.MpvFormat.MPV_FORMAT_FLAG)
             observe("seeking", MPVLib.MpvFormat.MPV_FORMAT_FLAG)
             observe("seekable", MPVLib.MpvFormat.MPV_FORMAT_FLAG)
-            observe("track-list", MPVLib.MpvFormat.MPV_FORMAT_NONE)
+            observe("track-list", MPVLib.MpvFormat.MPV_FORMAT_STRING)
             observe("aid", MPVLib.MpvFormat.MPV_FORMAT_STRING)
             observe("sid", MPVLib.MpvFormat.MPV_FORMAT_STRING)
             observe("sub-text", MPVLib.MpvFormat.MPV_FORMAT_STRING)
@@ -261,7 +267,7 @@ class MpvPlayer(
         seekable = isServerConverted && durationMs > 0
         loaded = false; loading = false; status = Player.STATE_IDLE; failure = null
         startObserved = false; firstFrame = false; readiness.reset()
-        tracks = Tracks.EMPTY; video = VideoSize.UNKNOWN; clearCues()
+        tracks = Tracks.EMPTY; nativeTracks = emptyList(); video = VideoSize.UNKNOWN; clearCues()
         return done()
     }
 
@@ -279,6 +285,7 @@ class MpvPlayer(
             seekable = durationMs > 0
             tracks = Tracks.EMPTY; video = VideoSize.UNKNOWN
         }
+        nativeTracks = emptyList()
         clearCues()
         val uri = media.uri
         expectedNativePath = uri.toString()
@@ -357,7 +364,6 @@ class MpvPlayer(
     override fun handleSetTrackSelectionParameters(trackSelectionParameters: TrackSelectionParameters): ListenableFuture<*> {
         selection = trackSelectionParameters
         applyTrackPreferences(selection)
-        refreshTracks()
         return done()
     }
 
@@ -376,6 +382,7 @@ class MpvPlayer(
         released = true
         loadGeneration++
         main.removeCallbacksAndMessages(null)
+        stateUpdatePosted = false
         abandonFocus()
         if (receiverRegistered) { app.unregisterReceiver(noisy); receiverRegistered = false }
         clearOutput()
@@ -417,52 +424,43 @@ class MpvPlayer(
     /** FFmpeg's original global stream index, never an audio-track ordinal. */
     fun selectedAudioStreamIndex(): Int? {
         if (!alive || !loaded) return null
-        val count = (MPVLib.getPropertyInt("track-list/count") ?: 0).coerceIn(0, 256)
-        for (index in 0 until count) {
-            val prefix = "track-list/$index/"
-            if (MPVLib.getPropertyString(prefix + "type") == "audio" && MPVLib.getPropertyBoolean(prefix + "selected") == true)
-                return MPVLib.getPropertyInt(prefix + "ff-index")?.takeIf { it >= 0 }
-        }
-        return null
+        if (C.TRACK_TYPE_AUDIO in selection.disabledTrackTypes) return null
+        val override = selection.overrides.values.firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.trackIndices.isNotEmpty() }
+        val selectedId = override?.let { it.mediaTrackGroup.getFormat(it.trackIndices[0]).id?.toIntOrNull() }
+        return (nativeTracks.firstOrNull { it.type == "audio" && it.id == selectedId }
+            ?: nativeTracks.firstOrNull { it.type == "audio" && it.selected })?.streamIndex
     }
 
     /** Shyni's embedded stream_index is FFmpeg's global stream index, not the subtitle ordinal. */
     fun subtitleTrackIdForStreamIndex(streamIndex: Int): String? {
-        if (!alive || streamIndex < 0) return null
-        val count = (MPVLib.getPropertyInt("track-list/count") ?: 0).coerceIn(0, 256)
-        for (index in 0 until count) {
-            val prefix = "track-list/$index/"
-            if (MPVLib.getPropertyString(prefix + "type") == "sub" && MPVLib.getPropertyInt(prefix + "ff-index") == streamIndex)
-                return MPVLib.getPropertyInt(prefix + "id")?.toString()
-        }
-        return null
+        if (!alive || !loaded || streamIndex < 0) return null
+        return nativeTracks.firstOrNull { it.type == "sub" && it.streamIndex == streamIndex }?.id?.toString()
     }
 
-    private fun refreshTracks() {
+    private fun refreshTracks(snapshot: String? = null) {
         if (!alive || !loaded) return
-        val count = (MPVLib.getPropertyInt("track-list/count") ?: 0).coerceIn(0, 256)
+        // One snapshot replaces hundreds of synchronous core round trips for a
+        // film with many subtitle tracks. Subsequent updates arrive via observe.
+        val parsed = MpvTrackSnapshot.parse(snapshot ?: MPVLib.getPropertyString("track-list") ?: return) ?: return
+        nativeTracks = parsed
         val groups = ArrayList<Tracks.Group>()
-        for (index in 0 until count) {
-            val prefix = "track-list/$index/"
-            val id = MPVLib.getPropertyInt(prefix + "id") ?: continue
-            val type = MPVLib.getPropertyString(prefix + "type") ?: continue
-            val codec = MPVLib.getPropertyString(prefix + "codec").orEmpty()
-            val selected = MPVLib.getPropertyBoolean(prefix + "selected") == true
-            val flags = (if (MPVLib.getPropertyBoolean(prefix + "default") == true) C.SELECTION_FLAG_DEFAULT else 0) or
-                (if (MPVLib.getPropertyBoolean(prefix + "forced") == true) C.SELECTION_FLAG_FORCED else 0)
-            val format = Format.Builder().setId(id.toString()).setLanguage(MPVLib.getPropertyString(prefix + "lang"))
-                .setLabel(MPVLib.getPropertyString(prefix + "title")).setCodecs(codec)
-                .setSampleMimeType(mime(type, codec)).setSelectionFlags(flags)
-                .setRoleFlags(if (MPVLib.getPropertyBoolean(prefix + "hearing-impaired") == true) C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND else 0)
-            if (type == "audio") {
-                MPVLib.getPropertyInt(prefix + "audio-channels")?.let(format::setChannelCount)
-                MPVLib.getPropertyInt(prefix + "demux-samplerate")?.let(format::setSampleRate)
+        for (track in parsed) {
+            val flags = (if (track.default) C.SELECTION_FLAG_DEFAULT else 0) or
+                (if (track.forced) C.SELECTION_FLAG_FORCED else 0)
+            val format = Format.Builder().setId(track.id.toString()).setLanguage(track.language)
+                .setLabel(track.title).setCodecs(track.codec)
+                .setSampleMimeType(mime(track.type, track.codec)).setSelectionFlags(flags)
+                .setRoleFlags(if (track.hearingImpaired) C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND else 0)
+            if (track.type == "audio") {
+                track.audioChannels?.let(format::setChannelCount)
+                track.sampleRate?.let(format::setSampleRate)
             }
-            if (type == "video") {
-                MPVLib.getPropertyInt(prefix + "demux-w")?.let(format::setWidth)
-                MPVLib.getPropertyInt(prefix + "demux-h")?.let(format::setHeight)
+            if (track.type == "video") {
+                track.width?.let(format::setWidth)
+                track.height?.let(format::setHeight)
             }
-            groups.add(Tracks.Group(TrackGroup("mpv-$type-$id", format.build()), false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(selected)))
+            groups.add(Tracks.Group(TrackGroup("mpv-${track.type}-${track.id}", format.build()), false,
+                intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(track.selected)))
         }
         tracks = Tracks(groups)
     }
@@ -482,7 +480,7 @@ class MpvPlayer(
 
     override fun eventProperty(property: String) = dispatchNative {
         when (property) {
-            "track-list" -> refreshTracks()
+            "track-list" -> { nativeTracks = emptyList(); tracks = Tracks.EMPTY }
             "video-params" -> if (loaded) updateVideoSize()
             "sub-text" -> clearCues()
             "eof-reached" -> reconcileNativeEof()
@@ -493,8 +491,9 @@ class MpvPlayer(
     override fun eventProperty(property: String, value: String) = dispatchNative {
         if (!loaded) return@dispatchNative
         when (property) {
+            "track-list" -> refreshTracks(value)
             "sub-text" -> setText(value)
-            "aid", "sid" -> { refreshTracks(); if (property == "sid") clearCues() }
+            "sid" -> clearCues()
         }
         invalidateState()
     }
@@ -514,7 +513,7 @@ class MpvPlayer(
                 } ?: (positionMs + cacheDuration)
             }
         }
-        invalidateState()
+        scheduleStateUpdate()
     }
     override fun eventProperty(property: String, value: Boolean) = dispatchNative {
         if (!loaded) return@dispatchNative
@@ -732,6 +731,13 @@ class MpvPlayer(
     }
 
     private fun dispatch(action: () -> Unit) { main.post { if (alive && !released) action() } }
+    private fun scheduleStateUpdate() {
+        if (stateUpdatePosted) return
+        stateUpdatePosted = true
+        // Position/cache observations often arrive together. Controls and EOF
+        // still publish immediately; these numeric updates share one UI frame.
+        main.postDelayed(stateUpdate, 16)
+    }
     private fun dispatchNative(action: () -> Unit) {
         val generation = loadGeneration
         main.post { if (alive && !released && generation == loadGeneration) action() }

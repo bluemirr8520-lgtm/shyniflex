@@ -48,7 +48,7 @@ import io.mirr.shynigsy.isTelevision
 internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
     val detail = state.detailStack.lastOrNull() ?: return
     CompactDetailContent(detail = detail, versions = state.versions, selectedPartId = state.selectedPartId,
-        busy = state.busy, error = state.error, spoilerUnlocked = state.spoilerUnlocked,
+        busy = state.busy && !state.homeLoading, error = state.error, spoilerUnlocked = state.spoilerUnlocked,
         onPlay = { item, startOver -> model.play(item, startOver) }, onOpenItem = model::openItem,
         onSelectSeason = model::selectSeason, onSelectVersion = model::selectVersion,
         onWatchOptions = onWatchOptions, onWatchedChange = { item, watched -> model.setWatched(item, watched) },

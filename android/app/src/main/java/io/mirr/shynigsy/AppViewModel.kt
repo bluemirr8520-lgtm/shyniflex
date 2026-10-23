@@ -128,6 +128,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppState> = mutableState.asStateFlow()
     private var client: ShyniClient? = null
     private var requestJob: Job? = null
+    private var refreshJob: Job? = null
     private var revision = 0
     private var homeRefreshRevision = 0
     private var continueOwner: HomeContinueOwner? = null
@@ -530,7 +531,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (item.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         val key = continueIdentity(item)
         val source = snapshot.continueItems.firstOrNull { continueIdentity(it) == key } ?: return
-        if (selectedContinueIdentity == key) {
+        if (selectedContinueIdentity == key &&
+            (continueDetailsJob?.isActive == true || key in continueDetailsCache)) {
             snapshot.continueDetails?.let { details ->
                 mutableState.update { it.copy(continueDetails = continueMetadata(source, details)) }
             }
@@ -545,6 +547,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (cached != null) return
         continueDetailsJob = viewModelScope.launch {
             try {
+                // A quick swipe/focus change should not send metadata work to a busy server.
+                delay(180)
+                if (active !== client || current != continueDetailsRevision || selectedContinueIdentity != key) return@launch
                 val details = active.details(source).item
                 if (active !== client || current != continueDetailsRevision || selectedContinueIdentity != key) return@launch
                 val now = mutableState.value
@@ -655,7 +660,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             versions = emptyList(), selectedPartId = null) }
         launchRequest {
             val detail = collectionWatchState(episodeListDetails(active, active.details(item)))
-            mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail) }
+            // File-version labels are supplemental; the selected title/episodes are already usable.
+            mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail, busy = false) }
             if (detail.item.playable) {
                 val versions = active.versions(detail.item)
                 mutableState.update { it.copy(versions = versions) }
@@ -762,6 +768,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (item.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         val snapshot = mutableState.value
         if (!item.playable || (snapshot.busy && !snapshot.homeLoading)) return
+        continueDetailsJob?.cancel()
+        continueDetailsJob = null
+        continueDetailsRevision++
         launchRequest {
             val resolved = active.playback(item, partId)
             val playback = resolved.copy(sourceItem = resolved.sourceItem ?: item, navigationQuery = navigationQuery)
@@ -848,7 +857,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.value.loggedIn && (!item.isSpoiler || (mutableState.value.spoilerUnlocked && active.spoilerUnlocked)) }
     }
 
-    fun refresh() = refreshCurrent()
+    fun refresh() {
+        val active = client ?: return
+        val navigationRevision = revision
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            // Activity results and committed playback updates can describe the same change.
+            // Coalesce that burst without letting it refresh a later navigation/session.
+            delay(250)
+            if (active !== client || navigationRevision != revision) return@launch
+            refreshJob = null
+            refreshCurrent()
+        }
+    }
 
     private fun refreshCurrent(reconcile: (AppState) -> AppState = { it },
         allowHomeInteraction: Boolean = true) {

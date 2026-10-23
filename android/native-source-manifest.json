@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "All 14 primary and 7 recursive native source archives collected and SHA-256 verified.",
-  "application_release": "1.0.28",
+  "application_release": "1.0.29",
   "runtime_release": "2026-09-17",
   "evidence": [
     "android/runtime-source/release.json: body Full set of build dependencies",
@@ -381,7 +381,7 @@
   ],
   "application_source": {
     "repository": "https://github.com/bluemirr8520-lgtm/shyniflex",
-    "source_asset": "shyniflex-1.0.28-corresponding-source.zip",
+    "source_asset": "shyniflex-1.0.29-corresponding-source.zip",
     "branch": "codex/watch-completion-duration"
   },
   "native_library_hashes": [

@@ -219,8 +219,9 @@ class LibrarySearchTest {
         assertTrue(browseCache().isEmpty())
     }
 
-    @Test fun atMostThreeViewsAreSearchedConcurrentlyAndEachSearchHasAtMostTwoHundredResults() = runBlocking {
-        val started = CountDownLatch(3)
+    @Test fun atMostTwoViewsAreSearchedConcurrentlyAndEachSearchHasAtMostTwoHundredResults() = runBlocking {
+        // Catalog transport reserves the other three host slots for playback and control.
+        val started = CountDownLatch(2)
         val active = AtomicInteger()
         val peak = AtomicInteger()
         reply = { request ->
@@ -234,11 +235,11 @@ class LibrarySearchTest {
         val pending = async { client.searchLibraries(libraries, "합성") }
         try {
             await(started)
-            assertEquals(3, searches.size)
+            assertEquals(2, searches.size)
             release.countDown()
             val result = withTimeout(5_000) { pending.await() }
             assertEquals(5, result.items.size)
-            assertEquals(3, peak.get())
+            assertEquals(2, peak.get())
         } finally { release.countDown(); pending.cancelAndJoin() }
         reply = { MockResponse().setBody(JSONArray((1..250).map { row(it) }).toString()) }
         val capped = client.searchLibraries(listOf(movies), "더 큰 합성 결과")

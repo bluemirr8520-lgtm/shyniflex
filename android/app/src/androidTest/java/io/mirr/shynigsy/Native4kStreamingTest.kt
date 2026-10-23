@@ -15,6 +15,7 @@ import android.view.PixelCopy
 import android.view.SurfaceView
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.Button
 import androidx.activity.ComponentActivity
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -48,6 +49,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -57,6 +59,156 @@ class Native4kStreamingTest {
     @Test fun fourKHevcMain10RendersItsFirstFrameOverHttp() = benchmark(stall = false)
 
     @Test fun fourKHevcRecoversAfterAThreeSecondNetworkStall() = benchmark(stall = true)
+
+    @Test fun slowServerKeepsControlsResponsiveAndRecoversAfterAReadGap() = slowServerCase(cancelWhileWaiting = false)
+
+    @Test fun unresponsiveServerCanBeStoppedAndReleasedWithoutBlockingPlaybackControls() = slowServerCase(cancelWhileWaiting = true)
+
+    @Test fun nativeStringTrackSnapshotsPreserveAudioVideoAndGlobalStreamIdentity() {
+        val context = instrumentation.targetContext
+        requireSyntheticEnvironment(context)
+        val file = File(context.cacheDir, "track-observation-fixture.mp4")
+        instrumentation.context.assets.open("media3/gesture-av.mp4").use { input -> file.outputStream().use(input::copyTo) }
+        val observation = TrackObservation()
+        MPVLib.addObserver(observation)
+        try {
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                var player: MpvPlayer? = null
+                var view: PlayerView? = null
+                try {
+                    scenario.onActivity { activity ->
+                        val video = PlayerView(activity).apply { useController = false }
+                        activity.setContentView(video)
+                        val active = MpvPlayer(activity).apply {
+                            volume = 0f; setAudioAttributes(AudioAttributes.DEFAULT, false)
+                        }
+                        player = active; view = video; video.player = active
+                        active.setMediaItem(MediaItem.fromUri(Uri.fromFile(file))); active.prepare()
+                    }
+                    val active = player!!
+                    val deadline = SystemClock.elapsedRealtime() + 15_000
+                    var received = false
+                    while (SystemClock.elapsedRealtime() < deadline && !received) {
+                        received = observation.sawAudioAndVideo.get() && main {
+                            active.playbackState == Player.STATE_READY &&
+                                active.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected } &&
+                                active.currentTracks.groups.any { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+                        }
+                        if (!received) Thread.sleep(50)
+                    }
+                    assertTrue("The bundled JNI must deliver a real track-list STRING snapshot with audio and video", received)
+                    assertTrue(observation.selectedAudioStreamIndex.get() >= 0)
+                    assertEquals(observation.selectedAudioStreamIndex.get(), main { active.selectedAudioStreamIndex() })
+                    assertNull(main { active.playerError })
+                } finally { main { view?.player = null; player?.release() } }
+            }
+        } finally { MPVLib.removeObserver(observation); file.delete() }
+    }
+
+    private fun slowServerCase(cancelWhileWaiting: Boolean) {
+        val context = instrumentation.targetContext
+        requireSyntheticEnvironment(context)
+        val clip = instrumentation.context.assets.open("media3/$FIXTURE").use { it.readBytes() }
+        val timings = Timings()
+        StreamingFixture(clip, hold = !cancelWhileWaiting, holdHeaders = true).use { server ->
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                var player: MpvPlayer? = null
+                var view: PlayerView? = null
+                var button: Button? = null
+                val clicks = AtomicInteger()
+                val heartbeat = MainHeartbeat()
+                try {
+                    scenario.onActivity { activity ->
+                        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        val root = FrameLayout(activity)
+                        val video = PlayerView(activity).apply { useController = false }
+                        root.addView(video, FrameLayout.LayoutParams(-1, -1))
+                        val active = MpvPlayer(activity).apply {
+                            volume = 0f; setAudioAttributes(AudioAttributes.DEFAULT, false)
+                            addListener(object : Player.Listener {
+                                override fun onRenderedFirstFrame() {
+                                    timings.firstFrameAt.compareAndSet(0, SystemClock.elapsedRealtime())
+                                    server.firstFrame.countDown()
+                                }
+                                override fun onPlayerError(error: PlaybackException) { timings.error.set(error.errorCodeName) }
+                            })
+                        }
+                        val control = Button(activity).apply {
+                            text = "재생 / 일시정지"
+                            setOnClickListener {
+                                val count = clicks.incrementAndGet()
+                                active.playWhenReady = !active.playWhenReady
+                                active.setPlaybackSpeed(if (count % 2 == 0) 1f else 1.25f)
+                            }
+                        }
+                        root.addView(control, FrameLayout.LayoutParams(-2, 48))
+                        activity.setContentView(root)
+                        player = active; view = video; button = control; video.player = active
+                        active.setMediaItem(MediaItem.fromUri(server.url)); active.prepare(); active.play()
+                        heartbeat.start()
+                    }
+                    val active = player!!
+                    assertTrue("The fixture must withhold real HTTP response headers", server.headersBlocked.await(5, TimeUnit.SECONDS))
+                    repeat(3) {
+                        val began = SystemClock.elapsedRealtime()
+                        main { assertTrue(button!!.performClick()) }
+                        assertTrue("Playback controls must not wait for delayed server headers", SystemClock.elapsedRealtime() - began < 750)
+                        Thread.sleep(100)
+                    }
+                    assertEquals(3, clicks.get())
+                    main {
+                        assertFalse(active.playWhenReady)
+                        assertEquals(1.25f, active.playbackParameters.speed, 0f)
+                        assertEquals(Player.STATE_BUFFERING, active.playbackState)
+                        assertFalse(active.isPlaying)
+                    }
+                    if (cancelWhileWaiting) {
+                        // network-timeout is not a whole-prepare deadline: the pinned
+                        // curl backend has its own connect timeout, not a header deadline.
+                        // Cancellation must work without receiving a response first.
+                        Thread.sleep(1_000)
+                        assertTrue(server.headersAreWithheld)
+                        assertEquals(0L, server.payloadBytes.get())
+                        val stopAt = SystemClock.elapsedRealtime()
+                        main {
+                            active.stop()
+                            assertEquals(Player.STATE_IDLE, active.playbackState)
+                            assertFalse(active.isPlaying)
+                            assertFalse(active.isLoading)
+                        }
+                        assertTrue("Stop must not wait for an unanswered server", SystemClock.elapsedRealtime() - stopAt < 750)
+                        assertTrue("Stopping must cancel the actual HTTP request while its headers remain withheld",
+                            server.cancelledBeforeHeaders.await(1, TimeUnit.SECONDS))
+                        val releaseAt = SystemClock.elapsedRealtime()
+                        main { view?.player = null; active.release(); player = null }
+                        assertTrue("Release must not wait for an unanswered server", SystemClock.elapsedRealtime() - releaseAt < 750)
+                        assertTrue("Cancellation must finish before the fixture releases any response", server.headersAreWithheld)
+                        assertEquals(0L, server.payloadBytes.get())
+                        assertEquals(0L, timings.firstFrameAt.get())
+                    } else {
+                        // The response remains unavailable well beyond several UI frames.
+                        Thread.sleep(1_000)
+                        main { active.setPlaybackSpeed(1f); active.play() }
+                        server.releaseHeaders()
+                        await("Playback must start after a delayed response", 15_000, server, timings) { timings.firstFrameAt.get() > 0 }
+                        verifyRecovery(active, server, timings) {
+                            val began = SystemClock.elapsedRealtime()
+                            assertTrue(button!!.performClick()); assertTrue(button!!.performClick())
+                            assertTrue("Pause/resume must stay responsive during a body stall", SystemClock.elapsedRealtime() - began < 750)
+                        }
+                        assertNull(main { active.playerError })
+                    }
+                    main { heartbeat.stop() }
+                    assertTrue("A delayed server must not starve the main-thread heartbeat", heartbeat.maxDelayMs.get() < 750)
+                    assertTrue("The heartbeat must actually run while waiting for the server", heartbeat.ticks.get() >= 5)
+                    server.assertHealthy()
+                } finally {
+                    server.releaseHeaders()
+                    main { heartbeat.stop(); view?.player = null; player?.release() }
+                }
+            }
+        }
+    }
 
     @Test fun fullSourceDurationSurvivesAShorterNativeTimelineUntilRealEof() {
         val context = instrumentation.targetContext
@@ -289,7 +441,8 @@ class Native4kStreamingTest {
         }
     }
 
-    private fun verifyRecovery(player: MpvPlayer, server: StreamingFixture, timings: Timings) {
+    private fun verifyRecovery(player: MpvPlayer, server: StreamingFixture, timings: Timings,
+        onBuffering: (() -> Unit)? = null) {
         var previousPosition = main { player.currentPosition }
         var stalledPosition = -1L
         var sawBuffering = false
@@ -300,6 +453,7 @@ class Native4kStreamingTest {
                 timings.maxBackwardJumpMs = maxOf(timings.maxBackwardJumpMs, previousPosition - position)
                 previousPosition = position
                 if (server.stallStartedAt.get() > 0 && player.playbackState == Player.STATE_BUFFERING) {
+                    if (!sawBuffering) onBuffering?.invoke()
                     sawBuffering = true
                     if (stalledPosition < 0) stalledPosition = position
                 }
@@ -419,7 +573,7 @@ class Native4kStreamingTest {
 
     /** Every range shares one gate so opening a replacement connection cannot bypass the gap. */
     private class StreamingFixture(private val clip: ByteArray, private val hold: Boolean,
-        private val startupHold: Boolean = false) : AutoCloseable {
+        private val startupHold: Boolean = false, private val holdHeaders: Boolean = false) : AutoCloseable {
         private val server = ServerSocket(0, 12, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 200 }
         private val executor = Executors.newFixedThreadPool(4) { runnable -> Thread(runnable, "4k-qa-http").apply { isDaemon = true } }
         private val closed = AtomicBoolean()
@@ -433,6 +587,10 @@ class Native4kStreamingTest {
         val stallFinishedAt = AtomicLong()
         val startupBlocked = CountDownLatch(1)
         private val startupGate = CountDownLatch(if (startupHold) 1 else 0)
+        val headersBlocked = CountDownLatch(1)
+        val cancelledBeforeHeaders = CountDownLatch(1)
+        private val headerGate = CountDownLatch(if (holdHeaders) 1 else 0)
+        val headersAreWithheld: Boolean get() = holdHeaders && headerGate.count > 0
         val url: String get() = "http://127.0.0.1:${server.localPort}/fixture.mp4"
         private val listener = thread(name = "4k-qa-loopback", isDaemon = true) {
             while (!closed.get()) {
@@ -445,6 +603,7 @@ class Native4kStreamingTest {
         fun assertHealthy() { failure.get()?.let { throw AssertionError("Synthetic 4K HTTP fixture failed", it) } }
         fun requestSummary(): JSONArray = synchronized(requests) { JSONArray(requests.toList()) }
         fun releaseStartup() = startupGate.countDown()
+        fun releaseHeaders() = headerGate.countDown()
 
         private fun respond(socket: Socket) = socket.use { connection ->
             try {
@@ -471,6 +630,22 @@ class Native4kStreamingTest {
                 val record = JSONObject().put("method", request[0]).put("range", headers["range"]).put("status", status)
                     .put("elapsedAtRequestMs", SystemClock.elapsedRealtime())
                 requests += record
+                if (holdHeaders) {
+                    headersBlocked.countDown()
+                    connection.soTimeout = 50
+                    val deadline = SystemClock.elapsedRealtime() + 60_000
+                    while (!closed.get() && !headerGate.await(25, TimeUnit.MILLISECONDS)) {
+                        check(SystemClock.elapsedRealtime() < deadline) { "The slow-header fixture was not released" }
+                        // A GET has no request body. EOF proves native cancellation
+                        // before this fixture has made any response bytes available.
+                        try {
+                            if (input.read() < 0) { cancelledBeforeHeaders.countDown(); return@use }
+                            error("Unexpected data after the synthetic GET headers")
+                        } catch (_: SocketTimeoutException) { }
+                        catch (_: SocketException) { cancelledBeforeHeaders.countDown(); return@use }
+                    }
+                    if (closed.get()) return@use
+                }
                 val output = connection.getOutputStream()
                 if (!valid) {
                     output.write("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */${clip.size}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII)); output.flush()
@@ -526,7 +701,7 @@ class Native4kStreamingTest {
         }
 
         override fun close() {
-            closed.set(true); firstFrame.countDown(); releaseStartup(); server.close(); listener.join(1_000)
+            closed.set(true); firstFrame.countDown(); releaseStartup(); releaseHeaders(); server.close(); listener.join(1_000)
             executor.shutdownNow(); executor.awaitTermination(2, TimeUnit.SECONDS)
         }
     }
@@ -539,6 +714,50 @@ class Native4kStreamingTest {
 
     private fun nativeNumber(name: String): Double? =
         runCatching { MPVLib.getPropertyDouble(name) }.getOrNull()?.takeIf { it.isFinite() }
+
+    private fun requireSyntheticEnvironment(context: Context) {
+        assumeTrue("Only the isolated synthetic QA app may run this test", context.packageName.endsWith(".spoilerqa"))
+        assertFalse((context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked)
+        assertTrue(NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("127.0.0.1"))
+    }
+
+    private class MainHeartbeat : Runnable {
+        private val handler = Handler(Looper.getMainLooper())
+        private var dueAt = 0L
+        val maxDelayMs = AtomicLong()
+        val ticks = AtomicInteger()
+        fun start() { dueAt = SystemClock.elapsedRealtime() + 32; handler.postDelayed(this, 32) }
+        fun stop() = handler.removeCallbacks(this)
+        override fun run() {
+            val now = SystemClock.elapsedRealtime()
+            maxDelayMs.set(maxOf(maxDelayMs.get(), (now - dueAt).coerceAtLeast(0)))
+            ticks.incrementAndGet(); dueAt = now + 32; handler.postDelayed(this, 32)
+        }
+    }
+
+    private class TrackObservation : MPVLib.EventObserver {
+        val sawAudioAndVideo = AtomicBoolean()
+        val selectedAudioStreamIndex = AtomicInteger(-1)
+        override fun eventProperty(property: String, value: String) {
+            if (property != "track-list") return
+            val rows = runCatching { JSONArray(value) }.getOrNull() ?: return
+            var audio = false; var video = false
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                if (row.optString("type") == "video") video = true
+                if (row.optString("type") == "audio") {
+                    audio = true
+                    if (row.optBoolean("selected") && row.has("ff-index")) selectedAudioStreamIndex.set(row.optInt("ff-index", -1))
+                }
+            }
+            if (audio && video) sawAudioAndVideo.set(true)
+        }
+        override fun eventProperty(property: String) {}
+        override fun eventProperty(property: String, value: Long) {}
+        override fun eventProperty(property: String, value: Double) {}
+        override fun eventProperty(property: String, value: Boolean) {}
+        override fun event(eventId: Int) {}
+    }
 
     private companion object {
         const val FIXTURE = "synthetic-4k-hevc-main10.mp4"

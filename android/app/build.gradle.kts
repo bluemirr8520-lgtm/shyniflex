@@ -24,8 +24,8 @@ android {
         applicationId = "io.mirr.shyniflex"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "1.0.28"
+        versionCode = 30
+        versionName = "1.0.29"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
     }

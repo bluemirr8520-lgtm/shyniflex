@@ -22,6 +22,7 @@ import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.data.SubtitleTrack
 import io.mirr.shynigsy.player.NativePlayerActivity
 import io.mirr.shynigsy.player.subtitles.PlexSubtitleOverlayView
+import `is`.xyz.mpv.MPVLib
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -30,6 +31,8 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
@@ -147,14 +150,7 @@ class NativeSubtitlePlaybackTest {
 
                 verifyResizeIconCycleAndPersistence(scenario)
 
-                scenario.onActivity { activity ->
-                    findView<PlayerView>(activity.findViewById(android.R.id.content))!!.showController()
-                    val button = activity.findViewById<ImageButton>(R.id.player_subtitles)
-                    assertTrue(button.isShown && button.isEnabled)
-                    assertEquals("자막 선택", button.contentDescription.toString())
-                    assertTrue("The subtitle shortcut must open its list directly", button.performClick())
-                }
-                instrumentation.waitForIdleSync()
+                openSubtitleMenu(scenario)
                 assertTrue("The direct list must always offer subtitle off", subtitleChoices().any { it.first == "자막 끄기" })
                 captureScreenshot("native-subtitle-menu-screen.png")
                 instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
@@ -235,13 +231,6 @@ class NativeSubtitlePlaybackTest {
                     assertEquals("The fixture must expose both Korean tracks and the English track: $diagnostics", 3, nativeTextTracks)
                     assertTrue("MPV must select the normal Korean track, not forced-only or English: $diagnostics", selectedFullKorean)
                     assertEquals("The first full Korean caption must render within five seconds: $diagnostics", MULTIPLE_FIXTURE_TEXT, text)
-                    fun openSubtitleMenu() {
-                        scenario.onActivity { activity ->
-                            findView<PlayerView>(activity.findViewById(android.R.id.content))!!.showController()
-                            assertTrue(activity.findViewById<View>(R.id.player_subtitles).performClick())
-                        }
-                        instrumentation.waitForIdleSync()
-                    }
                     var audioId: String? = null
                     scenario.onActivity { activity ->
                         val active = findView<PlayerView>(activity.findViewById(android.R.id.content))!!.player!!
@@ -249,7 +238,7 @@ class NativeSubtitlePlaybackTest {
                             .firstNotNullOfOrNull { group -> (0 until group.length).firstOrNull { group.isTrackSelected(it) }
                                 ?.let { group.getTrackFormat(it).id } }
                     }
-                    openSubtitleMenu()
+                    openSubtitleMenu(scenario)
                     val fullKorean = "한국어 · SRT · 서버 내장"
                     assertEquals("An exact native alias must appear once, while both Korean tracks remain distinct",
                         listOf("자막 끄기", "$fullKorean · 강제", fullKorean, "영어 · SRT · 서버 내장"), subtitleChoices().map { it.first })
@@ -262,7 +251,7 @@ class NativeSubtitlePlaybackTest {
                         assertEquals("", findView<PlexSubtitleOverlayView>(content)!!.subtitleText)
                         assertFalse(active.playWhenReady)
                     }
-                    openSubtitleMenu()
+                    openSubtitleMenu(scenario)
                     assertEquals(listOf("자막 끄기"), subtitleChoices().filter { it.second }.map { it.first })
                     assertTrue(clickSubtitleChoice(fullKorean))
                     var restored = false
@@ -290,7 +279,50 @@ class NativeSubtitlePlaybackTest {
         }
     }
 
-    private fun subtitleChoices(): List<Pair<String, Boolean>> {
+    private fun showController(scenario: ActivityScenario<NativePlayerActivity>) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val frame = CountDownLatch(1)
+        scenario.onActivity { activity ->
+            val view = findView<PlayerView>(activity.findViewById(android.R.id.content))!!
+            view.showController()
+            view.postOnAnimation { frame.countDown() }
+        }
+        assertTrue("The controller must reach a display frame before clicking its visible controls",
+            frame.await(5, TimeUnit.SECONDS))
+        instrumentation.waitForIdleSync()
+    }
+
+    private fun openSubtitleMenu(scenario: ActivityScenario<NativePlayerActivity>) {
+        showController(scenario)
+        awaitUi("The direct subtitle shortcut must be shown and enabled") {
+            var available = false
+            scenario.onActivity { activity ->
+                val button = activity.findViewById<ImageButton>(R.id.player_subtitles)
+                available = button.isShown && button.isEnabled
+            }
+            available
+        }
+        scenario.onActivity { activity ->
+            val button = activity.findViewById<ImageButton>(R.id.player_subtitles)
+            assertTrue(button.isShown && button.isEnabled)
+            assertEquals("자막 선택", button.contentDescription.toString())
+            assertTrue("The subtitle shortcut must open its list directly", button.performClick())
+        }
+        // Main-loop idleness does not imply that Accessibility's active-window
+        // snapshot has received the newly opened dialog yet.
+        awaitUi("The subtitle dialog must expose its single-choice rows") { subtitleChoices().isNotEmpty() }
+    }
+
+    private fun awaitUi(message: String, condition: () -> Boolean) {
+        val deadline = SystemClock.elapsedRealtime() + 5_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (condition()) return
+            Thread.sleep(50)
+        }
+        assertTrue(message, condition())
+    }
+
+    private fun subtitleChoices(requireSubtitleTitle: Boolean = true): List<Pair<String, Boolean>> {
         val root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow ?: return emptyList()
         val choices = mutableListOf<Pair<String, Boolean>>()
         fun collect(node: AccessibilityNodeInfo) {
@@ -299,7 +331,12 @@ class NativeSubtitlePlaybackTest {
                 try { collect(child) } finally { child.recycle() }
             }
         }
-        try { collect(root) } finally { root.recycle() }
+        try {
+            val titles = root.findAccessibilityNodeInfosByText("자막 선택")
+            val isSubtitleDialog = try { titles.any { it.text?.toString() == "자막 선택" } }
+                finally { titles.forEach(AccessibilityNodeInfo::recycle) }
+            if (!requireSubtitleTitle || isSubtitleDialog) collect(root)
+        } finally { root.recycle() }
         return choices
     }
 
@@ -316,36 +353,62 @@ class NativeSubtitlePlaybackTest {
 
     private fun verifyResizeIconCycleAndPersistence(scenario: ActivityScenario<NativePlayerActivity>) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val modes = listOf(AspectRatioFrameLayout.RESIZE_MODE_FIT,
-            AspectRatioFrameLayout.RESIZE_MODE_ZOOM, AspectRatioFrameLayout.RESIZE_MODE_FILL)
-        val labels = listOf("화면 맞춤", "화면 채움", "화면 늘림")
+        data class Choice(val mode: Int, val scale: Float, val label: String)
+        val choices = listOf(
+            Choice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1f, "화면 맞춤"),
+            Choice(AspectRatioFrameLayout.RESIZE_MODE_ZOOM, 1f, "화면 채움"),
+            Choice(AspectRatioFrameLayout.RESIZE_MODE_FILL, 1f, "화면 늘림"),
+            Choice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.1f, "확대 110%"),
+            Choice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.25f, "확대 125%"),
+            Choice(AspectRatioFrameLayout.RESIZE_MODE_FIT, 1.5f, "확대 150%"),
+        )
+        val settings = instrumentation.targetContext.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
+        val hadMode = settings.contains("resize_mode")
+        val savedMode = settings.getInt("resize_mode", AspectRatioFrameLayout.RESIZE_MODE_FIT)
+        val hadScale = settings.contains("resize_scale")
+        val savedScale = settings.getFloat("resize_scale", 1f)
         var initial = -1
         scenario.onActivity { activity ->
-            initial = findView<PlayerView>(activity.findViewById(android.R.id.content))!!.resizeMode
+            val label = activity.findViewById<ImageButton>(R.id.player_resize).contentDescription.toString()
+            initial = choices.indexOfFirst { it.label == label }
         }
-        assertTrue("Playback must start in a supported screen size", initial in modes)
-        repeat(3) { step ->
-            val expected = modes[(modes.indexOf(initial) + step + 1) % modes.size]
+        assertTrue("Playback must start in a supported screen size", initial in choices.indices)
+        fun verify(expected: Choice) {
             scenario.onActivity { activity ->
-                val button = activity.findViewById<ImageButton>(R.id.player_resize)
-                assertTrue("The screen size icon must respond directly", button.performClick())
-                assertEquals("The icon must cycle the video size without a dialog", expected,
+                assertEquals("The renderer must keep its full-size output Surface", AspectRatioFrameLayout.RESIZE_MODE_FILL,
                     findView<PlayerView>(activity.findViewById(android.R.id.content))!!.resizeMode)
-                assertEquals(labels[modes.indexOf(expected)], button.contentDescription.toString())
-                assertEquals("The selected size must be persisted", expected,
-                    activity.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE).getInt("resize_mode", -1))
+                assertEquals(expected.label, activity.findViewById<ImageButton>(R.id.player_resize).contentDescription.toString())
+                assertEquals("The selected mode must be persisted", expected.mode, settings.getInt("resize_mode", -1))
+                assertEquals("The selected scale must be persisted", expected.scale, settings.getFloat("resize_scale", -1f), .0001f)
+                assertEquals(expected.mode != AspectRatioFrameLayout.RESIZE_MODE_FILL, MPVLib.getPropertyBoolean("keepaspect"))
+                assertEquals(if (expected.mode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM) 1.0 else 0.0,
+                    MPVLib.getPropertyDouble("panscan")!!, .0001)
+                assertEquals(kotlin.math.ln(expected.scale.toDouble()) / kotlin.math.ln(2.0),
+                    MPVLib.getPropertyDouble("video-zoom")!!, .0001)
             }
-            instrumentation.waitForIdleSync()
-            assertTrue("The size icon must not open a choice dialog",
-                instrumentation.uiAutomation.rootInActiveWindow
-                    ?.findAccessibilityNodeInfosByViewId("android:id/alertTitle").orEmpty().isEmpty())
-            if (step == 0) {
-                scenario.recreate()
+        }
+        try {
+            repeat(choices.size) { step ->
+                val expected = choices[(initial + step + 1) % choices.size]
+                showController(scenario)
                 scenario.onActivity { activity ->
-                    assertEquals("Screen size must survive activity recreation", expected,
-                        findView<PlayerView>(activity.findViewById(android.R.id.content))!!.resizeMode)
+                    val button = activity.findViewById<ImageButton>(R.id.player_resize)
+                    assertTrue(button.isShown && button.isEnabled)
+                    assertTrue("The screen size icon must respond directly", button.performClick())
+                }
+                verify(expected)
+                instrumentation.waitForIdleSync()
+                assertTrue("The size icon must not open a choice dialog", subtitleChoices(requireSubtitleTitle = false).isEmpty())
+                if (step == 0) {
+                    scenario.recreate()
+                    verify(expected)
                 }
             }
+        } finally {
+            settings.edit().apply {
+                if (hadMode) putInt("resize_mode", savedMode) else remove("resize_mode")
+                if (hadScale) putFloat("resize_scale", savedScale) else remove("resize_scale")
+            }.commit()
         }
     }
 

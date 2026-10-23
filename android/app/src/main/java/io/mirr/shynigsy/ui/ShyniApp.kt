@@ -813,7 +813,7 @@ internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier
     val headers = imageUrl?.let(viewModel::posterHeaders).orEmpty()
     val request = remember(context, imageUrl, headers, item.isSpoiler) {
         val cacheKey = viewModel.posterCacheKey(imageUrl.orEmpty())
-        ImageRequest.Builder(context).data(imageUrl).crossfade(true)
+        ImageRequest.Builder(context).data(imageUrl).crossfade(false)
             .memoryCacheKey(cacheKey)
             .diskCacheKey(cacheKey)
             .memoryCachePolicy(if (item.isSpoiler) CachePolicy.DISABLED else CachePolicy.ENABLED)
