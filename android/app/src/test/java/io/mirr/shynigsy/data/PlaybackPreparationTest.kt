@@ -27,6 +27,7 @@ import org.junit.Test
 class PlaybackPreparationTest {
     private lateinit var server: MockWebServer
     private lateinit var client: ShyniClient
+    private val metadata = PlaybackMetadataDispatcher()
     private val item = MediaItem(24, 9, "테스트 회차", "episode", durationMs = 1_800_000,
         seasonNumber = 0, episodeNumber = 4, viewItemId = 601, resumeMs = 65_000)
     private val identityMessage = "에피소드 정체성을 확인할 수 없습니다"
@@ -35,7 +36,7 @@ class PlaybackPreparationTest {
 
     @Before fun setup() {
         SpoilerAccessRegistry.clearAll()
-        server = MockWebServer().apply { start() }
+        server = MockWebServer().apply { dispatcher = metadata; start() }
         client = ShyniClient(server.url("/").toString(), "fixture-account", deviceId = "fixture-device")
     }
 
@@ -52,10 +53,16 @@ class PlaybackPreparationTest {
     private fun respondError(status: Int, message: String = identityMessage) =
         respond(JSONObject().put("detail", message).toString(), status)
 
+    private fun respondMetadata(path: String, body: String, status: Int = 200) =
+        metadata.enqueueMetadata(path, MockResponse().setResponseCode(status).setBody(body))
+
+    private fun progressError(status: Int, message: String = identityMessage) =
+        respondMetadata("/playback/progress", JSONObject().put("detail", message).toString(), status)
+
     private fun authorizedBeforeProgress() {
         respond(decision)
         respond("""{"ticket":"fixture-media-ticket"}""")
-        respond("[]")
+        respondMetadata("/subtitles/90", "[]")
     }
 
     private fun request(): RecordedRequest = server.takeRequest(10, TimeUnit.SECONDS)
@@ -78,7 +85,7 @@ class PlaybackPreparationTest {
 
     @Test fun authorizedPlaybackSurvivesUnknownProgressIdentityUsingTheOriginalCardState() = runBlocking {
         authorizedBeforeProgress()
-        respondError(404)
+        progressError(404)
         val result = client.playback(item)
         assertEquals(24, result.itemId)
         assertEquals(90, result.partId)
@@ -91,13 +98,15 @@ class PlaybackPreparationTest {
         assertFalse(result.sourceItem!!.watched)
         assertNull(result.requestedPartId)
         assertTrue(result.url.endsWith("/stream/90?ticket=fixture-media-ticket"))
-        assertEquals(listOf("/playback/decision", "/stream-ticket/90", "/subtitles/90", "/playback/progress"),
-            List(4) { request().requestUrl!!.encodedPath })
+        assertEquals(listOf("/playback/decision", "/stream-ticket/90"),
+            List(2) { request().requestUrl!!.encodedPath })
+        assertEquals(setOf("/subtitles/90", "/playback/progress"),
+            List(2) { request().requestUrl!!.encodedPath }.toSet())
     }
 
     @Test fun aWatchedCardStillStartsFromTheBeginningWhenProgressIdentityIsUnknown() = runBlocking {
         authorizedBeforeProgress()
-        respondError(409)
+        progressError(409)
         val result = client.playback(item.copy(watched = true))
         assertEquals(0L, result.resumeMs)
         assertEquals(0L, result.sourceItem!!.resumeMs)
@@ -124,18 +133,22 @@ class PlaybackPreparationTest {
     @Test fun subtitleIdentityFailureIsReportedInsteadOfSilentlyDroppingSubtitles() = runBlocking {
         respond(decision)
         respond("""{"ticket":"fixture-media-ticket"}""")
-        respondError(404)
+        respondMetadata("/subtitles/90", JSONObject().put("detail", identityMessage).toString(), 404)
+        respondMetadata("/playback/progress", "{}")
         val caught = runCatching { client.playback(item) }.exceptionOrNull()
         failure(caught, "자막 정보 조회", 404, identityMessage)
-        assertEquals(3, server.requestCount)
+        assertTrue(server.requestCount in 3..4)
     }
 
     @Test fun progressAccessDenialsAndUnrelatedFailuresRemainFatalWithTheirOriginalCause() = runBlocking {
         val errors = listOf(401 to identityMessage, 403 to identityMessage,
             404 to "시청 기록 경로를 찾을 수 없습니다.", 503 to "서버가 일시적으로 응답하지 않습니다.")
         for ((status, message) in errors) {
-            authorizedBeforeProgress()
-            respondError(status, message)
+            respond(decision)
+            respond("""{"ticket":"fixture-media-ticket"}""")
+            metadata.enqueueTogether("/subtitles/90", MockResponse().setBody("[]"),
+                "/playback/progress", MockResponse().setResponseCode(status)
+                    .setBody(JSONObject().put("detail", message).toString()))
             val caught = runCatching { client.playback(item) }.exceptionOrNull()
             failure(caught, "이어보기 위치 조회", status, message)
             repeat(4) { request() }
@@ -149,8 +162,8 @@ class PlaybackPreparationTest {
             "selected_audio_stream_index":2,"transcode":{"mode":"video","max_height":720,"audio_stream_index":2}}""")
         respond("""{"ticket":"fixture-transcode-ticket"}""")
         respond("""{"ticket":"fixture-original-subtitle-ticket"}""")
-        respond("""[{"id":4,"source":"embedded","format":"ass","lang_code":"ko","playable":true,"stream_index":3}]""")
-        respondError(422)
+        respondMetadata("/subtitles/90", """[{"id":4,"source":"embedded","format":"ass","lang_code":"ko","playable":true,"stream_index":3}]""")
+        progressError(422)
         val result = client.playback(item)
         assertTrue(result.isServerConversion)
         assertEquals(720, result.conversionHeight)
@@ -163,8 +176,11 @@ class PlaybackPreparationTest {
         assertEquals("external", subtitle.source)
         assertEquals("fixture-original-subtitle-ticket", subtitle.url.toHttpUrl().queryParameter("ticket"))
         assertEquals("fixture-context", subtitle.url.toHttpUrl().queryParameter("playback_context_token"))
-        assertEquals(listOf("/playback/decision", "/playback/transcode-ticket/90", "/stream-ticket/90", "/subtitles/90", "/playback/progress"),
-            List(5) { request().requestUrl!!.encodedPath })
+        assertEquals(listOf("/playback/decision", "/playback/transcode-ticket/90"),
+            List(2) { request().requestUrl!!.encodedPath })
+        val enrichment = List(3) { request().requestUrl!!.encodedPath }
+        assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"), enrichment.toSet())
+        assertTrue(enrichment.indexOf("/stream-ticket/90") < enrichment.indexOf("/subtitles/90"))
     }
 
     @Test fun privatePreparationNeverDowngradesItsGrantForOptionalProgressFallback() = runBlocking {
@@ -172,7 +188,7 @@ class PlaybackPreparationTest {
         client.unlockSpoiler("1234")
         request()
         authorizedBeforeProgress()
-        respondError(404)
+        progressError(404)
         val result = client.playback(item.copy(isSpoiler = true))
         assertTrue(result.sourceItem!!.isSpoiler)
         assertEquals(65_000L, result.resumeMs)
@@ -198,7 +214,7 @@ class PlaybackPreparationTest {
             val cancellable = ShyniClient(server.url("/").toString(), "fixture-account",
                 httpClient = http, deviceId = "fixture-device")
             authorizedBeforeProgress()
-            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            metadata.enqueueMetadata("/playback/progress", MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
             var resultReturned = false
             val preparing = launch {
                 try {
@@ -211,7 +227,8 @@ class PlaybackPreparationTest {
             }
             try {
                 val observed = withContext(Dispatchers.IO) { List(4) { request() } }
-                assertEquals("/playback/progress", observed.last().requestUrl!!.encodedPath)
+                assertEquals(setOf("/subtitles/90", "/playback/progress"),
+                    observed.drop(2).map { it.requestUrl!!.encodedPath }.toSet())
                 preparing.cancelAndJoin()
                 cancellationObserved.await()
                 httpCancelled.await()

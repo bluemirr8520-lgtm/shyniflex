@@ -985,8 +985,20 @@ class ShyniClient(
     }
 
     suspend fun playback(item: MediaItem, partId: Int? = null): PlaybackSpec {
+        val accountToken = token
+        val privateIdentity = if (item.isSpoiler) spoilerKey() else null
+        val privateGrant = if (item.isSpoiler) spoilerGrant() else null
+        suspend fun requireCurrentAuthorization() {
+            currentCoroutineContext().ensureActive()
+            if (accountToken != token) throw ApiException("로그인 정보가 변경되었습니다. 다시 재생해 주세요.", 401)
+            if (item.isSpoiler && (privateIdentity == null || privateIdentity != spoilerKey() || privateGrant == null ||
+                    !SpoilerAccessRegistry.isCurrent(privateIdentity, privateGrant))) {
+                throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+            }
+        }
         suspend fun <T> stage(label: String, block: suspend () -> T): T = try {
-            block()
+            requireCurrentAuthorization()
+            block().also { requireCurrentAuthorization() }
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (error: Exception) {
@@ -1051,28 +1063,38 @@ class ShyniClient(
             if (!transcode.isNull("audio_stream_index")) parameters += "audio_stream_index=${transcode.optInt("audio_stream_index")}"
             absoluteUrl("/transcode/$selectedPart?${parameters.joinToString("&")}")
         } else absoluteUrl("/stream/$selectedPart?ticket=${encode(ticket)}")
-        val subtitleTicket = if (mode == null) ticket else {
-            stage("자막 티켓 발급") {
-                request("/stream-ticket/$selectedPart?$contextParameters", JSONObject(), spoiler = item.isSpoiler).objectValue()
-                    .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
+        // Both lookups depend on the authorized source, but not on each other.
+        // Keep them in the same scope so a failed preparation cancels its sibling HTTP call.
+        val (subs, progress) = coroutineScope {
+            val subtitles = async {
+                val subtitleTicket = if (mode == null) ticket else {
+                    stage("자막 티켓 발급") {
+                        request("/stream-ticket/$selectedPart?$contextParameters", JSONObject(), spoiler = item.isSpoiler).objectValue()
+                            .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
+                    }
+                }
+                stage("자막 정보 조회") {
+                    rows(request("/subtitles/$selectedPart?$contextParameters", spoiler = item.isSpoiler), "subtitles")
+                        .mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
+                        .map { progressiveSubtitle(it, mode != null) }
+                }
             }
-        }
-        val subs = stage("자막 정보 조회") {
-            rows(request("/subtitles/$selectedPart?$contextParameters", spoiler = item.isSpoiler), "subtitles")
-                .mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
-                .map { progressiveSubtitle(it, mode != null) }
-        }
-        val progress = stage("이어보기 위치 조회") {
-            try {
-                progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler), item.id)
-            } catch (error: ApiException) {
-                // Playback and its scoped ticket are already authorized. A broken
-                // canonical progress identity must not discard that valid stream.
-                // Keep the card's resume/watch state when this optional lookup is unknown.
-                if (!error.isEpisodeIdentityFailure()) throw error
-                null
+            val playbackProgress = async {
+                stage("이어보기 위치 조회") {
+                    try {
+                        progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler), item.id)
+                    } catch (error: ApiException) {
+                        // Playback and its scoped ticket are already authorized. A broken
+                        // canonical progress identity must not discard that valid stream.
+                        // Keep the card's resume/watch state when this optional lookup is unknown.
+                        if (!error.isEpisodeIdentityFailure()) throw error
+                        null
+                    }
+                }
             }
+            subtitles.await() to playbackProgress.await()
         }
+        stage("재생 권한 확인") { requireCurrentAuthorization() }
         val duration = selected?.optLong("duration_ms")?.takeIf { it > 0 }
             ?: selected?.optDouble("duration_sec", 0.0)?.times(1000)?.toLong()?.takeIf { it > 0 }
             ?: progress?.optLong("duration_ms")?.takeIf { it > 0 } ?: item.durationMs

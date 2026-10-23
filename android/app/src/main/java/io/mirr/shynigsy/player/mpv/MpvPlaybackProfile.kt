@@ -29,8 +29,9 @@ data class MpvPlaybackProfile(
         "demuxer-readahead-secs" to "1",
         "demuxer-max-bytes" to "${forwardCacheMiB}MiB",
         "demuxer-max-back-bytes" to "${backCacheMiB}MiB",
-        // Refill in chunks rather than keeping a network reader awake continuously.
-        "demuxer-hysteresis-bytes" to "${(forwardCacheMiB / 4).coerceAtLeast(1)}MiB",
+        // Keep refilling while the bounded cache has space. Waiting until only a
+        // quarter remains leaves too little headroom for high-bitrate network video.
+        "demuxer-hysteresis-bytes" to "0",
         "video-sync" to "audio",
         "framedrop" to "vo",
         "interpolation" to "no"
@@ -50,6 +51,11 @@ data class MpvPlaybackProfile(
     )
 
     companion object {
+        /** An explicit zero start makes mpv perform an unnecessary initial seek. */
+        internal fun initialStartOption(sourcePositionMs: Long, serverConversion: Boolean): String =
+            if (serverConversion || sourcePositionMs <= 0) "none"
+            else String.format(Locale.ROOT, "%.3f", sourcePositionMs / 1000.0)
+
         private val knownCodecs = linkedMapOf(
             "video/avc" to "h264", "video/hevc" to "hevc",
             "video/x-vnd.on2.vp8" to "vp8", "video/x-vnd.on2.vp9" to "vp9",

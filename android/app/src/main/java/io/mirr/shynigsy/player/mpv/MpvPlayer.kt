@@ -284,7 +284,7 @@ class MpvPlayer(
         if (sourceOrigin == null) sourceOrigin = origin
         val scopedHeaders = if (sourceOrigin == origin) requestHeaders else emptyMap()
         MPVLib.setOptionString("http-header-fields", scopedHeaders.entries.joinToString(",") { (key, value) -> "$key: $value".replace("\\", "\\\\").replace(",", "\\,") })
-        MPVLib.setOptionString("start", seconds(if (isServerConverted) 0 else pendingStartMs))
+        MPVLib.setOptionString("start", MpvPlaybackProfile.initialStartOption(pendingStartMs, isServerConverted))
         // A fresh load retries the configured decoder after an earlier fallback.
         // Avoid reinitializing the old decoder when its setting is already right.
         if (MPVLib.getPropertyString("hwdec") != playbackProfile.hardwareDecoder)

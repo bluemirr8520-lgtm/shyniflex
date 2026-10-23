@@ -23,13 +23,14 @@ import org.junit.Test
 class EpisodeFilePlaybackRecoveryTest {
     private lateinit var server: MockWebServer
     private lateinit var client: ShyniClient
+    private val metadata = PlaybackMetadataDispatcher()
     private val episode = MediaItem(24, 9, "번호 없는 회차", "episode", viewItemId = 601,
         durationMs = 1_800_000, resumeMs = 65_000, playbackPartId = 90)
     private val identityError = """{"detail":"에피소드 정체성을 확인할 수 없습니다"}"""
 
     @Before fun setup() {
         SpoilerAccessRegistry.clearAll()
-        server = MockWebServer().apply { start() }
+        server = MockWebServer().apply { dispatcher = metadata; start() }
         client = ShyniClient(server.url("/").toString(), "fixture-account", deviceId = "fixture-device")
     }
 
@@ -41,12 +42,14 @@ class EpisodeFilePlaybackRecoveryTest {
 
     private fun request(): RecordedRequest = server.takeRequest(10, TimeUnit.SECONDS)
         ?: throw AssertionError("Expected fixture HTTP request")
+    private fun respondMetadata(path: String, body: String, status: Int = 200) =
+        metadata.enqueueMetadata(path, MockResponse().setResponseCode(status).setBody(body))
 
-    private fun recoveryResponses() {
+    private fun recoveryResponses(part: Int = 90) {
         respond(identityError, 404)
         respond("""{"ticket":"fixture-exact-ticket","library_view_id":9,"view_item_id":602}""")
-        respond("""[{"id":4,"format":"srt","source":"external","playable":true}]""")
-        respond(identityError, 404)
+        respondMetadata("/subtitles/$part", """[{"id":4,"format":"srt","source":"external","playable":true}]""")
+        respondMetadata("/playback/progress", identityError, 404)
     }
 
     @Test fun authorizedBrowseRowPartSurvivesContinueAndIntentWithoutBecomingAManualVersion() = runBlocking {
@@ -60,8 +63,8 @@ class EpisodeFilePlaybackRecoveryTest {
         request()
         respond("""{"selected":{"part_id":91},"library_view_id":9,"view_item_id":601,"playback_context_token":"normal-context"}""")
         respond("""{"ticket":"normal-ticket"}""")
-        respond("[]")
-        respond("{}")
+        respondMetadata("/subtitles/91", "[]")
+        respondMetadata("/playback/progress", "{}")
         val played = client.playback(item)
         assertEquals(91, played.partId)
         assertNull(played.requestedPartId)
@@ -125,11 +128,12 @@ class EpisodeFilePlaybackRecoveryTest {
         assertEquals("601", ticket.requestUrl!!.queryParameter("view_item_id"))
         assertNull(ticket.requestUrl!!.queryParameter("library_section_id"))
         assertNull(ticket.requestUrl!!.queryParameter("playback_context_token"))
-        val subtitles = request()
+        val enrichment = List(2) { request() }
+        val subtitles = enrichment.single { it.requestUrl!!.encodedPath == "/subtitles/90" }
         assertEquals("602", subtitles.requestUrl!!.queryParameter("view_item_id"))
         assertEquals("9", subtitles.requestUrl!!.queryParameter("library_view_id"))
         assertNull(subtitles.requestUrl!!.queryParameter("playback_context_token"))
-        assertEquals("/playback/progress", request().requestUrl!!.encodedPath)
+        assertEquals("/playback/progress", enrichment.single { it != subtitles }.requestUrl!!.encodedPath)
         val subtitleUrl = result.subtitles.single().url.toHttpUrl()
         assertEquals("fixture-exact-ticket", subtitleUrl.queryParameter("ticket"))
         assertEquals("602", subtitleUrl.queryParameter("view_item_id"))
@@ -138,7 +142,7 @@ class EpisodeFilePlaybackRecoveryTest {
 
     @Test fun explicitVersionAndVerifiedNavigationTakePriorityOverTheBrowseHint() = runBlocking {
         for ((manual, expected) in listOf(92 to 92, null to 91)) {
-            recoveryResponses()
+            recoveryResponses(expected)
             val result = client.playback(episode.copy(navigationPartId = 91), manual)
             assertEquals(expected, result.partId)
             assertEquals(expected, result.requestedPartId)
@@ -220,7 +224,7 @@ class EpisodeFilePlaybackRecoveryTest {
         repeat(4) { request() }
         respond("""{"ticket":"tc"}""")
         respond("""{"ticket":"sub","library_view_id":9,"view_item_id":602}""")
-        respond("[]")
+        respondMetadata("/subtitles/90", "[]")
         val converted = client.convertPlayback(source, 720, 70_000)
         assertEquals(90, converted.partId)
         assertEquals(602, converted.viewItemId)

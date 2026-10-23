@@ -22,10 +22,11 @@ import java.io.IOException
 class ShyniClientTest {
     private lateinit var server: MockWebServer
     private lateinit var client: ShyniClient
+    private val metadata = PlaybackMetadataDispatcher()
     private val movie = MediaItem(23, 8, "영화", "movie", durationMs = 7200000, viewItemId = 501)
 
     @Before fun setup() {
-        server = MockWebServer().apply { start() }
+        server = MockWebServer().apply { dispatcher = metadata; start() }
         client = ShyniClient(server.url("/").toString(), "account-token", deviceId = "device-123")
     }
     @After fun close() { server.shutdown() }
@@ -33,6 +34,8 @@ class ShyniClientTest {
         MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(body),
     )
     private fun body(): JSONObject = JSONObject(server.takeRequest().body.readUtf8())
+    private fun respondMetadata(path: String, body: String, status: Int = 200) =
+        metadata.enqueueMetadata(path, MockResponse().setResponseCode(status).setBody(body))
 
     @Test fun loginUsesTokenContractWithoutExistingBearer() = runBlocking {
         respond("""{"token":"new-token","username":"tester"}""")
@@ -348,8 +351,8 @@ class ShyniClientTest {
     @Test fun playbackCarriesViewContextAndUsesOnlyScopedTicketInPlayer() = runBlocking {
         respond("""{"selected":{"part_id":90,"duration_sec":7200},"library_view_id":8,"view_item_id":501,"playback_context_token":"part-context","decision":"direct_play","selected_audio_stream_index":2,"selected_audio_stream_ordinal":1,"selected_audio_language":"ko","client_playback_hints":{"prefer_software_decode":true}}""")
         respond("""{"ticket":"scoped-ticket"}""")
-        respond("""[{"id":4,"label":"한국어","lang_code":"ko","playable":true},{"id":5,"label":"이미지 자막","playable":false}]""")
-        respond("""{"items":[{"metadata_item_id":23,"part_id":90,"library_view_id":8,"view_item_id":501,"position_ms":42000,"duration_ms":7200000,"completed":false,"state":"paused"}]}""")
+        respondMetadata("/subtitles/90", """[{"id":4,"label":"한국어","lang_code":"ko","playable":true},{"id":5,"label":"이미지 자막","playable":false}]""")
+        respondMetadata("/playback/progress", """{"items":[{"metadata_item_id":23,"part_id":90,"library_view_id":8,"view_item_id":501,"position_ms":42000,"duration_ms":7200000,"completed":false,"state":"paused"}]}""")
         val spec = client.playback(movie, 90)
         assertEquals(42000L, spec.resumeMs)
         assertEquals(7200000L, spec.durationMs)
@@ -379,8 +382,9 @@ class ShyniClientTest {
         assertEquals("android", decision.getString("client_app"))
         assertFalse("Native automatic playback must not invent a transcode profile", decision.has("client_profile"))
         assertEquals("part-context", server.takeRequest().requestUrl!!.queryParameter("playback_context_token"))
-        assertEquals("part-context", server.takeRequest().requestUrl!!.queryParameter("playback_context_token"))
-        assertEquals("8", server.takeRequest().requestUrl!!.queryParameter("library_view_id"))
+        val enrichment = List(2) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        assertEquals("part-context", enrichment.getValue("/subtitles/90").requestUrl!!.queryParameter("playback_context_token"))
+        assertEquals("8", enrichment.getValue("/playback/progress").requestUrl!!.queryParameter("library_view_id"))
     }
 
     @Test fun sourceVersionsUseActualResolutionFallbackAndDeduplicatePartIds() = runBlocking {
@@ -432,8 +436,8 @@ class ShyniClientTest {
     @Test fun defaultPlaybackRemainsAutomaticEvenWhenServerChoosesASpecificPart() = runBlocking {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"context"}""")
         respond("""{"ticket":"ticket"}""")
-        respond("[]")
-        respond("{}")
+        respondMetadata("/subtitles/90", "[]")
+        respondMetadata("/playback/progress", "{}")
         val spec = client.playback(movie)
         assertEquals(90, spec.partId)
         assertNull(spec.requestedPartId)
@@ -447,9 +451,9 @@ class ShyniClientTest {
         respond("""{"options":[{"part_id":91,"metadata_item_id":456,"resolution_label":"2160p"}]}""")
         respond("""{"selected":{"part_id":91,"duration_sec":7200},"library_view_id":8,"view_item_id":502,"playback_context_token":"version-context","decision":"direct_play"}""")
         respond("""{"ticket":"version-ticket"}""")
-        respond("[]")
+        respondMetadata("/subtitles/91", "[]")
         // Shyni resolves the shared content identity and returns the requested logical item ID.
-        respond("""{"items":[{"metadata_item_id":23,"part_id":91,"position_ms":42000,"completed":false}]}""")
+        respondMetadata("/playback/progress", """{"items":[{"metadata_item_id":23,"part_id":91,"position_ms":42000,"completed":false}]}""")
         respond("{}")
 
         val alternative = client.versions(movie).single()
@@ -469,8 +473,9 @@ class ShyniClientTest {
         assertFalse(decision.has("metadata_item_id"))
         assertEquals(501, decision.getInt("view_item_id"))
         assertEquals("version-context", server.takeRequest().requestUrl!!.queryParameter("playback_context_token"))
-        assertEquals("version-context", server.takeRequest().requestUrl!!.queryParameter("playback_context_token"))
-        assertEquals("23", server.takeRequest().requestUrl!!.queryParameter("item_ids"))
+        val enrichment = List(2) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        assertEquals("version-context", enrichment.getValue("/subtitles/91").requestUrl!!.queryParameter("playback_context_token"))
+        assertEquals("23", enrichment.getValue("/playback/progress").requestUrl!!.queryParameter("item_ids"))
         val progress = body()
         assertEquals(91, progress.getInt("part_id"))
         assertEquals(23, progress.getInt("metadata_item_id"))
@@ -588,8 +593,8 @@ class ShyniClientTest {
                 "playback_context_token":"context","transcode":{"mode":"$mode","max_height":720}}""")
             respond("""{"ticket":"conversion-ticket"}""")
             respond("""{"ticket":"subtitle-ticket"}""")
-            respond("""[{"id":4,"source":"embedded","format":"ass","stream_index":5,"playable":true}]""")
-            respond("{}")
+            respondMetadata("/subtitles/90", """[{"id":4,"source":"embedded","format":"ass","stream_index":5,"playable":true}]""")
+            respondMetadata("/playback/progress", "{}")
             val spec = client.playback(movie)
             assertEquals(mode, spec.url.toHttpUrl().queryParameter("mode"))
             assertEquals("conversion-ticket", spec.url.toHttpUrl().queryParameter("ticket"))
@@ -600,8 +605,9 @@ class ShyniClientTest {
             assertEquals("subtitle-ticket", spec.subtitles.single().url.toHttpUrl().queryParameter("ticket"))
             server.takeRequest()
             assertEquals("/playback/transcode-ticket/90", server.takeRequest().requestUrl!!.encodedPath)
-            assertEquals("/stream-ticket/90", server.takeRequest().requestUrl!!.encodedPath)
-            server.takeRequest(); server.takeRequest()
+            val enrichment = List(3) { server.takeRequest().requestUrl!!.encodedPath }
+            assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"), enrichment.toSet())
+            assertTrue(enrichment.indexOf("/stream-ticket/90") < enrichment.indexOf("/subtitles/90"))
         }
     }
 
@@ -686,8 +692,8 @@ class ShyniClientTest {
     @Test fun browseMarkersSeedPlaybackWithoutAnotherBlockingRequest() = runBlocking {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"context"}""")
         respond("""{"ticket":"ticket"}""")
-        respond("[]")
-        respond("{}")
+        respondMetadata("/subtitles/90", "[]")
+        respondMetadata("/playback/progress", "{}")
         val item = client.parseMedia(JSONObject("""{"id":23,"title":"작품","view_item_id":501,
             "markers":[{"type":"intro","start_ms":0,"end_ms":9000}]}"""), 8, "movie")
         val spec = client.playback(item)
@@ -699,14 +705,14 @@ class ShyniClientTest {
     @Test fun externalSubtitlesKeepOriginalFormatAndConversionFallbackWithScopedContext() = runBlocking {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"part context&?","decision":"direct_play"}""")
         respond("""{"ticket":"ticket &?"}""")
-        respond("""{"subtitles":[
+        respondMetadata("/subtitles/90", """{"subtitles":[
             {"id":4,"label":"한국어 ASS","source":"external","format":"ass","playable":true},
             {"id":5,"label":"한국어 SMI","source":"external","format":"smi","playable":true},
             {"id":6,"source":"embedded","format":"ass","playable":true},
             {"id":7,"source":"external","format":"pgs","playable":false},
             {"id":8,"source":"external","format":"srt","playable":false}
         ]}""")
-        respond("{}")
+        respondMetadata("/playback/progress", "{}")
         val spec = client.playback(movie)
         assertEquals(listOf(4, 5, 6), spec.subtitles.map { it.id })
         val ass = spec.subtitles[0]
@@ -736,8 +742,8 @@ class ShyniClientTest {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"transcode":{"mode":"video"}}""")
         respond("""{"ticket":"transcode-ticket"}""")
         respond("""{"ticket":"subtitle-ticket"}""")
-        respond("""[{"id":4,"source":"external","format":"srt","playable":true}]""")
-        respond("{}")
+        respondMetadata("/subtitles/90", """[{"id":4,"source":"external","format":"srt","playable":true}]""")
+        respondMetadata("/playback/progress", "{}")
         val track = client.playback(movie).subtitles.single()
         for (url in listOf(track.url, track.fallbackUrl!!).map { it.toHttpUrl() }) {
             assertEquals("subtitle-ticket", url.queryParameter("ticket"))
@@ -747,21 +753,23 @@ class ShyniClientTest {
         }
         server.takeRequest()
         assertEquals("/playback/transcode-ticket/90?library_view_id=8&view_item_id=501&mode=video", server.takeRequest().path)
-        assertEquals("/stream-ticket/90?library_view_id=8&view_item_id=501", server.takeRequest().path)
-        assertEquals("/subtitles/90?library_view_id=8&view_item_id=501", server.takeRequest().path)
+        val enrichment = List(3) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        assertEquals("/stream-ticket/90?library_view_id=8&view_item_id=501", enrichment.getValue("/stream-ticket/90").path)
+        assertEquals("/subtitles/90?library_view_id=8&view_item_id=501", enrichment.getValue("/subtitles/90").path)
+        assertEquals("8", enrichment.getValue("/playback/progress").requestUrl!!.queryParameter("library_view_id"))
     }
 
     @Test fun preferredSubtitleKeepsSourceLanguageAndGlobalIndexWithoutInventingNativeOrdinal() = runBlocking {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"context",
             "subtitle":{"id":6,"source":"embedded","lang_code":"ko","stream_index":7,"stream_ordinal":null,"delivery":"embedded"}}""")
         respond("""{"ticket":"scoped-ticket"}""")
-        respond("""[
+        respondMetadata("/subtitles/90", """[
             {"id":4,"label":"English","source":"embedded","format":"ass","lang_code":"en","stream_index":3,"playable":true,"forced":true},
             {"id":5,"label":"한국어 PGS","source":"embedded","format":"pgs","lang_code":"ko","stream_index":4,"playable":false},
             {"id":6,"label":"한국어 ASS","source":"embedded","format":"ASS","lang_code":"ko","stream_index":7,"playable":true,"forced":false,"sdh":true,"title":"Korean Full"},
             {"id":8,"label":"한국어 SRT","source":"external","format":"srt","lang_code":"ko","stream_index":null,"playable":true,"forced":null,"sdh":false,"title":null}
         ]""")
-        respond("{}")
+        respondMetadata("/playback/progress", "{}")
         val spec = client.playback(movie)
         assertEquals(6, spec.selectedSubtitleId)
         assertEquals(listOf(4, 6, 8), spec.subtitles.map { it.id })
@@ -929,8 +937,8 @@ class ShyniClientTest {
     @Test fun completedProgressStartsReplayAtBeginning() = runBlocking {
         respond("""{"selected":{"part_id":90,"duration_sec":7200},"library_view_id":8,"view_item_id":501,"playback_context_token":"part-context","decision":"direct_play"}""")
         respond("""{"ticket":"scoped-ticket"}""")
-        respond("[]")
-        respond("""{"items":[{"metadata_item_id":23,"position_ms":7100000,"duration_ms":7200000,"completed":true,"state":"paused"}]}""")
+        respondMetadata("/subtitles/90", "[]")
+        respondMetadata("/playback/progress", """{"items":[{"metadata_item_id":23,"position_ms":7100000,"duration_ms":7200000,"completed":true,"state":"paused"}]}""")
         assertEquals(0L, client.playback(movie).resumeMs)
     }
 
@@ -958,8 +966,8 @@ class ShyniClientTest {
 
         respond("""{"selected":{"part_id":90},"library_view_id":9,"view_item_id":601,"playback_context_token":"continue-context"}""")
         respond("""{"ticket":"continue-ticket"}""")
-        respond("[]")
-        respond("""{"items":[{"metadata_item_id":24,"position_ms":76000,"duration_ms":1800000,"completed":false}]}""")
+        respondMetadata("/subtitles/90", "[]")
+        respondMetadata("/playback/progress", """{"items":[{"metadata_item_id":24,"position_ms":76000,"duration_ms":1800000,"completed":false}]}""")
         val spec = client.playback(item)
         assertEquals(76000L, spec.resumeMs)
         assertEquals(24, spec.itemId)
@@ -973,16 +981,16 @@ class ShyniClientTest {
         assertEquals(601, decision.getInt("view_item_id"))
         assertFalse("A direct continue item must not pin an unrelated selected version", decision.has("part_id"))
         assertEquals("/stream-ticket/90", server.takeRequest().requestUrl!!.encodedPath)
-        assertEquals("/subtitles/90", server.takeRequest().requestUrl!!.encodedPath)
-        assertEquals("/playback/progress", server.takeRequest().requestUrl!!.encodedPath)
+        assertEquals(setOf("/subtitles/90", "/playback/progress"),
+            List(2) { server.takeRequest().requestUrl!!.encodedPath }.toSet())
         assertEquals("Continue playback needs no detail-navigation requests", 5, server.requestCount)
     }
 
     @Test fun continueResumeFallsBackToCardPositionWhenProgressHasNoNewRecord() = runBlocking {
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"context"}""")
         respond("""{"ticket":"ticket"}""")
-        respond("[]")
-        respond("{}")
+        respondMetadata("/subtitles/90", "[]")
+        respondMetadata("/playback/progress", "{}")
         assertEquals(65000L, client.playback(movie.copy(resumeMs = 65000)).resumeMs)
     }
 

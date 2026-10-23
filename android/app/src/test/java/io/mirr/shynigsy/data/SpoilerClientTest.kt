@@ -17,14 +17,17 @@ import java.util.concurrent.TimeUnit
 class SpoilerClientTest {
     private lateinit var server: MockWebServer
     private lateinit var client: ShyniClient
+    private val metadata = PlaybackMetadataDispatcher()
     @Before fun setup() {
         SpoilerAccessRegistry.clearAll()
-        server = MockWebServer().apply { start() }
+        server = MockWebServer().apply { dispatcher = metadata; start() }
         client = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
     }
     @After fun close() { SpoilerAccessRegistry.clearAll(); server.shutdown() }
     private fun respond(text: String, status: Int = 200) = server.enqueue(
         MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(text))
+    private fun respondMetadata(path: String, text: String) =
+        metadata.enqueueMetadata(path, MockResponse().setBody(text))
     private suspend fun unlock() {
         respond("""{"token":"spc_private-grant","expires_in":1800}""")
         client.unlockSpoiler("1234")
@@ -132,8 +135,8 @@ class SpoilerClientTest {
         unlock()
         respond("""{"selected":{"part_id":90},"library_view_id":8,"view_item_id":501,"playback_context_token":"context"}""")
         respond("""{"ticket":"media-ticket"}""")
-        respond("""[{"id":4,"source":"external","format":"srt","playable":true}]""")
-        respond("{}")
+        respondMetadata("/subtitles/90", """[{"id":4,"source":"external","format":"srt","playable":true}]""")
+        respondMetadata("/playback/progress", "{}")
         val item = MediaItem(23, 8, "작품", "movie", viewItemId = 501, isSpoiler = true)
         val spec = client.playback(item)
         assertTrue(spec.sourceItem!!.isSpoiler)
@@ -229,11 +232,11 @@ class SpoilerClientTest {
         respond("""{"selected":{"part_id":$selectedPart,"duration_ms":120000},"library_view_id":8,
             "view_item_id":501,"playback_context_token":"fresh-context","decision":"direct_play"}""")
         respond("""{"ticket":"initial-fresh-ticket"}""")
-        respond("[]")
-        respond("{}")
+        respondMetadata("/subtitles/$selectedPart", "[]")
+        respondMetadata("/playback/progress", "{}")
         if (mode != null) respond("""{"ticket":"fresh-conversion-ticket"}""")
         respond("""{"ticket":"final-fresh-ticket","library_view_id":8,"view_item_id":501}""")
-        respond("""[{"id":4,"source":"external","format":"ass","playable":true}]""")
+        respondMetadata("/subtitles/$selectedPart", """[{"id":4,"source":"external","format":"ass","playable":true}]""")
     }
 
     @Test fun foregroundReauthenticationRotatesGrantContextAndTicketsWithoutChangingDelivery() = runBlocking {
@@ -416,8 +419,8 @@ class SpoilerClientTest {
             respond("""{"selected":{"part_id":$part},"library_view_id":8,"view_item_id":501,
                 "playback_context_token":"${if (part == 90) "old-context" else "fresh-context"}"}""")
             respond("""{"ticket":"new-ticket"}""")
-            respond("[]")
-            respond("{}")
+            respondMetadata("/subtitles/$part", "[]")
+            respondMetadata("/playback/progress", "{}")
             val before = server.requestCount
             assertTrue(runCatching { client.reauthenticateSpoilerPlayback(privateCurrent(), 1_000) }.exceptionOrNull() is ApiException)
             repeat(5) { server.takeRequest() }

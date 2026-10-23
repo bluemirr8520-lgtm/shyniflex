@@ -13,9 +13,10 @@ import org.junit.Test
 class EndResumePlaybackTest {
     private lateinit var server: MockWebServer
     private lateinit var client: ShyniClient
+    private val metadata = PlaybackMetadataDispatcher()
 
     @Before fun setup() {
-        server = MockWebServer().apply { start() }
+        server = MockWebServer().apply { dispatcher = metadata; start() }
         client = ShyniClient(server.url("/").toString(), "fixture-account", deviceId = "fixture-device")
     }
 
@@ -25,18 +26,21 @@ class EndResumePlaybackTest {
         server.enqueue(MockResponse().setBody("""{"selected":{"part_id":90,"duration_ms":$durationMs},
             "library_view_id":9,"view_item_id":601,"playback_context_token":"fixture-context"}"""))
         server.enqueue(MockResponse().setBody("""{"ticket":"fixture-ticket"}"""))
-        server.enqueue(MockResponse().setBody("[]"))
-        server.enqueue(MockResponse().setBody("""{"24":{"position_ms":$positionMs,"duration_ms":$durationMs,"completed":false}}"""))
+        metadata.enqueueMetadata("/subtitles/90", MockResponse().setBody("[]"))
+        metadata.enqueueMetadata("/playback/progress", MockResponse().setBody("""{"24":{"position_ms":$positionMs,"duration_ms":$durationMs,"completed":false}}"""))
         val result = client.playback(MediaItem(24, 9, "끝 위치 회귀 검사", "episode", viewItemId = 601,
             resumeMs = 1_000, durationMs = durationMs))
         val requests = List(4) {
             server.takeRequest(10, TimeUnit.SECONDS) ?: throw AssertionError("Missing preparation request")
         }
-        assertEquals(listOf("/playback/decision", "/stream-ticket/90", "/subtitles/90", "/playback/progress"),
-            requests.map { it.requestUrl!!.encodedPath })
+        assertEquals(listOf("/playback/decision", "/stream-ticket/90"),
+            requests.take(2).map { it.requestUrl!!.encodedPath })
+        assertEquals(setOf("/subtitles/90", "/playback/progress"),
+            requests.drop(2).map { it.requestUrl!!.encodedPath }.toSet())
         assertEquals(listOf("POST", "POST", "GET", "GET"), requests.map { it.method })
-        assertEquals("24", requests.last().requestUrl!!.queryParameter("item_ids"))
-        assertEquals("9", requests.last().requestUrl!!.queryParameter("library_view_id"))
+        val progress = requests.single { it.requestUrl!!.encodedPath == "/playback/progress" }
+        assertEquals("24", progress.requestUrl!!.queryParameter("item_ids"))
+        assertEquals("9", progress.requestUrl!!.queryParameter("library_view_id"))
         assertEquals(24, JSONObject(requests.first().body.readUtf8()).getInt("metadata_item_id"))
         assertEquals(90, result.partId)
         assertEquals(601, result.viewItemId)

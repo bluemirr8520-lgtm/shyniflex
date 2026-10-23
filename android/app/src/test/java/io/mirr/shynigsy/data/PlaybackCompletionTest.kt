@@ -12,12 +12,13 @@ import org.junit.Test
 class PlaybackCompletionTest {
     private lateinit var server: MockWebServer
     private lateinit var client: ShyniClient
+    private val metadata = PlaybackMetadataDispatcher()
     private val current = PlaybackSpec("작품", "https://server/stream/90", itemId = 23,
         libraryId = 8, partId = 90, viewItemId = 501,
         sourceItem = MediaItem(23, 8, "작품", "movie", viewItemId = 501))
     @Before fun setup() {
         SpoilerAccessRegistry.clearAll()
-        server = MockWebServer().apply { start() }
+        server = MockWebServer().apply { dispatcher = metadata; start() }
         client = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
     }
     @After fun close() { SpoilerAccessRegistry.clearAll(); server.shutdown() }
@@ -71,8 +72,8 @@ class PlaybackCompletionTest {
     @Test fun successfulNavigationKeepsPinnedPartAcrossDecisionAndPlaybackState() = runBlocking {
         respond("""{"selected":{"part_id":91},"library_view_id":8,"view_item_id":501,"playback_context_token":"context"}""")
         respond("""{"ticket":"stream-ticket"}""")
-        respond("[]")
-        respond("{}")
+        metadata.enqueueMetadata("/subtitles/91", MockResponse().setBody("[]"))
+        metadata.enqueueMetadata("/playback/progress", MockResponse().setBody("{}"))
         val result = client.playback(current.sourceItem!!.copy(navigationPartId = 91, folderKey = "folder-hash"))
         assertEquals(91, result.partId)
         assertEquals(91, result.requestedPartId)

@@ -57,4 +57,25 @@ class MpvPlaybackProfileTest {
         val modern = MpvPlaybackProfile.choose(device(mimes = linkedSetOf("video/av01", "video/hevc", "video/avc")))
         assertEquals(listOf("h264", "hevc", "av1"), modern.hardwareCodecs)
     }
+
+    @Test fun networkCacheRefillsWithoutWaitingForNearEmptyOrDelayingTheFirstFrame() {
+        for (device in listOf(device(lowRam = true), device(), device(memoryClass = 512, total = 8192, available = 4096))) {
+            val profile = MpvPlaybackProfile.choose(device)
+            val options = profile.mpvOptions()
+            assertEquals("0", options["demuxer-hysteresis-bytes"])
+            assertEquals("yes", options["cache-pause"])
+            assertEquals("no", options["cache-pause-initial"])
+            assertTrue(profile.forwardCacheMiB > 0 && profile.backCacheMiB > 0)
+            assertTrue(profile.forwardCacheMiB + profile.backCacheMiB <= 120)
+        }
+    }
+
+    @Test fun initialLoadAvoidsZeroSeekButPreservesExactOriginalResumePosition() {
+        assertEquals("none", MpvPlaybackProfile.initialStartOption(0, serverConversion = false))
+        assertEquals("none", MpvPlaybackProfile.initialStartOption(-1, serverConversion = false))
+        assertEquals("1.001", MpvPlaybackProfile.initialStartOption(1_001, serverConversion = false))
+        assertEquals("7200.125", MpvPlaybackProfile.initialStartOption(7_200_125, serverConversion = false))
+        // Converted URLs already reopen at the requested source-clock start_ms.
+        assertEquals("none", MpvPlaybackProfile.initialStartOption(7_200_125, serverConversion = true))
+    }
 }
