@@ -24,6 +24,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.C
@@ -75,6 +76,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private lateinit var gestures: Media3GestureView
     private lateinit var lockButton: Button
     private lateinit var segmentSkipButton: Button
+    private lateinit var segmentActions: LinearLayout
+    private lateinit var creditsNextButton: Button
     private var remoteSeek: RemoteSeekTimeline? = null
     private var remoteSeekKey = KeyEvent.KEYCODE_UNKNOWN
     private var remoteSeekLastEventAt = 0L
@@ -194,10 +197,13 @@ class NativePlayerActivity : AppCompatActivity() {
                 finishCompletedPlayback()
                 return
             }
+            // Use one clock sample for both visibility and its next deadline.
+            // Resampling after crossing the boundary could hide the action until the next 500 ms tick.
+            val segmentPosition = active?.currentPosition ?: lastPosition
             if (active != null && prepared) {
                 capturePosition()
                 updateSubtitleText()
-                updateSegmentSkipButton()
+                updateSegmentSkipButton(segmentPosition)
                 settleWatchTime(visible && active.isPlaying)
                 if (!gestures.isSeekGestureActive && active.playbackState == Player.STATE_READY &&
                     completionGate().eligible) {
@@ -215,7 +221,11 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             val needsSubtitleUpdates = externalSubtitleId != null && subtitleTimeline != null &&
                 (active?.isPlaying == true || gestures.isSeekGestureActive)
-            handler.postDelayed(this, if (needsSubtitleUpdates) 50 else 500)
+            val markerDelay = if (active != null && prepared && !refreshing && !navigationLoading && !conversionLoading &&
+                !playerGestureActive && !gestures.isSeekGestureActive && !gestures.locked)
+                playbackMarkerRefreshDelayMs(spec.markers, segmentPosition, lastDuration,
+                    active.playbackParameters.speed, active.isPlaying) else 500L
+            handler.postDelayed(this, minOf(if (needsSubtitleUpdates) 50L else 500L, markerDelay))
         }
     }
 
@@ -379,18 +389,18 @@ class NativePlayerActivity : AppCompatActivity() {
         gestures = Media3GestureView(this).apply {
             onControllerToggle = { if (playerView.isControllerFullyVisible) playerView.hideController() else playerView.showController() }
             onLockedTap = ::showUnlockControl
-            onSeekCommitted = { target -> completionGate().seek(target); pendingSeek = target; lastPosition = target; updateSubtitleText() }
-            onSeekSettled = { target -> pendingSeek = null; lastPosition = target; updateSubtitleText(); enqueueProgress(if (player?.isPlaying == true) "playing" else "paused") }
+            onSeekCommitted = { target -> completionGate().seek(target); pendingSeek = target; lastPosition = target; updateSubtitleText(); refreshSegmentActions() }
+            onSeekSettled = { target -> pendingSeek = null; lastPosition = target; updateSubtitleText(); refreshSegmentActions(); enqueueProgress(if (player?.isPlaying == true) "playing" else "paused") }
             onGestureActive = { active ->
                 playerGestureActive = active
                 if (active) {
                     subtitleDialog?.dismiss()
-                    if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
+                    hideSegmentActions()
                     playerView.hideController()
                     hideLockControl()
                     settleWatchTime(visible && player?.isPlaying == true)
                     handler.removeCallbacks(ticker); handler.post(ticker)
-                }
+                } else refreshSegmentActions()
             }
             onSubtitleDragStart = ::startSubtitleDrag
             onSubtitleDragged = ::moveSubtitleDrag
@@ -418,6 +428,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     playerView.hideController()
                     showUnlockControl()
                 } else playerView.showController()
+                refreshSegmentActions()
             }
         }
         root.addView(lockButton, FrameLayout.LayoutParams(dp(62), dp(48), Gravity.TOP or Gravity.END))
@@ -428,15 +439,41 @@ class NativePlayerActivity : AppCompatActivity() {
             setPadding(dp(16), 0, dp(16), 0)
             setOnClickListener { skipCurrentSegment() }
         }
-        root.addView(segmentSkipButton, FrameLayout.LayoutParams(-2, dp(48), Gravity.BOTTOM or Gravity.RIGHT).apply {
-            rightMargin = dp(24); bottomMargin = dp(124)
-        })
+        creditsNextButton = Button(this).apply {
+            id = R.id.player_credits_next
+            visibility = View.GONE
+            text = "다음 화"; textSize = 14f
+            setTextColor(Color.WHITE); setBackgroundColor(0xDC142536.toInt())
+            setPadding(dp(12), 0, dp(16), 0)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_player_next_episode, 0, 0, 0)
+            compoundDrawablePadding = dp(6)
+            contentDescription = "다음 화 재생"
+            setOnClickListener { switchNeighbor(forward = true, creditsEpisode = true) }
+        }
+        segmentActions = LinearLayout(this).apply {
+            id = R.id.player_segment_actions
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            descendantFocusability = if (television) ViewGroup.FOCUS_BLOCK_DESCENDANTS else ViewGroup.FOCUS_AFTER_DESCENDANTS
+            visibility = View.GONE
+            addView(segmentSkipButton, LinearLayout.LayoutParams(-2, dp(48)))
+            addView(creditsNextButton, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(8) })
+        }
+        root.addView(segmentActions, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.RIGHT))
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            updateSegmentActionInsets(insets)
+            insets
+        }
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
             gestures.controllerVisible = visibility == View.VISIBLE && !gestures.locked
+            if (television) segmentActions.descendantFocusability =
+                if (visibility == View.VISIBLE || segmentActions.hasFocus()) ViewGroup.FOCUS_AFTER_DESCENDANTS
+                else ViewGroup.FOCUS_BLOCK_DESCENDANTS
             if (gestures.locked) {
                 if (visibility == View.VISIBLE) playerView.hideController()
             } else lockButton.visibility = if (!television && visibility == View.VISIBLE) View.VISIBLE else View.GONE
             updateSegmentSkipButton()
+            updateSegmentActionInsets(ViewCompat.getRootWindowInsets(root))
             updateSubtitleButton()
         })
         gestures.controllerVisible = playerView.isControllerFullyVisible
@@ -464,8 +501,10 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
             }
             segmentSkipButton.background = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.tv_control_background)
+            creditsNextButton.background = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.tv_control_background)
         }
         setContentView(root)
+        ViewCompat.requestApplyInsets(root)
     }
 
     private fun hideLockControl() {
@@ -481,20 +520,79 @@ class NativePlayerActivity : AppCompatActivity() {
         handler.postDelayed(hideUnlock, 3500)
     }
 
-    private fun updateSegmentSkipButton() {
-        if (!::segmentSkipButton.isInitialized) return
-        val active = player
-        activeSkipMarker = if (!visible || !prepared || exiting || refreshing || navigationLoading || conversionLoading ||
-            playerGestureActive || gestures.locked || active == null || !active.isCurrentMediaItemSeekable ||
+    private fun currentSegmentMarker(active: MpvPlayer?, positionMs: Long? = null): PlaybackMarker? =
+        if (!visible || !prepared || exiting || refreshing || navigationLoading || conversionLoading ||
+            playerGestureActive || gestures.isSeekGestureActive || pendingSeek != null || gestures.locked ||
+            active == null || !active.isCurrentMediaItemSeekable ||
             active.playbackState != Player.STATE_READY ||
             !active.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) ||
             active.playerError != null || (::errorPanel.isInitialized && errorPanel.visibility == View.VISIBLE)) null
-        else currentSkipMarker(spec.markers, active.currentPosition, lastDuration)
+        else currentSkipMarker(spec.markers, positionMs ?: active.currentPosition, lastDuration)
+
+    private fun creditsNextEpisodeTarget(): io.mirr.shynigsy.data.MediaItem? {
+        val source = spec.sourceItem?.takeIf { it.type == "episode" } ?: return null
+        val target = playbackNeighbors?.nextEpisode ?: return null
+        val season = source.seasonNumber ?: return null
+        val episode = source.episodeNumber ?: return null
+        val targetSeason = target.seasonNumber ?: return null
+        val targetEpisode = target.episodeNumber ?: return null
+        return target.takeIf {
+            it.type == "episode" && it.id != source.id && it.libraryId == source.libraryId &&
+                it.isSpoiler == source.isSpoiler && it.showId != null &&
+                (source.showId == null || it.showId == source.showId) &&
+                season >= 0 && episode >= 0 && targetSeason >= 0 && targetEpisode >= 0 &&
+                (targetSeason > season || targetSeason == season && targetEpisode > episode) &&
+                !it.folderKey.isNullOrBlank() && (it.navigationPartId ?: 0) > 0 &&
+                it.playbackPartId == it.navigationPartId && it.navigationPartId != spec.partId
+        }
+    }
+
+    private fun updateSegmentSkipButton(positionMs: Long? = null) {
+        if (!::segmentActions.isInitialized) return
+        activeSkipMarker = currentSegmentMarker(player, positionMs)
         val marker = activeSkipMarker
         segmentSkipButton.visibility = if (marker == null) View.GONE else View.VISIBLE
         if (marker != null) {
             segmentSkipButton.text = if (marker.type == "intro") "인트로 건너뛰기" else "크레딧 건너뛰기"
             segmentSkipButton.contentDescription = segmentSkipButton.text
+        }
+        val next = if (marker?.type == "credits") creditsNextEpisodeTarget() else null
+        creditsNextButton.visibility = if (next == null) View.GONE else View.VISIBLE
+        creditsNextButton.isEnabled = next != null
+        creditsNextButton.contentDescription = next?.let {
+            "다음 화 재생, 시즌 ${it.seasonNumber} ${it.episodeNumber}화, ${it.title}"
+        } ?: "다음 화 재생"
+        creditsNextButton.tooltipText = creditsNextButton.contentDescription
+        if (television) segmentActions.descendantFocusability =
+            if (playerView.isControllerFullyVisible || segmentActions.hasFocus()) ViewGroup.FOCUS_AFTER_DESCENDANTS
+            else ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        segmentActions.visibility = if (marker == null) View.GONE else View.VISIBLE
+    }
+
+    private fun hideSegmentActions() {
+        activeSkipMarker = null
+        if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
+        if (::creditsNextButton.isInitialized) creditsNextButton.visibility = View.GONE
+        if (::segmentActions.isInitialized) segmentActions.visibility = View.GONE
+    }
+
+    private fun refreshSegmentActions() {
+        if (!::gestures.isInitialized) return
+        updateSegmentSkipButton()
+        if (visible && !exiting) {
+            handler.removeCallbacks(ticker)
+            handler.post(ticker)
+        }
+    }
+
+    private fun updateSegmentActionInsets(insets: WindowInsetsCompat?) {
+        if (!::segmentActions.isInitialized) return
+        val safe = insets?.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        (segmentActions.layoutParams as? FrameLayout.LayoutParams)?.let { layout ->
+            layout.leftMargin = dp(24) + (safe?.left ?: 0)
+            layout.rightMargin = dp(24) + (safe?.right ?: 0)
+            layout.bottomMargin = dp(if (playerView.isControllerFullyVisible) 148 else 124) + (safe?.bottom ?: 0)
+            segmentActions.layoutParams = layout
         }
     }
 
@@ -503,8 +601,8 @@ class NativePlayerActivity : AppCompatActivity() {
         if (closeLockedSpoilerPlayback() || gestures.locked || playerGestureActive || refreshing || navigationLoading || conversionLoading ||
             active.playbackState != Player.STATE_READY ||
             !active.isCurrentMediaItemSeekable || !active.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) return
-        val marker = currentSkipMarker(spec.markers, active.currentPosition, lastDuration) ?: return
-        activeSkipMarker = null; segmentSkipButton.visibility = View.GONE
+        val marker = currentSegmentMarker(active) ?: return
+        hideSegmentActions()
         playerView.hideController(); hideLockControl()
         lastPosition = marker.endMs; pendingSeek = marker.endMs
         completionGate().seek(marker.endMs)
@@ -547,6 +645,10 @@ class NativePlayerActivity : AppCompatActivity() {
         val ready = prepared && !exiting && !refreshing && !navigationLoading && !conversionLoading
         val canSetPlaybackIntent = prepared && !exiting && !navigationLoading && !conversionLoading &&
             (!refreshing || spoilerPreparing)
+        if (::segmentActions.isInitialized && segmentActions.isShown && segmentActions.hasFocus() &&
+            event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER)) return false
         if (remoteSeek != null && event.keyCode == remoteSeekKey) {
             remoteSeekLastEventAt = SystemClock.elapsedRealtime()
             if (event.action == KeyEvent.ACTION_UP) finishRemoteSeeking()
@@ -582,7 +684,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 // Opening on release prevents the same press activating a newly focused button.
                 if (event.action == KeyEvent.ACTION_UP) {
                     playerView.showController()
-                    playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+                    segmentActions.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                    if (creditsNextButton.isShown) creditsNextButton.requestFocus()
+                    else playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
                 }
             }
             null -> return false
@@ -664,13 +768,17 @@ class NativePlayerActivity : AppCompatActivity() {
                             finishCompletedPlayback()
                     }
                 }
-                updateSegmentSkipButton()
+                refreshSegmentActions()
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (player !== created) return
                 if (!isPlaying) capturePosition()
                 settleWatchTime(visible && isPlaying)
                 if (prepared && !isPlaying && !gestures.isSeekGestureActive && !refreshing && !exiting) enqueueProgress("paused")
+                refreshSegmentActions()
+            }
+            override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) {
+                if (player === created) refreshSegmentActions()
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (player !== created) return
@@ -706,6 +814,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 if (reason == Player.DISCONTINUITY_REASON_SEEK && externalSubtitleId == null) subtitleOverlay.subtitleText = ""
                 if (reason == Player.DISCONTINUITY_REASON_SEEK) updateSubtitleText()
+                refreshSegmentActions()
             }
         })
         created.setMediaItem(buildMediaItem(), lastPosition.coerceAtLeast(0))
@@ -1231,7 +1340,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun hideSpoilerPlaybackMedia() {
         playerView.visibility = View.INVISIBLE
         subtitleOverlay.subtitleText = ""; subtitleOverlay.visibility = View.INVISIBLE
-        segmentSkipButton.visibility = View.GONE
+        hideSegmentActions()
         playerView.hideController(); hideLockControl()
     }
 
@@ -1273,7 +1382,7 @@ class NativePlayerActivity : AppCompatActivity() {
                         currentCoroutineContext().ensureActive()
                         if (isCurrent() && !closeLockedSpoilerPlayback()) {
                             spec = spec.copy(markers = markers)
-                            updateSegmentSkipButton()
+                            refreshSegmentActions()
                         }
                     }
                 },
@@ -1310,12 +1419,16 @@ class NativePlayerActivity : AppCompatActivity() {
                     tooltipText = contentDescription
                 }
             }
+        updateSegmentSkipButton()
     }
 
-    private fun switchNeighbor(forward: Boolean) {
+    private fun switchNeighbor(forward: Boolean, creditsEpisode: Boolean = false) {
         val active = player ?: return
         if (navigationLoading || refreshing || conversionLoading || exiting || closeLockedSpoilerPlayback()) return
-        val target = (if (forward) playbackNeighbors?.next else playbackNeighbors?.previous) ?: return
+        val target = if (creditsEpisode) {
+            if (!forward || currentSegmentMarker(active)?.type != "credits") return
+            creditsNextEpisodeTarget() ?: return
+        } else (if (forward) playbackNeighbors?.next else playbackNeighbors?.previous) ?: return
         val wasPlaying = gestures.playWhenReadyBeforeSeek ?: active.playWhenReady
         val retainedSeek = gestures.cancelSeekGesture()
         retainedSeek?.let { lastPosition = it; pendingSeek = it }
@@ -1346,7 +1459,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 conversionRestore = previous
                 conversionLoading = true
                 refreshing = false
-                applyConversionPlayback(next, previous.copy(position = 0))
+                applyConversionPlayback(next, previous.copy(position = 0, playing = creditsEpisode || previous.playing))
                 handler.postDelayed(conversionTimeout, 45_000)
                 if (spec.sourceItem?.isSpoiler == true) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             } catch (_: kotlinx.coroutines.CancellationException) {
@@ -1898,7 +2011,7 @@ class NativePlayerActivity : AppCompatActivity() {
         cancelPlaybackMetadata()
         neighborsJob?.cancel(); conversionJob?.cancel()
         playerView.hideController(); hideLockControl()
-        segmentSkipButton.visibility = View.GONE
+        hideSegmentActions()
         updatePlaybackButtons()
         // The independent writer drains this critical snapshot after Activity exit.
         // A finished frame must never wait on the server before returning to the caller.
@@ -1926,7 +2039,7 @@ class NativePlayerActivity : AppCompatActivity() {
         spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
         subtitleDialog?.dismiss(); subtitleDialog = null
         playerGestureActive = false
-        if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
+        hideSegmentActions()
         if (::subtitleOverlay.isInitialized) subtitleOverlay.subtitleText = ""
         if (::gestures.isInitialized) {
             gestures.cancelSeekGesture()?.let { lastPosition = it }
@@ -1936,12 +2049,14 @@ class NativePlayerActivity : AppCompatActivity() {
         val previous = player
         player = null
         previous?.release()
+        hideSegmentActions()
     }
 
     private fun leavePlayer() {
         if (exiting) return
         gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
         exiting = true; resumeWhenVisible = false
+        hideSegmentActions()
         cancelPlaybackMetadata()
         cancelSpoilerPlaybackReauthentication()
         handler.removeCallbacks(ticker)
@@ -1992,7 +2107,7 @@ class NativePlayerActivity : AppCompatActivity() {
         handler.removeCallbacks(ticker)
         if (::playerView.isInitialized) playerView.hideController()
         hideLockControl()
-        if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
+        hideSegmentActions()
         if (::gestures.isInitialized) {
             resumeWhenVisible = if (endingAfterCompletion || exiting) false else
                 conversionResumeWhenVisible ?: gestures.playWhenReadyBeforeSeek ?: player?.playWhenReady ?: false
@@ -2026,6 +2141,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun showError(message: String) {
+        hideSegmentActions()
         errorText.text = message
         errorPanel.visibility = View.VISIBLE
         if (television) {

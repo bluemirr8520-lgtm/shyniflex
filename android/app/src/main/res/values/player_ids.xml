@@ -2,4 +2,6 @@
 <resources>
     <item name="player_lock" type="id" />
     <item name="player_segment_skip" type="id" />
+    <item name="player_segment_actions" type="id" />
+    <item name="player_credits_next" type="id" />
 </resources>

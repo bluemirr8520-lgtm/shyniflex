@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.mirr.shynigsy.data.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 data class AppState(
@@ -296,6 +298,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         var privateContinue: HomeContinueLoad? = if (active.spoilerUnlocked) null else HomeContinueLoad.Success(emptyList())
         var publicRecent: Pair<List<MediaItem>, String?>? = null
         var privateRecent: List<MediaItem>? = if (active.spoilerUnlocked) null else emptyList()
+        var publicRecentComplete = false
+        var privateRecentComplete = !active.spoilerUnlocked
         fun canPublishHome(): Boolean {
             // Opening a library must not discard an independent unlock-time Home fetch.
             if (active !== client || active.token != homeAccountToken ||
@@ -352,7 +356,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 previousRecent.filter { it.isSpoiler } else emptyList()
             val rows = visibleContinueWatching(publicLoad.first, privateRecent ?: retainedPrivate,
                 homeLibraries(), active.spoilerUnlocked).map(::collectionWatchState)
-            mutableState.update { state -> reconcile(state.copy(recentItems = rows, recentLoading = false,
+            mutableState.update { state -> reconcile(state.copy(recentItems = rows,
+                recentLoading = !publicRecentComplete || !privateRecentComplete,
                 error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
                     listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error)) }
         }
@@ -381,12 +386,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     },
                     loadRecent = {
                         val libraries = publicLibraries.await()
-                        publicRecent = try { active.recentlyAdded(libraries) to null }
+                        publicRecent = try {
+                            active.recentlyAdded(libraries) { rows ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    if (canPublishHome()) {
+                                        publicRecent = rows to null
+                                        publishRecent()
+                                    }
+                                }
+                            } to null
+                        }
                         catch (cancel: CancellationException) { throw cancel }
                         catch (error: Exception) {
                             if (error is ApiException && error.status == 401) throw error
-                            emptyList<MediaItem>() to "최근 추가된 작품을 불러오지 못했습니다."
+                            // Already completed shelves belong to this request;
+                            // a slow/failed sibling must not erase them.
+                            publicRecent?.first.orEmpty() to "최근 추가된 작품을 불러오지 못했습니다."
                         }
+                        publicRecentComplete = true
                         publishRecent()
                     },
                     loadSupplemental = {
@@ -419,6 +436,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 if (privateLibraries.isEmpty()) {
                                     privateContinue = HomeContinueLoad.Success(emptyList())
                                     privateRecent = emptyList()
+                                    privateRecentComplete = true
                                     publishContinue(); publishRecent()
                                 } else loadHomeSections(
                                     loadContinue = {
@@ -428,7 +446,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                         publishContinue()
                                     },
                                     loadRecent = {
-                                        privateRecent = privateCatalog(emptyList()) { active.recentlyAdded(privateLibraries) }
+                                        privateCatalog(Unit) {
+                                            privateRecent = try {
+                                                active.recentlyAdded(privateLibraries) { rows ->
+                                                    withContext(Dispatchers.Main.immediate) {
+                                                        if (canPublishHome() && active.spoilerUnlocked &&
+                                                            grantRevision == SpoilerAccessRegistry.changes.value) {
+                                                            privateRecent = rows
+                                                            publishRecent()
+                                                        }
+                                                    }
+                                                }
+                                            } catch (error: ApiException) {
+                                                // An explicit private denial is not a transient
+                                                // slow shelf; do not retain its earlier rows.
+                                                if (error.status == 403) privateRecent = emptyList()
+                                                throw error
+                                            }
+                                        }
+                                        privateRecent = privateRecent.orEmpty()
+                                        privateRecentComplete = true
                                         publishRecent()
                                     },
                                 )

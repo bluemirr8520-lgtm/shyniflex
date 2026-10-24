@@ -13,7 +13,8 @@ data class SpoilerStatus(
     val expiresInSeconds: Long = 0,
 )
 
-data class PlaybackNeighbors(val previous: MediaItem? = null, val next: MediaItem? = null)
+data class PlaybackNeighbors(val previous: MediaItem? = null, val next: MediaItem? = null,
+    val nextEpisode: MediaItem? = null)
 
 data class PlaybackMarker(val type: String, val startMs: Long, val endMs: Long) {
     internal fun asJson(): JSONObject = JSONObject().put("type", type).put("start_ms", startMs).put("end_ms", endMs)

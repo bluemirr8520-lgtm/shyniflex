@@ -12,7 +12,11 @@ webOS판은 앱 ID `io.mirr.shyniflex.webos`로 Android판과 같은 Shyni 로�
 
 첫 로그인 화면의 서버 주소는 빈칸이며 사용자가 직접 입력합니다.
 
-최신 버전은 **1.0.33**(빌드 34)입니다. 라이브러리 상단에 고정 홈 버튼을 추가해 휴대폰·태블릿·TV에서 목록을 불러오는 중에도 바로 홈으로 돌아갈 수 있습니다. 스포일러 권한이 자동 갱신될 때 기존 재생을 유지하며 새 권한과 티켓을 준비하고, 전환 직전의 위치·일시정지·트랙·배속을 보존합니다. 갱신 요청은 일반 재생 7회에서 4회, 변환 재생 8회에서 5회로 줄였습니다. E-AC-3 음성이 포함된 영상의 데이터 절약 변환은 서버가 새로 승인한 AAC 변환 문맥을 사용합니다. 전체 길이를 보존하는 완료 판정과 실제 종료 시 기존 라이브러리·회차 화면으로 돌아가는 동작을 유지합니다.
+최신 버전은 **1.0.34**(빌드 35)입니다. 라이브러리 상단에 고정 홈 버튼을 추가해 휴대폰·태블릿·TV에서 목록을 불러오는 중에도 바로 홈으로 돌아갈 수 있습니다. 스포일러 권한이 자동 갱신될 때 기존 재생을 유지하며 새 권한과 티켓을 준비하고, 전환 직전의 위치·일시정지·트랙·배속을 보존합니다. 갱신 요청은 일반 재생 7회에서 4회, 변환 재생 8회에서 5회로 줄였습니다. E-AC-3 음성이 포함된 영상의 데이터 절약 변환은 서버가 새로 승인한 AAC 변환 문맥을 사용합니다. 전체 길이를 보존하는 완료 판정과 실제 종료 시 기존 라이브러리·회차 화면으로 돌아가는 동작을 유지합니다.
+
+서버가 제공한 정확한 크레딧 `[시작, 끝)` 구간에서 **다음 화·크레딧 건너뛰기** 버튼을 표시합니다. 크레딧 정보가 없는 영상에는 95% 같은 임의 시점을 적용하지 않습니다. **다음 화**는 같은 물리 폴더의 다른 회차로 확인된 대상이 있을 때만 나타나며, 눌렀을 때만 해당 회차를 0초부터 재생합니다. **크레딧 건너뛰기**는 서버가 알려준 구간의 끝으로 이동하며, 파일 끝에 닿으면 기존 종료 동작으로 라이브러리·회차 화면에 돌아갑니다. 자동 다음 화 재생은 하지 않으며, 자연 종료 후에는 기존처럼 재생을 시작한 라이브러리·회차 화면으로 돌아갑니다. 로딩·잠금 중에는 버튼을 숨기고 배속 변경·탐색에 맞춰 표시를 즉시 갱신합니다.
+
+홈의 **최근 추가** 목록은 라이브러리별 조회와 시청 표시 확인이 끝난 것부터 먼저 보여줍니다. 다른 라이브러리의 응답을 기다리는 동안에도 준비된 목록을 볼 수 있으며, 표시 순서는 기존 라이브러리 순서를 유지합니다. 전체 목록의 조회 완료 시간은 서버 응답에 따라 달라집니다.
 
 재생 화면 하단의 **CC(자막 선택)** 버튼에서 자막을 끄거나 서버 외부 자막·내장 자막을 고릅니다. 자막의 언어·형식·출처와 현재 선택을 표시합니다. 기존 자막 글꼴·위치·세로 쓰기 설정은 그대로 사용할 수 있습니다.
 
@@ -22,28 +26,28 @@ webOS판은 앱 ID `io.mirr.shyniflex.webos`로 Android판과 같은 Shyni 로�
 
 라이브러리는 선택한 표시 종류의 전체 작품을 보여 줍니다. 영화 또는 TV 쇼·시즌·에피소드로 표시하고 제목·추가일·연도·재생시간으로 정렬할 수 있습니다. 메뉴는 작은 사각형으로 표시하며, 시리즈 포스터에서 첫 시즌의 썸네일 회차 목록을 바로 열고 같은 화면에서 시즌을 바꿉니다. 작품 안의 **해상도** 폴더로 원본 4K·1080p·720p 등의 버전을 선택하며, 이 분류는 서버 파일을 이동하지 않습니다. 같은 해상도의 파일이 여러 개면 서버가 정한 우선 버전을 사용합니다.
 
-APK와 `shyniflex-1.0.33-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
+APK와 `shyniflex-1.0.34-corresponding-source.zip`을 아래 릴리스에서 함께 제공합니다.
 
 공개 소스는 [GitHub shyniflex](https://github.com/bluemirr8520-lgtm/shyniflex)에서 제공합니다. Git에는 Android 앱 소스와 빌드 안내를 보관하며, 사용자 소유 앱 코드는 **GPL-3.0-or-later**로 배포합니다. APK와 전체 대응 소스 ZIP은 GitHub Release의 별도 파일로 배포합니다.
 
-- [shyniflex 1.0.33 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.33/shyniflex-1.0.33.apk)
-- [기존 테스트 앱용 업데이트 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.33/shyniflex-tv.apk)
-- [shyniflex 1.0.33 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.33/shyniflex-1.0.33-corresponding-source.zip)
-- [v1.0.33 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.33)
+- [shyniflex 1.0.34 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.34/shyniflex-1.0.34.apk)
+- [기존 테스트 앱용 업데이트 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.34/shyniflex-tv.apk)
+- [shyniflex 1.0.34 전체 대응 소스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.34/shyniflex-1.0.34-corresponding-source.zip)
+- [v1.0.34 릴리스 페이지](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.34)
 
 전체 대응 소스 ZIP에는 해당 앱 소스, MPV·FFmpeg 등 네이티브 의존 소스, 하위 모듈, Maven 런타임 라이브러리의 소스, 빌드 스크립트와 라이선스를 함께 담습니다. 복원 방법은 [네이티브 대응 소스 안내](docs/NATIVE-SOURCES.md)를 참고하세요.
 
 CPU별 APK는 동일한 재생 기능과 코덱을 포함하면서 해당 기기의 네이티브 라이브러리만 담습니다. Galaxy S23 Ultra 등 64비트 ARM 기기는 ARM64를 사용합니다. CPU를 모르거나 여러 종류의 기기에 배포할 때는 통합 APK를 사용합니다.
 
-- [ARM64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.33/shyniflex-1.0.33-arm64-v8a.apk)
-- [32비트 ARM APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.33/shyniflex-1.0.33-armeabi-v7a.apk)
-- [x86_64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.33/shyniflex-1.0.33-x86_64.apk)
+- [ARM64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.34/shyniflex-1.0.34-arm64-v8a.apk)
+- [32비트 ARM APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.34/shyniflex-1.0.34-armeabi-v7a.apk)
+- [x86_64 APK](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.34/shyniflex-1.0.34-x86_64.apk)
 
 목록 정리·정렬과 큰 외부 자막의 인덱스 구축은 화면 스레드 밖에서 처리합니다. 라이브러리·홈의 표시 목록을 재사용하고, 빠르게 지나간 카드의 미시청 편수 조회를 줄입니다. 비공개 이미지의 디스크·메모리 캐시 차단은 유지합니다.
 
 ## 설치와 사용
 
-설치 파일은 위 APK 링크의 `shyniflex-1.0.33.apk`(빌드 34)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.33.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 기존 테스트 앱(`io.mirr.shyniflex.debug`)은 `shyniflex-tv.apk`로 업데이트합니다. 정식 APK와 테스트 APK는 패키지가 달라 별도로 설치됩니다.
+설치 파일은 위 APK 링크의 `shyniflex-1.0.34.apk`(빌드 35)입니다. 개발자의 로컬 배포본은 `outputs/shyniflex-1.0.34.apk`에 보관합니다. ARM64, ARMv7, x86_64 네이티브 라이브러리를 포함하며, 같은 정식 패키지와 서명으로 업데이트하면 로그인과 설정을 유지합니다. 기존 테스트 앱(`io.mirr.shyniflex.debug`)은 `shyniflex-tv.apk`로 업데이트합니다. 정식 APK와 테스트 APK는 패키지가 달라 별도로 설치됩니다.
 
 1. APK를 Android 기기에 설치합니다.
 2. Shyni 서버의 HTTPS 주소와 사용자 이름·비밀번호를 입력해 로그인합니다. 2단계 인증을 사용하는 경우 인증 코드를 입력합니다.
@@ -141,7 +145,7 @@ JDK 17, Android SDK 플랫폼 36, PowerShell, 네트워크 또는 기존 Gradle 
 
 ## TV 자동 업데이트
 
-기존 TV 테스트 앱은 [1.0.33 릴리스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.33)의 `shyniflex-tv.apk`로 업데이트합니다. 버전은 1.0.33-test(빌드 34)이며 기존과 같은 `io.mirr.shyniflex.debug` 패키지·서명을 사용해 계정과 설정을 유지합니다. 휴대폰·태블릿·Android TV에서 사용할 수 있고, 정식 앱과는 별도로 설치됩니다.
+기존 TV 테스트 앱은 [1.0.34 릴리스](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.34)의 `shyniflex-tv.apk`로 업데이트합니다. 버전은 1.0.34-test(빌드 35)이며 기존과 같은 `io.mirr.shyniflex.debug` 패키지·서명을 사용해 계정과 설정을 유지합니다. 휴대폰·태블릿·Android TV에서 사용할 수 있고, 정식 앱과는 별도로 설치됩니다.
 
 홈 오른쪽 위에 기기 설정에 맞춘 현재 시각을 표시합니다. 앱이 전면으로 돌아올 때 새 버전을 자동 확인하며, 정상 확인은 6시간, 연결 오류 후 재시도는 15분 간격으로 제한합니다. 새 APK는 자동으로 내려받고 파일 해시·패키지·버전·설치된 앱의 서명을 확인한 뒤 설치 화면을 제공합니다. 사이드 메뉴의 **업데이트**로 즉시 확인할 수도 있습니다. 최초 한 번 이 앱의 설치 허용이 필요하며, 설치는 Android 확인 화면에서 진행합니다. 영상 재생 도중 설치를 강제로 시작하지 않습니다.
 

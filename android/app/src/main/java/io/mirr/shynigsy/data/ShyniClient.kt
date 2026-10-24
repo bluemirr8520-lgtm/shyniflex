@@ -10,6 +10,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.Call
 import okhttp3.Callback
@@ -361,7 +363,10 @@ class ShyniClient(
     }
 
     /** Icons only target files whose actual immediate filesystem parent matches the current file. */
-    suspend fun playbackNeighbors(spec: PlaybackSpec): PlaybackNeighbors = withContext(Dispatchers.Default) {
+    suspend fun playbackNeighbors(spec: PlaybackSpec): PlaybackNeighbors {
+        val authorization = playbackTransportAuthorization(spec)
+        return withContext(Dispatchers.Default) {
+        currentCoroutineContext().ensureActive(); authorization()
         val current = spec.sourceItem?.takeIf { it.playable && it.libraryId == spec.libraryId }
             ?: return@withContext PlaybackNeighbors()
         val libraryId = spec.libraryId
@@ -377,7 +382,13 @@ class ShyniClient(
         val partIndex = sameItemParts.indexOfFirst { it.partId == spec.partId }
         val previousPart = sameItemParts.getOrNull(partIndex - 1)?.let { navigationItem(current, it) }
         val nextPart = sameItemParts.getOrNull(partIndex + 1)?.let { navigationItem(current, it) }
-        if (previousPart != null && nextPart != null) return@withContext PlaybackNeighbors(previousPart, nextPart)
+        val canFindNextEpisode = current.type == "episode" && current.id == spec.itemId &&
+            current.viewItemId != null && current.viewItemId == spec.viewItemId &&
+            current.seasonNumber?.let { it >= 0 } == true && current.episodeNumber?.let { it >= 0 } == true
+        if (previousPart != null && nextPart != null && !canFindNextEpisode)
+            return@withContext PlaybackNeighbors(previousPart, nextPart)
+        var episodeEntries = emptyList<MediaItem>()
+        var episodeShowBindingClear = false
         val entries = when (current.type) {
             "movie" -> {
                 val query = spec.navigationQuery.trim()
@@ -394,21 +405,41 @@ class ShyniClient(
                     .distinctBy { it.viewItemId }.toList()
             }
             "episode" -> {
-                val showId = current.showId ?: current.viewItemId?.let { viewItemId ->
-                    rows(request("/libraries/$libraryId/shows?sort=title", responseLimit = 16L * 1024 * 1024, spoiler = privateCatalog))
-                        .take(10_000).firstOrNull { it.intOrNull("view_item_id") == viewItemId }?.intOrNull("id")
-                } ?: return@withContext PlaybackNeighbors()
-                rows(request("/libraries/$libraryId/shows/$showId/episodes", responseLimit = 16L * 1024 * 1024,
-                    spoiler = privateCatalog), "items", "episodes")
-                    .asSequence().filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
-                    .take(10_000).map { row ->
-                        parseMedia(row, libraryId, "episode").let { parsed -> parsed.copy(showId = showId,
-                            isSpoiler = privateCatalog, viewItemId = parsed.viewItemId ?: current.viewItemId) }
-                    }.filter { it.type == "episode" && it.viewItemId != null }
-                    .sortedWith(compareBy<MediaItem> { it.seasonNumber ?: Int.MAX_VALUE }
-                        .thenBy { it.episodeNumber ?: Int.MAX_VALUE }.thenBy { it.id })
-                    .distinctBy { if (it.seasonNumber != null && it.episodeNumber != null)
-                        "${it.seasonNumber}:${it.episodeNumber}" else "id:${it.id}" }.toList()
+                try {
+                    val showId = current.showId?.also { episodeShowBindingClear = it > 0 }
+                        ?: current.viewItemId?.let { viewItemId ->
+                            val matches = rows(request("/libraries/$libraryId/shows?sort=title",
+                                responseLimit = 16L * 1024 * 1024, spoiler = privateCatalog))
+                                .take(10_000).filter { it.intOrNull("view_item_id") == viewItemId }
+                            episodeShowBindingClear = matches.mapNotNull { it.intOrNull("id") }.distinct().size == 1
+                            matches.firstOrNull()?.intOrNull("id")
+                        } ?: return@withContext PlaybackNeighbors(previousPart, nextPart)
+                    val parsed = rows(request("/libraries/$libraryId/shows/$showId/episodes",
+                        responseLimit = 16L * 1024 * 1024, spoiler = privateCatalog), "items", "episodes")
+                        .asSequence().filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
+                        .take(10_000).map { parseMedia(it, libraryId, "episode") }.toList()
+                    // Keep positive privacy and explicit show/View evidence for the
+                    // stricter credits shortcut; generic file navigation stays unchanged.
+                    episodeEntries = parsed.filter { it.showId == null || it.showId == showId }
+                        .map { it.copy(showId = showId, isSpoiler = it.isSpoiler || privateCatalog,
+                            viewItemId = it.viewItemId ?: current.viewItemId) }
+                        .filter { it.type == "episode" && it.id > 0 && it.viewItemId == current.viewItemId &&
+                            it.isSpoiler == privateCatalog }
+                    parsed.map { it.copy(showId = showId, isSpoiler = privateCatalog,
+                        viewItemId = it.viewItemId ?: current.viewItemId) }
+                        .filter { it.type == "episode" && it.viewItemId != null }
+                        .sortedWith(compareBy<MediaItem> { it.seasonNumber ?: Int.MAX_VALUE }
+                            .thenBy { it.episodeNumber ?: Int.MAX_VALUE }.thenBy { it.id })
+                        .distinctBy { if (it.seasonNumber != null && it.episodeNumber != null)
+                            "${it.seasonNumber}:${it.episodeNumber}" else "id:${it.id}" }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: ApiException) {
+                    if (error.status == 401 || error.status == 403) throw error
+                    return@withContext PlaybackNeighbors(previousPart, nextPart)
+                } catch (_: Exception) {
+                    return@withContext PlaybackNeighbors(previousPart, nextPart)
+                }
             }
             else -> return@withContext PlaybackNeighbors()
         }
@@ -432,11 +463,47 @@ class ShyniClient(
             }
             return null
         }
+        suspend fun verifiedNextEpisode(): MediaItem? {
+            if (!canFindNextEpisode || !episodeShowBindingClear) return null
+            val season = current.seasonNumber ?: return null
+            val episode = current.episodeNumber ?: return null
+            val anchors = episodeEntries.filter { it.id == current.id || it.id == active.metadataId }
+            if (anchors.isEmpty() || anchors.any { it.seasonNumber != season || it.episodeNumber != episode }) return null
+            val candidates = episodeEntries.filter {
+                it.id != current.id && it.id != active.metadataId &&
+                    it.seasonNumber?.let { value -> value >= 0 } == true &&
+                    it.episodeNumber?.let { value -> value >= 0 } == true &&
+                    (it.seasonNumber!! > season || (it.seasonNumber == season && it.episodeNumber!! > episode))
+            }.sortedWith(compareBy<MediaItem> { it.seasonNumber!! }.thenBy { it.episodeNumber!! }.thenBy { it.id })
+                .distinctBy { it.id }
+            for (candidate in candidates.take(8)) {
+                val info = try {
+                    mediaInfo("$libraryId:item:${candidate.id}",
+                        "/libraries/$libraryId/media_info/item/${candidate.id}?library_view_id=$libraryId&view_item_id=${candidate.viewItemId}", privateCatalog)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: ApiException) {
+                    if (error.status == 401 || error.status == 403) throw error
+                    continue
+                } catch (_: Exception) { continue }
+                if (info.optJSONObject("item")?.intOrNull("id") != candidate.id) continue
+                val matching = physicalParts(info).filter { it.metadataId == candidate.id && it.folderKey == folder &&
+                    it.partId != spec.partId }
+                    .sortedWith(compareBy<PhysicalPart> { it.partIndex ?: Int.MAX_VALUE }.thenBy { it.fileName }.thenBy { it.partId })
+                matching.firstOrNull()?.let { return navigationItem(candidate, it) }
+            }
+            return null
+        }
         coroutineScope {
             val previous = async { previousPart ?: verified(entries.take(index).asReversed()) }
             val next = async { nextPart ?: verified(entries.drop(index + 1)) }
-            PlaybackNeighbors(previous.await(), next.await())
+            // Reuse completed media-info reads from generic navigation instead of
+            // racing a second HTTP request for the same candidate.
+            val previousItem = previous.await()
+            val nextItem = next.await()
+            PlaybackNeighbors(previousItem, nextItem, verifiedNextEpisode())
         }
+        }.also { currentCoroutineContext().ensureActive(); authorization() }
     }
 
     /** Optional, read-only marker refresh for the actual selected physical file. */
@@ -535,19 +602,41 @@ class ShyniClient(
             privateCatalog || row.booleanOrNull("spoiler_enabled") == true)
     }
 
-    /** Each public View supplies its own recent row, in the library picker's order. */
-    suspend fun recentlyAdded(libraries: List<Library>): List<MediaItem> = withContext(Dispatchers.Default) {
-        val requests = Semaphore(3)
-        val recent = coroutineScope {
-            libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }.distinctBy { it.id }.map { library ->
-                async {
+    /** Publish complete, progress-enriched shelves in picker order without waiting for every View. */
+    suspend fun recentlyAdded(libraries: List<Library>,
+        onPartial: suspend (List<MediaItem>) -> Unit = {},
+    ): List<MediaItem> {
+        // Capture before the dispatcher hop, including a private grant's generation.
+        val accountToken = token
+        val privateIdentity = if (libraries.any { it.isSpoiler && it.id > 0 && it.type in setOf("movie", "tv") }) spoilerKey() else null
+        val privateGrant = if (privateIdentity != null) spoilerGrant() else null
+        suspend fun requireCurrent() {
+            currentCoroutineContext().ensureActive()
+            if (accountToken != token) throw ApiException("로그인 정보가 변경되었습니다. 목록을 다시 여세요.", 401)
+            if (privateIdentity != null && (privateIdentity != spoilerKey() || privateGrant == null ||
+                    !SpoilerAccessRegistry.isCurrent(privateIdentity, privateGrant))) {
+                throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+            }
+        }
+        return withContext(Dispatchers.Default) {
+            requireCurrent()
+            val selected = libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }.distinctBy { it.id }
+            // Match the catalog transport budget: a third slow catalog must not
+            // queue ahead of the first View's progress and occupy its last slot.
+            val stages = Semaphore(minOf(2, client.dispatcher.maxRequests, client.dispatcher.maxRequestsPerHost))
+            val publication = Mutex()
+            val completed = arrayOfNulls<List<MediaItem>>(selected.size)
+            val recent = coroutineScope {
+                selected.mapIndexed { index, library -> async { stages.withPermit {
+                    requireCurrent()
                     val tv = library.type == "tv"
                     val path = if (tv) "/libraries/${library.id}/shows?sort=latest_episode&sort_dir=desc"
                         else "/libraries/${library.id}/movies?sort=added&sort_dir=desc"
                     // Both routes return a full, already sorted array. Cap locally;
                     // neither an offset nor a server-side limit is part of their contract.
-                    val value = requests.withPermit { request(path, responseLimit = 16L * 1024 * 1024, spoiler = library.isSpoiler) }
-                    rowSequence(value, "items", "results")
+                    val value = request(path, responseLimit = 16L * 1024 * 1024, spoiler = library.isSpoiler)
+                    requireCurrent()
+                    val rows = rowSequence(value, "items", "results")
                         .filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
                         .take(RECENT_ITEMS_PER_LIBRARY)
                         .map { row ->
@@ -560,10 +649,23 @@ class ShyniClient(
                             parseMedia(row, library.id, if (tv) "show" else "movie").copy(isSpoiler = library.isSpoiler) to addedAt
                         }.toList().sortedByDescending { it.second ?: Long.MIN_VALUE }
                         .distinctBy { (item, _) -> item.id to item.type }.map { it.first }
-                }
-            }.awaitAll().flatten()
+                    // This is still one progress request per playable View, not a
+                    // second final pass. Holding the stage permit keeps it ahead
+                    // of a backlog of later catalogs on the shared catalog lane.
+                    val enriched = withProgress(rows)
+                    requireCurrent()
+                    publication.withLock {
+                        requireCurrent()
+                        completed[index] = enriched
+                        onPartial(completed.filterNotNull().flatten())
+                        requireCurrent()
+                    }
+                    enriched
+                } } }.awaitAll().flatten()
+            }
+            requireCurrent()
+            recent
         }
-        withProgress(recent)
     }
 
     /** Fan out only to known authorized Views; no global endpoint or fake search offset. */
