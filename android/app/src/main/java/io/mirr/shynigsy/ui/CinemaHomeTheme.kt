@@ -11,7 +11,6 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -120,14 +119,17 @@ internal fun CinemaAppearanceTheme(content: @Composable () -> Unit) {
         background = color or 0xFF000000.toInt()
         preferences.save(background)
     }
-    SideEffect {
-        context.appearanceActivity()?.let { activity ->
-            val darkIcons = colors.onBackground == Color.Black
+    val activity = remember(context) { context.appearanceActivity() }
+    val darkIcons = colors.onBackground == Color.Black
+    // IME edits may recompose the dialog repeatedly; the window chrome only changes with its contrast.
+    DisposableEffect(activity, darkIcons) {
+        activity?.let { activity ->
             WindowCompat.getInsetsController(activity.window, activity.window.decorView).apply {
                 isAppearanceLightStatusBars = darkIcons
                 isAppearanceLightNavigationBars = darkIcons
             }
         }
+        onDispose { }
     }
     CompositionLocalProvider(LocalCinemaAppearance provides controller) {
         MaterialTheme(colorScheme = colors, typography = CompactTypography, shapes = CompactShapes, content = content)
