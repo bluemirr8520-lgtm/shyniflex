@@ -50,7 +50,8 @@ internal fun CinemaHomeHeroContent(
     val progress = continuePlaybackProgress(hero.durationMs, source.resumeMs)
     val colors = MaterialTheme.colorScheme
     BoxWithConstraints(modifier.testTag("cinema-home-hero")) {
-        val condensed = maxHeight / LocalDensity.current.fontScale < 280.dp
+        // A wide two-line title and three-line synopsis need at least 320dp at normal font scale.
+        val condensed = maxHeight / LocalDensity.current.fontScale < (if (compact) 280.dp else 320.dp)
         Column(Modifier.fillMaxWidth(if (compact) 1f else .66f).fillMaxHeight()
             .padding(start = if (compact) 24.dp else 32.dp, end = 24.dp,
                 top = if (condensed) 24.dp else 32.dp, bottom = 20.dp),
