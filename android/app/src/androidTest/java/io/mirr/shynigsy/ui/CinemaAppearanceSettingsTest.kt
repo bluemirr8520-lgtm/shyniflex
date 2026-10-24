@@ -93,7 +93,8 @@ class CinemaAppearanceSettingsTest {
         render(0xFF102030.toInt(), television = true)
         screen.onNodeWithTag(HEX).assertDoesNotExist()
         screen.onNodeWithTag(EDIT).performScrollTo().performClick()
-        screen.onNodeWithTag(HEX).performTextReplacement("ABCDEF").performImeAction()
+        screen.onNodeWithTag(HEX).performTextReplacement("ABCDEF")
+        screen.onNodeWithTag(HEX).performImeAction()
         screen.onNodeWithTag(HEX).assertDoesNotExist()
         screen.onNodeWithTag(EDIT).assertIsFocused()
         assertHexChannels()
@@ -120,20 +121,23 @@ class CinemaAppearanceSettingsTest {
         render(0xFF123456.toInt(), television = false)
         val field = screen.onNodeWithTag(HEX)
         field.performScrollTo()
-        val fieldHeight = field.getUnclippedBoundsInRoot().height.value
-        val dialogHeight = screen.onNodeWithTag(SETTINGS).getUnclippedBoundsInRoot().height.value
+        val fieldHeight = heightOf(field)
+        val dialogHeight = heightOf(screen.onNodeWithTag(SETTINGS))
         field.performTextReplacement("12GG56")
         screen.onNodeWithTag(APPLY).assertIsNotEnabled()
-        assertEquals("An error reserves the same input height", fieldHeight, field.getUnclippedBoundsInRoot().height.value, 1f)
+        assertEquals("An error reserves the same input height", fieldHeight, heightOf(field), 1f)
         assertEquals("An error cannot remeasure the dialog's content height", dialogHeight,
-            screen.onNodeWithTag(SETTINGS).getUnclippedBoundsInRoot().height.value, 1f)
+            heightOf(screen.onNodeWithTag(SETTINGS)), 1f)
         field.assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("12GG56")))
 
-        field.performClick().performTextInputSelection(TextRange(2)).performTextInput("0")
+        field.performClick()
+        field.performTextInputSelection(TextRange(2))
+        field.performTextInput("0")
         field.assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("120GG56")))
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(3)))
         screen.runOnIdle { assertTrue(applied.isEmpty()); assertEquals(0, dismissals) }
-        field.performTextReplacement("ABCDEF").performImeAction()
+        field.performTextReplacement("ABCDEF")
+        field.performImeAction()
         field.assertIsNotFocused()
         screen.onNodeWithTag(APPLY).assertIsEnabled()
         screen.runOnIdle { assertTrue("Done is not a persistence operation", applied.isEmpty()) }
@@ -156,6 +160,11 @@ class CinemaAppearanceSettingsTest {
             }
         }
         screen.waitForIdle()
+    }
+
+    private fun heightOf(node: SemanticsNodeInteraction): Float {
+        val bounds = node.getUnclippedBoundsInRoot()
+        return (bounds.bottom - bounds.top).value
     }
 
     private fun focus(tag: String) {
