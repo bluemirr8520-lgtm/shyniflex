@@ -1,22 +1,18 @@
 package io.mirr.shynigsy.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -55,11 +51,9 @@ internal fun ResolutionFolderSelector(
 
 @Composable
 private fun ResolutionFolderButton(label: String, key: String, current: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick, enabled = enabled,
-        modifier = Modifier.tvOnlyFocus().height(40.dp).testTag("resolution-folder-$key").semantics { selected = current },
-        shape = RoundedCornerShape(3.dp), contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
-        border = BorderStroke(if (current) 2.dp else 1.dp,
-            if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)) {
+    CompactMenuAction(onClick = onClick, enabled = enabled, selected = current,
+        modifier = Modifier.testTag("resolution-folder-$key").semantics { selected = current },
+        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) {
         Icon(Icons.Rounded.Folder, null, Modifier.size(16.dp))
         Spacer(Modifier.width(4.dp))
         Text(label, fontSize = 13.sp, maxLines = 1)

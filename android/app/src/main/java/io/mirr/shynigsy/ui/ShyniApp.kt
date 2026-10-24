@@ -71,7 +71,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -118,22 +118,30 @@ import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.data.PlaybackSpec
 
-private val Navy = Color(0xFF0B1220)
-private val Panel = Color(0xFF142033)
-private val Mint = Color(0xFF83E3C5)
-private val Muted = Color(0xFFA6B6CB)
-private val ShyniColors = darkColorScheme(
-    primary = Mint,
-    onPrimary = Color(0xFF072A23),
-    primaryContainer = Color(0xFF203B38),
-    secondary = Color(0xFF8EBEFF),
-    background = Navy,
-    surface = Navy,
+private val AppBackground = Color(0xFFF8FAFB)
+private val Panel = Color(0xFFEEF2F4)
+private val Accent = Color(0xFF006B5B)
+private val Muted = Color(0xFF52616F)
+internal val ShyniColors = lightColorScheme(
+    primary = Accent,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD6EEE7),
+    onPrimaryContainer = Color(0xFF002C24),
+    secondary = Color(0xFF285F91),
+    onSecondary = Color.White,
+    background = AppBackground,
+    onBackground = Color(0xFF18242F),
+    surface = Color.White,
     surfaceContainer = Panel,
-    surfaceVariant = Panel,
-    onSurface = Color(0xFFF0F4FA),
+    surfaceVariant = Color(0xFFE6ECEF),
+    onSurface = Color(0xFF18242F),
     onSurfaceVariant = Muted,
-    outline = Color(0xFF35465D),
+    outline = Color(0xFF829199),
+    outlineVariant = Color(0xFFCED8DD),
+    error = Color(0xFFB3261E),
+    onError = Color.White,
+    errorContainer = Color(0xFFFCE5E2),
+    onErrorContainer = Color(0xFF641A14),
 )
 
 @Composable
@@ -172,7 +180,7 @@ fun ShyniApp(
     }
     MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
         Scaffold(
-            containerColor = Navy,
+            containerColor = AppBackground,
             topBar = {
                 if (state.loggedIn) {
                     Column(Modifier.statusBarsPadding()) {
@@ -306,9 +314,9 @@ private fun AppHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.padding(horizontal = 10.dp).size(38.dp).clip(RoundedCornerShape(12.dp)).background(Mint),
+                Modifier.padding(horizontal = 10.dp).size(38.dp).clip(RoundedCornerShape(12.dp)).background(Accent),
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Rounded.PlayArrow, null, tint = Color(0xFF072A23)) }
+            ) { Icon(Icons.Rounded.PlayArrow, null, tint = MaterialTheme.colorScheme.onPrimary) }
             Column(Modifier.weight(1f)) {
                 Text(
                     title ?: "shyniflex",
@@ -333,7 +341,7 @@ private fun AppHeader(
                 }
             }
         }
-        HorizontalDivider(color = Color(0xFF1C2A3D))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 
@@ -372,8 +380,8 @@ internal fun LoginScreen(
     ) {
         item { Spacer(Modifier.height(16.dp)) }
         item {
-            Surface(color = Color(0xFF1D3837), shape = RoundedCornerShape(24.dp)) {
-                Icon(Icons.Rounded.SmartDisplay, null, tint = Mint, modifier = Modifier.padding(24.dp).size(40.dp))
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
+                Icon(Icons.Rounded.SmartDisplay, null, tint = Accent, modifier = Modifier.padding(24.dp).size(40.dp))
             }
         }
         item {
@@ -510,29 +518,29 @@ private fun LibraryPicker(
         title = { Text("라이브러리") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (spoilerAvailable || spoilerUnlocked) OutlinedButton(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
-                enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
+            if (spoilerAvailable || spoilerUnlocked) CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
+                enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
                 Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null)
                 Spacer(Modifier.width(8.dp))
                 Text(if (spoilerUnlocked) "스포일러 라이브러리 잠금" else "스포일러 라이브러리 열기")
             }
             if (spoilerBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (spoilerError != null) Text(spoilerError, color = Color(0xFFFFBCCB))
+            if (spoilerError != null) Text(spoilerError, color = MaterialTheme.colorScheme.error)
             if (libraries.isEmpty()) EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
             else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(libraries, key = { it.id }) { library ->
-                    Card(onClick = { onSelect(library) }, modifier = Modifier.fillMaxWidth().tvOnlyFocus(),
-                        colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(12.dp)) {
+                    CompactMenuAction(onClick = { onSelect(library) }, modifier = Modifier.fillMaxWidth(),
+                        selected = library.id == selectedLibraryId, contentPadding = PaddingValues(0.dp)) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder, null, tint = Mint)
+                            Icon(if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder, null, tint = Accent)
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(library.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 Text((if (library.isSpoiler) "비공개 · " else "") + if (library.type == "movie") "영화" else "시리즈", color = Muted,
                                     style = MaterialTheme.typography.bodySmall)
                             }
-                            if (library.id == selectedLibraryId) Icon(Icons.Rounded.Check, "선택됨", tint = Mint)
+                            if (library.id == selectedLibraryId) Icon(Icons.Rounded.Check, "선택됨", tint = Accent)
                         }
                     }
                 }
@@ -565,7 +573,7 @@ private fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Uni
                     keyboardActions = KeyboardActions(onDone = { submit() }),
                     modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("spoiler-pin"))
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (error != null) Text(error, color = Color(0xFFFFBCCB))
+                if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
             }
         },
         confirmButton = { TextButton(onClick = { submit() }, enabled = !busy && pin.isNotBlank(),
@@ -645,14 +653,14 @@ private fun DetailScreen(
                     .combinedClickable(enabled = !busy && canChangeWatchState(item), onClick = {},
                         onLongClickLabel = "시청 상태 변경", onLongClick = { onWatchOptions(item) }))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Surface(color = Color(0xFF203B38), shape = RoundedCornerShape(7.dp)) {
+                    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(7.dp)) {
                         Text(typeLabel(item), modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                            color = Mint, style = MaterialTheme.typography.labelSmall)
+                            color = Accent, style = MaterialTheme.typography.labelSmall)
                     }
                     Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     if (item.durationMs > 0) Text("${item.durationMs / 60_000}분", style = MaterialTheme.typography.bodyMedium, color = Muted)
                     if (item.episodeNumber != null) Text(episodeLabel(item), style = MaterialTheme.typography.bodyMedium, color = Muted)
-                    if (!item.watched && item.resumeMs > 0 && item.playable) Text("${timeLabel(item.resumeMs)}까지 시청", style = MaterialTheme.typography.bodySmall, color = Mint)
+                    if (!item.watched && item.resumeMs > 0 && item.playable) Text("${timeLabel(item.resumeMs)}까지 시청", style = MaterialTheme.typography.bodySmall, color = Accent)
                 }
             }
         }
@@ -669,7 +677,7 @@ private fun DetailScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(if (item.watched) "다시 재생" else if (item.resumeMs > 0) "이어보기 · ${timeLabel(item.resumeMs)}" else "재생", fontWeight = FontWeight.Bold)
                     }
-                    if (item.resumeMs > 0 && !item.watched) OutlinedButton(onClick = { viewModel.play(item, true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    if (item.resumeMs > 0 && !item.watched) CompactMenuAction(onClick = { viewModel.play(item, true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                         Text("처음부터 재생")
                     }
                     Surface(color = Panel, shape = RoundedCornerShape(14.dp)) {
@@ -711,7 +719,7 @@ private fun DetailScreen(
                         Text(child.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(if (child.type == "episode") episodeLabel(child) else typeLabel(child), color = Muted, style = MaterialTheme.typography.bodySmall)
                         if (child.durationMs > 0) Text("${child.durationMs / 60_000}분", color = Muted, style = MaterialTheme.typography.bodySmall)
-                        if (!child.watched && child.resumeMs > 0) Text("${timeLabel(child.resumeMs)}까지 시청", color = Mint, style = MaterialTheme.typography.labelSmall)
+                        if (!child.watched && child.resumeMs > 0) Text("${timeLabel(child.resumeMs)}까지 시청", color = Accent, style = MaterialTheme.typography.labelSmall)
                     }
                     if (child.playable) WatchedSwitch(
                         checked = child.watched,
@@ -719,8 +727,8 @@ private fun DetailScreen(
                         onCheckedChange = { viewModel.setWatched(child, it) },
                         compact = true,
                         modifier = Modifier.semantics { contentDescription = "${child.title} 시청 상태" },
-                    ) else if (child.watched) Icon(Icons.Rounded.Check, "보았음", tint = Mint)
-                    else Icon(Icons.Rounded.PlayArrow, "${child.title} 상세 보기", tint = Mint)
+                    ) else if (child.watched) Icon(Icons.Rounded.Check, "보았음", tint = Accent)
+                    else Icon(Icons.Rounded.PlayArrow, "${child.title} 상세 보기", tint = Accent)
                 }
             }
         }
@@ -739,13 +747,13 @@ private fun PosterCard(item: MediaItem, viewModel: AppViewModel, modifier: Modif
                 if (item.watched && canChangeWatchState(item)) {
                     WatchedBadge(Modifier.align(Alignment.TopEnd).padding(7.dp))
                 } else if (showProgress && item.resumeMs > 0) {
-                    Surface(Modifier.align(Alignment.TopEnd).padding(7.dp), color = Navy.copy(alpha = 0.85f), shape = CircleShape) {
-                        Icon(Icons.Rounded.PlayArrow, null, tint = Mint, modifier = Modifier.padding(5.dp).size(18.dp))
+                    Surface(Modifier.align(Alignment.TopEnd).padding(7.dp), color = AppBackground.copy(alpha = 0.85f), shape = CircleShape) {
+                        Icon(Icons.Rounded.PlayArrow, null, tint = Accent, modifier = Modifier.padding(5.dp).size(18.dp))
                     }
                     if (item.durationMs > 0) LinearProgressIndicator(
                         progress = { (item.resumeMs.toFloat() / item.durationMs).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth().height(4.dp).align(Alignment.BottomCenter),
-                        color = Mint, trackColor = Panel,
+                        color = Accent, trackColor = Panel,
                     )
                 }
             }
@@ -839,11 +847,11 @@ private fun SectionTitle(title: String) {
 
 @Composable
 internal fun WatchedBadge(modifier: Modifier = Modifier, compact: Boolean = false) {
-    Surface(modifier = modifier, color = Navy.copy(alpha = 0.92f), shape = RoundedCornerShape(8.dp)) {
+    Surface(modifier = modifier, color = AppBackground.copy(alpha = 0.92f), shape = RoundedCornerShape(8.dp)) {
         Row(Modifier.padding(horizontal = if (compact) 4.dp else 7.dp, vertical = if (compact) 2.dp else 5.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            Icon(Icons.Rounded.Check, null, tint = Mint, modifier = Modifier.size(if (compact) 12.dp else 14.dp))
-            Text("보았음", color = Mint, style = MaterialTheme.typography.labelSmall,
+            Icon(Icons.Rounded.Check, null, tint = Accent, modifier = Modifier.size(if (compact) 12.dp else 14.dp))
+            Text("보았음", color = Accent, style = MaterialTheme.typography.labelSmall,
                 fontSize = if (compact) 10.sp else 11.sp, fontWeight = FontWeight.SemiBold)
         }
     }
@@ -860,13 +868,13 @@ internal fun WatchedSwitch(
     val label = if (checked) "보았음" else "보지 않았음"
     if (compact) {
         Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = if (checked) Mint else Muted)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = if (checked) Accent else Muted)
             Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         }
     } else {
         Row(modifier, verticalAlignment = Alignment.CenterVertically) {
             Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
-                color = if (checked) Mint else MaterialTheme.colorScheme.onSurface)
+                color = if (checked) Accent else MaterialTheme.colorScheme.onSurface)
             Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         }
     }
@@ -883,8 +891,8 @@ private fun EmptyMessage(message: String, modifier: Modifier = Modifier) {
 
 @Composable
 private fun ErrorMessage(message: String, modifier: Modifier = Modifier) {
-    Surface(modifier.fillMaxWidth(), color = Color(0xFF3B232D), shape = RoundedCornerShape(12.dp)) {
-        Text(message, color = Color(0xFFFFBCCB), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
+    Surface(modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(12.dp)) {
+        Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
     }
 }
 

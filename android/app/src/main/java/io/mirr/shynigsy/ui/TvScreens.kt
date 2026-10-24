@@ -81,8 +81,8 @@ internal fun Modifier.tvOnlyFocus(): Modifier = composed {
 
 @Composable
 internal fun TvAction(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick, enabled = enabled,
-        modifier = modifier.tvFocus().heightIn(min = 40.dp), shape = RectangleShape,
+    CompactMenuAction(onClick = onClick, enabled = enabled,
+        modifier = modifier,
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -100,9 +100,9 @@ internal fun TvHeader(title: String?, onHome: (() -> Unit)? = null) {
 
 @Composable
 internal fun LibraryHomeButton(onHome: () -> Unit) {
-    TextButton(onClick = onHome,
-        modifier = Modifier.testTag("library-home").tvOnlyFocus().heightIn(min = 48.dp),
-        shape = RectangleShape, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+    CompactMenuAction(onClick = onHome,
+        modifier = Modifier.testTag("library-home"),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
         Icon(Icons.Rounded.Home, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(4.dp))
         Text("홈", style = MaterialTheme.typography.labelLarge, maxLines = 1)
@@ -115,7 +115,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
     spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
     onSearch: () -> Unit = {}, searchSelected: Boolean = false) {
-    Column(Modifier.width(156.dp).fillMaxHeight().background(Color(0xFF0B1018))
+    Column(Modifier.width(156.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainer)
         .padding(horizontal = 8.dp, vertical = 8.dp).focusRestorer().focusGroup().testTag("tv-sidebar"),
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text("shyniflex", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
@@ -123,7 +123,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
         TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome)
         TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
         Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
-            style = MaterialTheme.typography.labelMedium, color = Color(0xFF929BA9))
+            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             items(libraries, key = { it.id }) { library ->
                 TvSidebarItem(library.title,
@@ -135,7 +135,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                     Icons.Rounded.Lock, false, if (spoilerUnlocked) onLockSpoiler else onLibraries)
             }
         }
-        HorizontalDivider(Modifier.padding(vertical = 6.dp), color = Color(0xFF252B34))
+        HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
         TvSidebarItem("새로고침", Icons.Rounded.Refresh, false, onRefresh)
         TvSidebarItem("업데이트", Icons.Rounded.SystemUpdate, false, onUpdate)
         TvSidebarItem("계정", Icons.Rounded.AccountCircle, false, onLogout)
@@ -145,11 +145,11 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
 @Composable
 private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     var focused by remember { mutableStateOf(false) }
-    val foreground = if (focused) Color(0xFF101318) else if (selected) Color.White else Color(0xFFB3BAC6)
-    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().heightIn(min = 36.dp)
+    val foreground = if (focused) MaterialTheme.colorScheme.onPrimary else if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().heightIn(min = 48.dp)
         .semantics { this.selected = selected }
         .onFocusChanged { focused = it.isFocused }, shape = RectangleShape,
-        color = if (focused) Color.White else if (selected) Color(0xFF30353E) else Color.Transparent) {
+        color = if (focused) MaterialTheme.colorScheme.primary else if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent) {
         Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(icon, null, Modifier.size(18.dp), tint = foreground)
@@ -214,10 +214,10 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                     if (hero != null) Poster(hero, model, Modifier.matchParentSize(),
                         imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
                     Box(Modifier.matchParentSize().background(Brush.horizontalGradient(listOf(
-                        Color(0xFF0B1220).copy(alpha = .80f), Color(0xFF0B1220).copy(alpha = .10f)))))
+                        MaterialTheme.colorScheme.background.copy(alpha = .98f), MaterialTheme.colorScheme.background.copy(alpha = .90f)))))
                     Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-                        0f to Color(0xFF0B1220).copy(alpha = .08f), .58f to Color.Transparent,
-                        1f to Color(0xFF0B1220))))
+                        0f to MaterialTheme.colorScheme.background.copy(alpha = .25f), .58f to Color.Transparent,
+                        1f to MaterialTheme.colorScheme.background)))
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                         if (hero != null) Column(Modifier.fillMaxWidth(if (compact) 1f else .70f).height(heroHeight)
                             .padding(start = 24.dp, top = 18.dp, end = 12.dp, bottom = 16.dp),
@@ -276,8 +276,7 @@ internal fun TvHomeClock(modifier: Modifier = Modifier) {
         }
     }
     Text(clock, modifier.testTag("tv-home-clock").semantics { contentDescription = "현재 시각 $clock" },
-        style = MaterialTheme.typography.titleMedium.copy(shadow = androidx.compose.ui.graphics.Shadow(
-            Color.Black.copy(alpha = .8f), blurRadius = 4f)), color = Color.White,
+        style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface,
         fontWeight = FontWeight.Medium)
 }
 
@@ -326,11 +325,11 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
         Box(Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f)) {
             Poster(item, model, Modifier.fillMaxSize(), imageUrl = if (wide) item.thumbnail ?: item.backdrop ?: item.poster else item.poster)
             if (focused) Surface(Modifier.align(Alignment.Center).size(46.dp),
-                color = Color(0xE60B1220), shape = RoundedCornerShape(23.dp),
-                border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)) {
-                Icon(Icons.Rounded.PlayArrow, "이어보기 재생", Modifier.padding(9.dp), tint = MaterialTheme.colorScheme.primary)
+                color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(23.dp),
+                border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onPrimary)) {
+                Icon(Icons.Rounded.PlayArrow, "이어보기 재생", Modifier.padding(9.dp), tint = MaterialTheme.colorScheme.onPrimary)
             }
-            if (item.watched && (remaining == null || remaining == 0)) Text("보았음", Modifier.align(Alignment.TopEnd).background(Color(0xDD0B1220)).padding(6.dp),
+            if (item.watched && (remaining == null || remaining == 0)) Text("보았음", Modifier.align(Alignment.TopEnd).background(MaterialTheme.colorScheme.surface.copy(alpha = .94f)).padding(6.dp),
                 color = MaterialTheme.colorScheme.primary)
             UnwatchedCountBadge(remaining, Modifier.align(Alignment.TopEnd).padding(2.dp))
             if (!item.watched && item.resumeMs > 0 && item.durationMs > 0) LinearProgressIndicator(
@@ -350,7 +349,7 @@ internal fun UnwatchedCountBadge(count: Int?, modifier: Modifier = Modifier) {
     Surface(modifier.semantics { contentDescription = "미시청 ${count}편" }
         .size(if (count < 100) 20.dp else if (count < 1000) 26.dp else 34.dp),
         shape = CircleShape, color = MaterialTheme.colorScheme.primary,
-        contentColor = Color(0xFF08251E), shadowElevation = 2.dp) {
+        contentColor = MaterialTheme.colorScheme.onPrimary, shadowElevation = 2.dp) {
         Box(contentAlignment = Alignment.Center) {
             Text(count.toString(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, maxLines = 1)
         }

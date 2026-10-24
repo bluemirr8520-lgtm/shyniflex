@@ -801,24 +801,32 @@ class ShyniClient(
     }
 
     suspend fun details(item: MediaItem): MediaDetails = withContext(Dispatchers.Default) { when (item.type) {
-        "movie" -> MediaDetails(withProgress(parseMedia(
-            request("/libraries/${item.libraryId}/movies/${item.id}", spoiler = item.isSpoiler).objectValue(), item.libraryId, "movie", item,
-        )))
-        "episode" -> MediaDetails(withProgress(enrichEpisode(item)))
+        "movie" -> {
+            val response = request("/libraries/${item.libraryId}/movies/${item.id}", spoiler = item.isSpoiler).objectValue()
+            MediaDetails(withProgress(parseMedia(response, item.libraryId, "movie", item)),
+                castMembers = parseCastMembers(response))
+        }
+        "episode" -> {
+            var cast = emptyList<CastMember>()
+            val enriched = enrichEpisode(item) { cast = parseCastMembers(it) }
+            MediaDetails(withProgress(enriched), castMembers = cast)
+        }
         "show", "tv" -> {
             // Some servers also resolve a resume episode inside the show header.
             // An unidentifiable episode must not prevent opening the separately
             // authorized season list. Keep the original card's numeric identity.
+            var cast = emptyList<CastMember>()
             val fresh = try {
-                parseMedia(request("/libraries/${item.libraryId}/shows/${item.id}", spoiler = item.isSpoiler)
-                    .objectValue(), item.libraryId, "show", item)
+                val response = request("/libraries/${item.libraryId}/shows/${item.id}", spoiler = item.isSpoiler).objectValue()
+                cast = parseCastMembers(response)
+                parseMedia(response, item.libraryId, "show", item)
             } catch (error: ApiException) {
                 if (!error.isEpisodeIdentityFailure()) throw error
                 item
             }
             val children = rows(request("/libraries/${item.libraryId}/shows/${item.id}/seasons?platform=mobile", spoiler = item.isSpoiler))
                 .map { parseMedia(it, item.libraryId, "season").copy(showId = item.id, isSpoiler = item.isSpoiler) }
-            MediaDetails(fresh, children)
+            MediaDetails(fresh, children, castMembers = cast)
         }
         "season" -> {
             val showId = item.showId ?: throw ApiException("시리즈 정보를 찾을 수 없습니다.")
@@ -834,6 +842,155 @@ class ShyniClient(
         }
         else -> MediaDetails(item)
     } }
+
+    /** Read credits already present in a detail response; never fetch a second detail. */
+    internal fun parseCastMembers(detail: JSONObject): List<CastMember> {
+        fun portrait(value: String?): String? = value?.let { raw -> runCatching {
+            resolve(raw).takeIf { it.username.isEmpty() && it.password.isEmpty() }?.toString()
+        }.getOrNull() }
+        fun member(row: JSONObject, neutral: Boolean): CastMember? {
+            val name = row.stringOrNull(if (neutral) "title" else "name")?.trim()?.take(200)
+                ?.takeIf { it.isNotEmpty() } ?: return null
+            val action = if (neutral) row.optJSONObject("action") else null
+            val tmdb = if (neutral && action?.optString("type") == "open_person")
+                action?.stringOrNull("value")?.toIntOrNull()?.takeIf { it > 0 }
+                else if (!neutral) row.exactPositiveInt("tmdb_id") else null
+            val ppkey = (if (neutral && action?.optString("type") == "actor_ppkey") action?.stringOrNull("value")
+                else if (!neutral) row.stringOrNull("ppkey") else null)
+                ?.trim()?.takeIf { it.isNotEmpty() && it.length <= 200 && it.none { character -> character.isISOControl() } }
+            return CastMember(name, row.stringOrNull(if (neutral) "subtitle" else "role").orEmpty().take(300),
+                portrait(row.stringOrNull(if (neutral) "image_url" else "thumb")), tmdb, ppkey)
+        }
+        val neutralRows = mutableListOf<JSONObject>()
+        var hasNeutralCast = false
+        val sections = detail.optJSONArray("metadata_sections")
+        if (sections != null) for (index in 0 until minOf(sections.length(), 32)) {
+            val section = sections.optJSONObject(index) ?: continue
+            if (section.optString("presentation") != "person_row") continue
+            val groups = section.optJSONArray("groups")
+            val cast = groups?.let { array -> (0 until minOf(array.length(), 16)).asSequence()
+                .mapNotNull { array.optJSONObject(it) }.firstOrNull { it.optString("id") == "cast" } }
+            // An explicitly empty cast group must not be replaced with crew cards.
+            if (cast != null) {
+                hasNeutralCast = true
+                neutralRows.addAll(rowSequence(cast, "items").take(100))
+            } else if (groups == null) {
+                hasNeutralCast = true
+                neutralRows.addAll(rowSequence(section, "items").take(100))
+            }
+        }
+        val parsed = if (hasNeutralCast) neutralRows.take(100).mapNotNull { member(it, true) }
+            else {
+                val extra = detail.optJSONObject("extra") ?: detail.stringOrNull("extra")?.let {
+                    runCatching { JSONObject(it) }.getOrNull()
+                }
+                extra?.let { rowSequence(it, "actors").take(100).mapNotNull { row -> member(row, false) }.toList() }.orEmpty()
+            }
+        val members = linkedMapOf<String, CastMember>()
+        for (person in parsed) {
+            val previous = members[person.key]
+            members[person.key] = if (previous == null) person else previous.copy(
+                role = (previous.role.split(" / ") + person.role.split(" / ")).filter { it.isNotBlank() }
+                    .distinct().joinToString(" / ").take(300), portrait = previous.portrait ?: person.portrait)
+        }
+        return members.values.take(50)
+    }
+
+    /** Provider filmography is not a library: expose only explicit, authorized local View matches. */
+    suspend fun actorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>): ActorWorks {
+        val accountToken = token
+        val grantKey = spoilerKey()
+        val capturedGrant = spoilerGrant()
+        val scopes = linkedMapOf<Int, Library>()
+        for (library in libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }) {
+            val previous = scopes[library.id]
+            if (previous == null || (library.isSpoiler && !previous.isSpoiler)) scopes[library.id] = library
+        }
+        val parentLibrary = scopes[parent.libraryId]
+            ?: throw ApiException("이 라이브러리에 접근할 수 없습니다.", 403)
+        val expectedParentType = when (parent.type) {
+            "movie" -> "movie"; "show", "tv", "season", "episode" -> "tv"; else -> null
+        }
+        if (parent.id <= 0 || expectedParentType != parentLibrary.type) throw ApiException("작품 정보를 확인할 수 없습니다.")
+        suspend fun requireCurrent() {
+            currentCoroutineContext().ensureActive()
+            if (token != accountToken) throw ApiException("로그인 정보가 변경되었습니다. 다시 여세요.", 401)
+            if ((capturedGrant != null && (grantKey != spoilerKey() || !SpoilerAccessRegistry.isCurrent(grantKey, capturedGrant))) ||
+                ((parent.isSpoiler || parentLibrary.isSpoiler) && capturedGrant == null)) {
+                throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+            }
+        }
+        return withContext(Dispatchers.Default) {
+            requireCurrent()
+            val tmdbId = actor.tmdbId?.takeIf { it > 0 }
+            val ppkey = actor.ppkey?.trim()?.takeIf {
+                it.isNotEmpty() && it.length <= 200 && it.none { character -> character.isISOControl() }
+            }
+            val currentOnly = tmdbId == null && ppkey != null
+            if (tmdbId == null && (ppkey == null || parentLibrary.type != "tv")) {
+                throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
+            }
+            val path = if (tmdbId != null) "/people/tmdb/$tmdbId?navigation_context=view"
+                else "/libraries/${parentLibrary.id}/shows?sort=title&actor_ppkey=${encode(ppkey!!)}"
+            val response = request(path, responseLimit = 4L * 1024 * 1024,
+                spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
+            requireCurrent()
+            val creditRows = if (tmdbId != null) {
+                val array = (response as? JSONObject)?.optJSONArray("local_credits")
+                    ?: throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
+                (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+            } else {
+                if (response !is JSONArray && (response !is JSONObject ||
+                        (response.optJSONArray("items") == null && response.optJSONArray("results") == null))) {
+                    throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
+                }
+                rows(response)
+            }
+            data class Identity(val libraryId: Int, val type: String, val id: Int, val viewItemId: Int?)
+            val matched = linkedMapOf<Identity, MediaItem>()
+            for (row in creditRows) {
+                if (row.optBoolean("remote") || row.stringOrNull("federated_id") != null) continue
+                if (row.stringOrNull("context_kind")?.let { it != "view" } == true) continue
+                val libraryId = if (currentOnly) parentLibrary.id else row.exactPositiveInt("library_view_id") ?: continue
+                if (!row.isNull("library_view_id") && row.exactPositiveInt("library_view_id") != libraryId) continue
+                val library = scopes[libraryId] ?: continue
+                val type = if (currentOnly) {
+                    when (row.stringOrNull("item_type") ?: row.stringOrNull("type") ?: row.opt("metadata_type")?.toString()) {
+                        null, "null", "2", "show", "tv" -> "show"; else -> continue
+                    }
+                } else when (row.exactPositiveInt("metadata_type")) { 1 -> "movie"; 2 -> "show"; else -> continue }
+                if ((type == "movie" && library.type != "movie") || (type == "show" && library.type != "tv")) continue
+                val metadataId = if (currentOnly) row.exactPositiveInt("id") ?: row.exactPositiveInt("metadata_item_id")
+                    else if (!row.isNull("representative_metadata_item_id")) row.exactPositiveInt("representative_metadata_item_id")
+                    else row.exactPositiveInt("metadata_item_id")
+                if (metadataId == null || row.stringOrNull("title").isNullOrBlank()) continue
+                if (!row.isNull("view_item_id") && row.exactPositiveInt("view_item_id") == null) continue
+                val normalized = JSONObject(row.toString()).put("id", metadataId).put("type", type).put("item_type", type)
+                if (tmdbId != null) row.stringOrNull("poster")?.let { normalized.put("poster_url", it) }
+                val item = parseMedia(normalized, libraryId, type).let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) }
+                val identity = Identity(libraryId, type, metadataId, item.viewItemId)
+                val previous = matched[identity]
+                if (previous == null || (item.isSpoiler && !previous.isSpoiler)) matched[identity] = item
+            }
+            requireCurrent()
+            ActorWorks(matched.values.filter { !it.isSpoiler || capturedGrant != null }.take(200), currentOnly)
+        }
+    }
+
+    /** Related means shared cast here, not an unsupported recommendation endpoint. */
+    suspend fun relatedWorks(parent: MediaItem, castMembers: List<CastMember>, libraries: List<Library>): List<MediaItem> {
+        val actor = castMembers.firstOrNull { it.tmdbId?.let { id -> id > 0 } == true } ?: return emptyList()
+        val currentShow = when (parent.type) {
+            "show", "tv" -> parent.id
+            "season", "episode" -> parent.showId?.takeIf { it > 0 } ?: return emptyList()
+            "movie" -> null
+            else -> return emptyList()
+        }
+        return actorWorks(actor, parent, libraries).items.filterNot {
+            (parent.type == "movie" && it.type == "movie" && it.id == parent.id) ||
+                (currentShow != null && it.type == "show" && it.id == currentShow)
+        }.take(20)
+    }
 
     /** Count authorized episode identities, never physical file versions or partial history. */
     suspend fun unwatchedEpisodeCount(item: MediaItem): Int? = withContext(Dispatchers.Default) {
@@ -885,13 +1042,14 @@ class ShyniClient(
         }
     }
 
-    private suspend fun enrichEpisode(item: MediaItem): MediaItem {
+    private suspend fun enrichEpisode(item: MediaItem, onShowMetadata: (JSONObject) -> Unit = {}): MediaItem {
         // beta4 has no GET /episodes/{id}. Read only the selected show's
         // documented metadata/season routes, and keep playback identity intact.
         val showId = item.showId ?: return item
         return try {
-            val show = parseMedia(request("/libraries/${item.libraryId}/shows/$showId", responseLimit = 4L * 1024 * 1024, spoiler = item.isSpoiler)
-                .objectValue(), item.libraryId, "show")
+            val response = request("/libraries/${item.libraryId}/shows/$showId", responseLimit = 4L * 1024 * 1024, spoiler = item.isSpoiler).objectValue()
+            val show = parseMedia(response, item.libraryId, "show")
+            onShowMetadata(response)
             var result = item.copy(
                 backdrop = item.backdrop ?: show.backdrop,
                 showTitle = item.showTitle ?: show.title,

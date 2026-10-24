@@ -39,6 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.mirr.shynigsy.AppState
 import io.mirr.shynigsy.AppViewModel
+import io.mirr.shynigsy.DetailDiscoveryState
+import io.mirr.shynigsy.detailDiscoveryKey
+import io.mirr.shynigsy.data.CastMember
+import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
@@ -53,7 +57,10 @@ internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOp
         onSelectSeason = model::selectSeason, onSelectVersion = model::selectVersion,
         onWatchOptions = onWatchOptions, onWatchedChange = { item, watched -> model.setWatched(item, watched) },
         artwork = { item, modifier -> Poster(item, model, modifier,
-            imageUrl = if (item.type == "episode") item.thumbnail ?: item.poster else item.poster) })
+            imageUrl = if (item.type == "episode") item.thumbnail ?: item.poster else item.poster) },
+        discovery = state.detailDiscovery[detailDiscoveryKey(detail.item)], libraries = state.libraries,
+        onSelectActor = model::selectDetailActor, onRetryRelated = model::retryRelatedWorks,
+        portrait = { actor, modifier -> Poster(detail.item, model, modifier, imageUrl = actor.portrait) })
 }
 
 /** Callback-based surface also permits synthetic UI verification without accounts or a server. */
@@ -73,12 +80,22 @@ internal fun CompactDetailContent(
     onWatchedChange: (MediaItem, Boolean) -> Unit,
     artwork: @Composable (MediaItem, Modifier) -> Unit,
     modifier: Modifier = Modifier,
+    discovery: DetailDiscoveryState? = null,
+    libraries: List<Library> = emptyList(),
+    onSelectActor: (CastMember) -> Unit = {},
+    onRetryRelated: () -> Unit = {},
+    portrait: @Composable (CastMember, Modifier) -> Unit = { _, _ -> },
 ) {
     val item = detail.item
     if (item.isSpoiler && !spoilerUnlocked) return
     val children = detail.children.filter { spoilerUnlocked || !it.isSpoiler }
     val seasons = detail.seasons.filter { spoilerUnlocked || !it.isSpoiler }
     val identity = compactMediaIdentity(item)
+    val frame = discovery?.takeIf { detailDiscoveryKey(it.parent) == detailDiscoveryKey(item) }
+    var focusedDiscovery by rememberSaveable(identity) { mutableStateOf<String?>(null) }
+    var restoreDiscoveryFocus by remember { mutableStateOf(false) }
+    val discoveryFocus = remember { FocusRequester() }
+    val discoveryTargets = discoveryFocusTargets(item, detail.castMembers, frame, libraries, spoilerUnlocked)
     val childKeys = children.map(::compactMediaIdentity)
     var focusedChildKey by rememberSaveable(identity) { mutableStateOf<String?>(null) }
     val restoredChild = focusedChildKey?.takeIf { it in childKeys } ?: childKeys.firstOrNull()
@@ -89,10 +106,19 @@ internal fun CompactDetailContent(
     val television = LocalContext.current.isTelevision()
     var focusRequested by remember(identity, detail.selectedSeasonId, childKeys) { mutableStateOf(false) }
     var expanded by rememberSaveable(identity) { mutableStateOf(false) }
-    val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty()
+    val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty() || discoveryTargets.isNotEmpty()
     LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId) {
         if (busy) return@LaunchedEffect
         if (!television || !hasFocusTarget || focusRequested) return@LaunchedEffect
+        if ((focusedDiscovery != null || (!item.playable && children.isEmpty() && seasons.isEmpty())) && discoveryTargets.isNotEmpty()) {
+            val primaryRows = if (item.playable) 1 + (if (versions.isNotEmpty()) 1 else 0) else children.size.coerceAtLeast(1)
+            val discoveryIndex = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0) +
+                primaryRows + (if (item.summary.isNotBlank()) 1 else 0)
+            list.scrollToItem(discoveryIndex)
+            restoreDiscoveryFocus = true
+            focusRequested = true
+            return@LaunchedEffect
+        }
         val restoredIndex = childKeys.indexOf(restoredChild)
         // Keep the compact heading visible initially; restore deeper rows only when returning.
         if (!item.playable && restoredIndex > 0) {
@@ -138,6 +164,7 @@ internal fun CompactDetailContent(
                     TvAction(season.title, modifier = Modifier
                         .then(if (!item.playable && children.isEmpty() && season == selectedSeason) Modifier.focusRequester(focus) else Modifier)
                         .testTag("compact-season-${compactMediaIdentity(season)}")
+                        .onFocusChanged { if (it.hasFocus) focusedDiscovery = null }
                         .semantics { selected = season.id == detail.selectedSeasonId },
                         enabled = !busy) { onSelectSeason(season) }
                 }
@@ -152,7 +179,8 @@ internal fun CompactDetailContent(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         TvAction(if (item.watched) "다시 재생" else if (item.resumeMs > 0) "이어보기" else "재생",
-                            modifier = Modifier.weight(1f).focusRequester(focus).testTag("compact-detail-play"),
+                            modifier = Modifier.weight(1f).focusRequester(focus).testTag("compact-detail-play")
+                                .onFocusChanged { if (it.hasFocus) focusedDiscovery = null },
                             enabled = !busy) { onPlay(item, item.watched) }
                         if (canChangeWatchState(item)) TvAction("시청 상태", Modifier.weight(1f).testTag("compact-detail-watch"),
                             enabled = !busy) { onWatchOptions(item) }
@@ -168,7 +196,7 @@ internal fun CompactDetailContent(
             items(children, key = ::compactMediaIdentity) { child ->
                 CompactEpisodeRow(child, busy, onOpenItem, onWatchOptions, artwork,
                     modifier = Modifier.then(if (compactMediaIdentity(child) == restoredChild) Modifier.focusRequester(focus) else Modifier)
-                        .onFocusChanged { if (it.hasFocus) focusedChildKey = compactMediaIdentity(child) },
+                        .onFocusChanged { if (it.hasFocus) { focusedChildKey = compactMediaIdentity(child); focusedDiscovery = null } },
                     onWatchedChange = onWatchedChange)
             }
             if (children.isEmpty()) item(key = "episode-status") {
@@ -184,6 +212,12 @@ internal fun CompactDetailContent(
                 if (item.summary.length > 140) TvAction(if (expanded) "접기" else "줄거리 더 보기",
                     Modifier.testTag("compact-summary-toggle")) { expanded = !expanded }
             }
+        }
+        item(key = "discovery") {
+            DetailDiscoverySections(item, detail.castMembers, frame, libraries, spoilerUnlocked, busy,
+                onSelectActor, onOpenItem, onWatchOptions, onRetryRelated, artwork, portrait,
+                restoreTarget = focusedDiscovery, requestFocus = restoreDiscoveryFocus, focus = discoveryFocus,
+                onFocused = { focusedDiscovery = it }, onRestoreDone = { restoreDiscoveryFocus = false })
         }
     }
 }

@@ -35,5 +35,8 @@ internal fun applyExplicitWatchState(
             detail.copy(item = updated(detail.item), children = detail.children.map(::updated),
                 seasons = detail.seasons.map(::updated))
         },
+        detailDiscovery = state.detailDiscovery.mapValues { (_, detail) -> detail.copy(
+            parent = updated(detail.parent), relatedItems = detail.relatedItems.map(::updated),
+            actorItems = detail.actorItems.map(::updated)) },
     )
 }

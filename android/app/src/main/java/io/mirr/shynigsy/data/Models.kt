@@ -122,7 +122,8 @@ data class MediaItem(
 data class MediaPage(val items: List<MediaItem>, val total: Int,
     val genres: List<String> = emptyList(), val years: List<Int> = emptyList())
 data class MediaDetails(val item: MediaItem, val children: List<MediaItem> = emptyList(),
-    val seasons: List<MediaItem> = emptyList(), val selectedSeasonId: Int? = null)
+    val seasons: List<MediaItem> = emptyList(), val selectedSeasonId: Int? = null,
+    val castMembers: List<CastMember> = emptyList())
 data class MediaVersion(
     val partId: Int,
     val label: String,

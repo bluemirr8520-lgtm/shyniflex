@@ -83,11 +83,14 @@ private fun LibraryOptionsDialog(title: String, options: List<LibraryOption>, se
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 LazyColumn(Modifier.heightIn(max = 320.dp), state = list, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(options, key = { it.key }) { option ->
-                        TvAction((if (option.key == selected) "✓ " else "") + option.label,
-                            Modifier.fillMaxWidth().testTag("library-option-${option.key}")
+                        CompactMenuAction(onClick = { onSelect(option.key) },
+                            modifier = Modifier.fillMaxWidth().testTag("library-option-${option.key}")
                                 .semantics { this.selected = option.key == selected }
                                 .then(if (option.key == options[selectedIndex].key) Modifier.focusRequester(focus) else Modifier),
-                            enabled = !busy) { onSelect(option.key) }
+                            enabled = !busy, selected = option.key == selected) {
+                            Text((if (option.key == selected) "✓ " else "") + option.label,
+                                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        }
                     }
                 }
             }

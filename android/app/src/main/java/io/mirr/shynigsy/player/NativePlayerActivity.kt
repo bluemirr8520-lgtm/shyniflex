@@ -413,7 +413,7 @@ class NativePlayerActivity : AppCompatActivity() {
         root.addView(gestures, FrameLayout.LayoutParams(-1, -1))
         lockButton = Button(this).apply {
             id = R.id.player_lock
-            text = "잠금"; textSize = 12f; setTextColor(Color.WHITE); setBackgroundColor(0xB3142536.toInt())
+            text = "잠금"; textSize = 12f; setTextColor(Color.WHITE); applyControlHighlight(this)
             visibility = View.GONE
             contentDescription = "화면 잠금"
             setOnClickListener {
@@ -435,7 +435,7 @@ class NativePlayerActivity : AppCompatActivity() {
         segmentSkipButton = Button(this).apply {
             id = R.id.player_segment_skip
             visibility = View.GONE
-            textSize = 14f; setTextColor(Color.WHITE); setBackgroundColor(0xDC142536.toInt())
+            textSize = 14f; setTextColor(Color.WHITE); applyControlHighlight(this)
             setPadding(dp(16), 0, dp(16), 0)
             setOnClickListener { skipCurrentSegment() }
         }
@@ -443,7 +443,7 @@ class NativePlayerActivity : AppCompatActivity() {
             id = R.id.player_credits_next
             visibility = View.GONE
             text = "다음 화"; textSize = 14f
-            setTextColor(Color.WHITE); setBackgroundColor(0xDC142536.toInt())
+            setTextColor(Color.WHITE); applyControlHighlight(this)
             setPadding(dp(12), 0, dp(16), 0)
             setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_player_next_episode, 0, 0, 0)
             compoundDrawablePadding = dp(6)
@@ -482,8 +482,8 @@ class NativePlayerActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(24), dp(24), dp(24), dp(24))
             setBackgroundColor(0xED14202D.toInt()); visibility = View.GONE
             addView(errorText, LinearLayout.LayoutParams(-1, -2))
-            addView(Button(this@NativePlayerActivity).apply { text = "이 위치에서 다시 재생"; setOnClickListener { refreshTicketAndRestart() } })
-            addView(Button(this@NativePlayerActivity).apply { text = "라이브러리로 돌아가기"; setOnClickListener { leavePlayer() } })
+            addView(Button(this@NativePlayerActivity).apply { text = "이 위치에서 다시 재생"; setTextColor(Color.WHITE); applyControlHighlight(this); setOnClickListener { refreshTicketAndRestart() } })
+            addView(Button(this@NativePlayerActivity).apply { text = "라이브러리로 돌아가기"; setTextColor(Color.WHITE); applyControlHighlight(this); setOnClickListener { leavePlayer() } })
         }
         root.addView(errorPanel, FrameLayout.LayoutParams(dp(410), -2, Gravity.CENTER))
         if (television) {
@@ -500,8 +500,8 @@ class NativePlayerActivity : AppCompatActivity() {
                     isFocusable = true
                 }
             }
-            segmentSkipButton.background = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.tv_control_background)
-            creditsNextButton.background = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.tv_control_background)
+            applyControlHighlight(segmentSkipButton)
+            applyControlHighlight(creditsNextButton)
         }
         setContentView(root)
         ViewCompat.requestApplyInsets(root)
@@ -861,22 +861,37 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private data class TrackChoice(val label: String, val selected: Boolean, val apply: () -> Unit)
 
+    private fun applyControlHighlight(view: View) {
+        view.background = getDrawable(R.drawable.tv_player_button)
+        view.backgroundTintList = null
+        view.elevation = 0f
+        view.stateListAnimator = null
+        (view as? TextView)?.setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
+    }
+
+    private fun applyMenuHighlight(view: View) {
+        view.background = getDrawable(R.drawable.tv_control_background)
+        view.backgroundTintList = null
+        view.elevation = 0f
+        view.stateListAnimator = null
+    }
+
     private fun showSettings() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
-            setBackgroundColor(0xFF14202D.toInt())
+            setBackgroundColor(0xFFF5F7F8.toInt())
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         panel.addView(TextView(this).apply {
-            text = "재생 설정"; textSize = 16f; setTextColor(Color.WHITE)
+            text = "재생 설정"; textSize = 16f; setTextColor(0xFF18242F.toInt())
             setPadding(dp(4), dp(4), dp(4), dp(8))
         }, LinearLayout.LayoutParams(-1, -2))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val focusRows = mutableListOf<View>()
         var selectedTab = 0
-        panel.addView(tabs, LinearLayout.LayoutParams(-1, dp(44)))
+        panel.addView(tabs, LinearLayout.LayoutParams(-1, dp(48)))
         tabs.visibility = View.GONE
         val scroll = object : ScrollView(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -892,10 +907,10 @@ class NativePlayerActivity : AppCompatActivity() {
         val dialog = AlertDialog.Builder(this).setView(panel).create()
         val close = Button(this).apply {
             id = View.generateViewId()
-            text = "닫기"; textSize = 14f; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
+            text = "닫기"; textSize = 14f; setTextColor(0xFF18242F.toInt()); applyMenuHighlight(this)
             setOnClickListener { dialog.dismiss() }
         }
-        panel.addView(close, LinearLayout.LayoutParams(-1, dp(44)))
+        panel.addView(close, LinearLayout.LayoutParams(-1, dp(48)))
 
         fun addRow(label: String, value: String = "", action: () -> Unit) {
             val row = LinearLayout(this).apply {
@@ -903,26 +918,26 @@ class NativePlayerActivity : AppCompatActivity() {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(8), 0, dp(8), 0)
                 isClickable = true; isFocusable = true
-                background = getDrawable(if (television) R.drawable.tv_control_background else android.R.drawable.list_selector_background)
+                background = getDrawable(R.drawable.tv_control_background)
                 descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 contentDescription = listOf(label, value).filter { it.isNotBlank() }.joinToString(", ")
                 setOnClickListener { dialog.dismiss(); action() }
             }
             row.addView(TextView(this).apply {
-                text = label; textSize = 14f; setTextColor(Color.WHITE)
+                text = label; textSize = 14f; setTextColor(0xFF18242F.toInt())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
-                text = value; textSize = 12f; setTextColor(0xFF7BE6C6.toInt())
+                text = value; textSize = 12f; setTextColor(0xFF006B5B.toInt())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 gravity = Gravity.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
-                text = "›"; textSize = 18f; setTextColor(0xFF92A5B6.toInt()); gravity = Gravity.END
+                text = "›"; textSize = 18f; setTextColor(0xFF52616F.toInt()); gravity = Gravity.END
             }, LinearLayout.LayoutParams(dp(18), -2))
-            rows.addView(row, LinearLayout.LayoutParams(-1, dp(44)))
+            rows.addView(row, LinearLayout.LayoutParams(-1, dp(48)))
             focusRows.add(row)
-            rows.addView(View(this).apply { setBackgroundColor(0xFF30404D.toInt()) },
+            rows.addView(View(this).apply { setBackgroundColor(0xFFDDE5E8.toInt()) },
                 LinearLayout.LayoutParams(-1, dp(1)))
         }
 
@@ -938,9 +953,8 @@ class NativePlayerActivity : AppCompatActivity() {
             selectedTab = index
             buttons.forEachIndexed { selected, button ->
                 button.isSelected = selected == index
-                button.setTextColor(if (selected == index) 0xFF7BE6C6.toInt() else Color.WHITE)
-                if (television) button.background = getDrawable(R.drawable.tv_control_background)
-                else button.setBackgroundColor(if (selected == index) 0xFF243B4D.toInt() else Color.TRANSPARENT)
+                button.setTextColor(if (selected == index) 0xFF006B5B.toInt() else 0xFF18242F.toInt())
+                applyMenuHighlight(button)
             }
             rows.removeAllViews()
             focusRows.clear()
@@ -1114,7 +1128,9 @@ class NativePlayerActivity : AppCompatActivity() {
         val builder = AlertDialog.Builder(this).setTitle(if (type == C.TRACK_TYPE_AUDIO) "오디오 트랙" else "자막 선택")
             .setNegativeButton("취소", null)
         if (type != C.TRACK_TYPE_TEXT) {
-            builder.setSingleChoiceItems(choices.map { it.label }.toTypedArray(), selected, choose).show()
+            builder.setSingleChoiceItems(choices.map { it.label }.toTypedArray(), selected, choose).show().apply {
+                listView.selector = getDrawable(R.drawable.tv_control_background)
+            }
             return
         }
         val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_single_choice, choices.map { it.label }) {
@@ -1123,7 +1139,8 @@ class NativePlayerActivity : AppCompatActivity() {
                     (this as TextView).apply {
                         textSize = 13f; minHeight = dp(48); setSingleLine(false); maxLines = 3
                         ellipsize = android.text.TextUtils.TruncateAt.END
-                        setTextColor(Color.WHITE); setPadding(dp(12), dp(4), dp(12), dp(4))
+                        setTextColor(0xFF18242F.toInt()); setPadding(dp(12), dp(4), dp(12), dp(4))
+                        background = getDrawable(R.drawable.tv_control_background)
                     }
                 }
         }
@@ -1133,14 +1150,15 @@ class NativePlayerActivity : AppCompatActivity() {
         dialog.setOnDismissListener { if (subtitleDialog === dialog) subtitleDialog = null }
         dialog.show()
         dialog.findViewById<TextView>(androidx.appcompat.R.id.alertTitle)?.apply {
-            textSize = 16f; setTextColor(Color.WHITE)
+            textSize = 16f; setTextColor(0xFF18242F.toInt())
         }
+        dialog.listView.selector = getDrawable(R.drawable.tv_control_background)
         dialog.listView.setSelection(selected.coerceAtLeast(0))
         if (television) dialog.listView.requestFocus()
         dialog.window?.apply {
             setLayout(minOf(dp(360), resources.displayMetrics.widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF14202D.toInt()); cornerRadius = dp(3).toFloat()
+                setColor(0xFFF5F7F8.toInt()); cornerRadius = dp(3).toFloat()
             })
         }
     }
@@ -1151,7 +1169,7 @@ class NativePlayerActivity : AppCompatActivity() {
             speed = speeds[index]; player?.setPlaybackSpeed(speed)
             getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putFloat("playback_speed", speed).apply()
             updatePlaybackButtons(); dialog.dismiss()
-        }.setNegativeButton("취소", null).show()
+        }.setNegativeButton("취소", null).show().apply { listView.selector = getDrawable(R.drawable.tv_control_background) }
     }
 
     private fun speedLabel(value: Float = speed) = String.format(Locale.US, "%.2f", value).trimEnd('0').trimEnd('.') + "×"
@@ -2152,6 +2170,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
     private fun hideSystemBars() {
         WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
         }

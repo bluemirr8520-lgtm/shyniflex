@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -56,7 +55,7 @@ internal fun HomeContinueWatchingSection(
                 // An upstream error can mention a private title or URL. Home only needs a safe retry message.
                 Text("이어보기를 불러오지 못했습니다. 새로고침해 주세요.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("continue-watching-error"))
-                OutlinedButton(onClick = onRetry, enabled = !busy,
+                CompactMenuAction(onClick = onRetry, enabled = !busy,
                     modifier = Modifier.testTag("continue-watching-retry")) { Text("다시 시도") }
             }
             else -> Text("이어볼 영상이 없습니다. 시청 중인 영상이 여기에 표시됩니다.",
