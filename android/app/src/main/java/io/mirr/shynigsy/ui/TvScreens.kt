@@ -89,11 +89,23 @@ internal fun TvAction(label: String, modifier: Modifier = Modifier, enabled: Boo
 }
 
 @Composable
-internal fun TvHeader(title: String?) {
+internal fun TvHeader(title: String?, onHome: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Text(title ?: "shyniflex", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (onHome != null) LibraryHomeButton(onHome)
+    }
+}
+
+@Composable
+internal fun LibraryHomeButton(onHome: () -> Unit) {
+    TextButton(onClick = onHome,
+        modifier = Modifier.testTag("library-home").tvOnlyFocus().heightIn(min = 48.dp),
+        shape = RectangleShape, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+        Icon(Icons.Rounded.Home, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("홈", style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
 }
 

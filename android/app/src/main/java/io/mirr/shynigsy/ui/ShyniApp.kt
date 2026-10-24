@@ -181,9 +181,11 @@ fun ShyniApp(
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) { Text("☰  메뉴") }
                         Text(detail?.item?.title ?: state.library?.title ?: if (state.searchOpen) "검색" else "shyniflex", Modifier.weight(1f).padding(start = 8.dp),
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (state.library != null) LibraryHomeButton(onHome = viewModel::openHome)
                     }
                     else if (detail != null || state.library != null || state.searchOpen) TvHeader(
                         title = detail?.item?.title ?: state.library?.title ?: "검색",
+                        onHome = if (state.library != null) viewModel::openHome else null,
                     )
                     }
                 } else
