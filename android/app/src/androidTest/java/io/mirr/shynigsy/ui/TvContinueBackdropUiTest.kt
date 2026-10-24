@@ -106,7 +106,12 @@ class TvContinueBackdropUiTest {
             assertTrue(heroExists(first))
             screen.onNodeWithText(hidden.title).assertDoesNotExist()
             assertTrue("Idle rotation needs no server calls", fixture.requests.isEmpty())
-            saveScreenshot("tv-continue-hero", "tv-continue-vivid.png")
+            val section = screen.onNodeWithTag("tv-continue-section").fetchSemanticsNode().boundsInRoot
+            val hero = screen.onNodeWithTag("tv-continue-hero").fetchSemanticsNode().boundsInRoot
+            val poster = screen.onNodeWithTag(cardTag(first)).fetchSemanticsNode().boundsInRoot
+            assertTrue("The backdrop section includes the selected hero", section.top <= hero.top && section.bottom > hero.bottom)
+            assertTrue("The backdrop continues beneath the poster row", section.bottom > poster.bottom)
+            saveScreenshot("tv-continue-section", "tv-continue-vivid.png")
         }
     }
 

@@ -250,7 +250,8 @@ fun ShyniApp(
                         }
                         if (tv) Row(Modifier.fillMaxSize()) { sidebar(); Box(Modifier.weight(1f)) { content() } }
                         else ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-                            ModalDrawerSheet { sidebar() }
+                            ModalDrawerSheet(modifier = Modifier.width(156.dp),
+                                drawerContainerColor = MaterialTheme.colorScheme.surfaceContainer) { sidebar() }
                         }) { content() }
                     }
 

@@ -54,6 +54,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -71,6 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import io.mirr.shynigsy.data.MediaItem
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -190,6 +192,8 @@ internal fun ContinueWatchingSection(
             else ((maxWidth - 52.dp) / 2).coerceIn(150.dp, 260.dp)
         } else if (wide) (screenHeight * .20f).dp.coerceIn(110.dp, 150.dp) else 118.dp
         val heroProgress = continuePlaybackProgress(hero.durationMs, selectedItem.resumeMs)
+        backdrop(hero, Modifier.matchParentSize().testTag("continue-section-backdrop"))
+        Box(Modifier.matchParentSize().continueSectionBackdropFade(heroHeight, background, wide))
         Column(Modifier.fillMaxWidth()) {
                 Box(Modifier.fillMaxWidth().height(heroHeight).testTag("continue-watching-hero")
                     .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
@@ -213,13 +217,6 @@ internal fun ContinueWatchingSection(
                             },
                         )
                     }) {
-                    backdrop(hero, Modifier.matchParentSize())
-                    if (wide) Box(Modifier.matchParentSize().background(Brush.horizontalGradient(
-                        listOf(Color.Black.copy(alpha = .76f), Color.Black.copy(alpha = .42f), Color.Transparent))))
-                    Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-                        0f to Color.Black.copy(alpha = if (wide) .08f else .48f),
-                        .85f to Color.Black.copy(alpha = if (wide) .16f else .56f),
-                        1f to background)))
                     Column(Modifier.fillMaxWidth(if (wide) .66f else 1f).align(if (wide) Alignment.CenterStart else Alignment.Center)
                         .padding(horizontal = 24.dp, vertical = 12.dp),
                         horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally,
@@ -260,9 +257,9 @@ internal fun ContinueWatchingSection(
                     }
                 }
                 Row(Modifier.padding(horizontal = 24.dp, vertical = if (wide) 4.dp else 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.PlayArrow, null, tint = accent, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("계속 시청", color = foreground, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("계속 시청", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 }
                 LazyRow(state = row, modifier = Modifier.fillMaxWidth().testTag("continue-watching-row"),
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = if (wide) 12.dp else 20.dp),
@@ -306,6 +303,34 @@ internal fun ContinueWatchingSection(
         }
     }
 }
+
+/**
+ * Artwork stays behind the entire shelf, while captions finish on the app's plain background.
+ * Pixel positions follow the existing hero and actual shelf height; no layout state or extra row is needed.
+ */
+internal fun Modifier.continueSectionBackdropFade(heroHeight: Dp, background: Color, wide: Boolean): Modifier =
+    drawWithCache {
+        val height = size.height.coerceAtLeast(1f)
+        val heroEnd = heroHeight.toPx().coerceIn(0f, height)
+        val cardStart = (heroEnd + 36.dp.toPx()).coerceAtMost(height)
+        val captionStart = (height - 56.dp.toPx()).coerceIn(cardStart, height)
+        val shade = if (wide) Brush.horizontalGradient(
+            0f to Color.Black.copy(alpha = .78f), .58f to Color.Black.copy(alpha = .50f),
+            1f to Color.Black.copy(alpha = .02f))
+        else Brush.verticalGradient(listOf(Color.Black.copy(alpha = .48f), Color.Black.copy(alpha = .48f)))
+        val fade = Brush.verticalGradient(
+            0f to background.copy(alpha = 0f),
+            (heroEnd * .88f / height) to background.copy(alpha = 0f),
+            (heroEnd / height) to background.copy(alpha = .10f),
+            (cardStart / height) to background.copy(alpha = .20f),
+            (captionStart / height) to background.copy(alpha = .94f),
+            1f to background,
+        )
+        onDrawBehind {
+            drawRect(shade)
+            drawRect(fade)
+        }
+    }
 
 private fun continueIdentity(item: MediaItem) = "${item.libraryId}:${item.type}:${item.id}:${item.viewItemId}:${item.isSpoiler}"
 

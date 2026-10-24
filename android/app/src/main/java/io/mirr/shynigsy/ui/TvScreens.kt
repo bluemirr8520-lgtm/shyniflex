@@ -51,7 +51,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -241,7 +240,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item(key = "continue") {
                 // The backdrop belongs only to this section; other shelves keep a plain background.
-                Box(Modifier.fillMaxWidth().hoverable(continueInteraction)
+                Box(Modifier.fillMaxWidth().testTag("tv-continue-section").hoverable(continueInteraction)
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -254,19 +253,16 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                             finally { touchingContinue = false; interactionRevision++ }
                         }
                     }) {
-                    if (hero != null) Box(Modifier.fillMaxWidth().height(heroHeight)
-                        .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
-                        .testTag("tv-continue-hero")) {
+                    if (hero != null) Box(Modifier.matchParentSize().testTag("tv-continue-backdrop")) {
                         Poster(hero, model, Modifier.matchParentSize(),
                             imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
-                        Box(Modifier.matchParentSize().background(Brush.horizontalGradient(
-                            0f to Color.Black.copy(alpha = .78f), .58f to Color.Black.copy(alpha = .50f),
-                            1f to Color.Black.copy(alpha = .02f))))
-                        Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-                            0f to Color.Transparent, .85f to Color.Transparent, 1f to Color.Black.copy(alpha = .22f))))
+                        Box(Modifier.matchParentSize().continueSectionBackdropFade(
+                            heroHeight, MaterialTheme.colorScheme.background, wide = !compact))
                     }
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                         if (hero != null) Column(Modifier.fillMaxWidth(if (compact) 1f else .70f).height(heroHeight)
+                            .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
+                            .testTag("tv-continue-hero")
                             .padding(start = 24.dp, top = 18.dp, end = 12.dp, bottom = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom)) {
                             Text(hero.showTitle ?: hero.title, style = MaterialTheme.typography.headlineMedium,
@@ -278,6 +274,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                         }
                         if (continuing.isNotEmpty()) TvShelf("이어서 보기", continuing, model, onWatchOptions,
                             modifier = if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus) else Modifier,
+                            titleColor = Color.White,
                             restoreKey = selectedKey, onSelect = {
                                 selectedKey = tvMediaKey(it); heroKey = tvMediaKey(it); interactionRevision++
                                 selectedShelf = "continue"; model.selectContinueItem(it)
@@ -332,11 +329,13 @@ internal fun TvHomeClock(modifier: Modifier = Modifier, foreground: Color? = nul
 @Composable
 private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
     onWatchOptions: (MediaItem) -> Unit, modifier: Modifier = Modifier,
-    onSelect: (MediaItem) -> Unit, onClick: (MediaItem) -> Unit, wide: Boolean = false, restoreKey: String = "") {
+    onSelect: (MediaItem) -> Unit, onClick: (MediaItem) -> Unit, wide: Boolean = false, restoreKey: String = "",
+    titleColor: Color = MaterialTheme.colorScheme.onSurface) {
     val fallback = remember { FocusRequester() }
     val hasRestoreKey = remember(media, restoreKey) { media.any { tvMediaKey(it) == restoreKey } }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title, Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text(title, Modifier.padding(horizontal = 24.dp), color = titleColor,
+            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         LazyRow(modifier.focusRestorer(fallback).focusGroup(), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(media, key = ::tvMediaKey) { item ->

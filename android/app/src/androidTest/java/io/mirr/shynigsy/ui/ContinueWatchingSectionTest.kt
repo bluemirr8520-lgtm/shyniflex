@@ -78,10 +78,14 @@ class ContinueWatchingSectionTest {
             .config[SemanticsProperties.Text].joinToString { it.text }
         assertTrue("Hero metadata includes season and episode", metadata.contains("S2 E1"))
         assertTrue("Hero metadata includes the 40-minute duration", metadata.contains("40"))
-        saveScreenshot(HERO, "continue-watching-hero.png")
+        // Keep the existing artifact name, capturing the backdrop through the thumbnail row.
+        saveScreenshot(SECTION, "continue-watching-hero.png")
 
         val rowBeforeScroll = screen.onNodeWithTag(ROW).fetchSemanticsNode().boundsInRoot
         assertTrue("The poster row belongs below the hero", rowBeforeScroll.top >= hero.bottom - 1f)
+        val backdropSection = screen.onNodeWithTag(SECTION).fetchSemanticsNode().boundsInRoot
+        assertTrue("The painted section includes the hero and thumbnail row",
+            backdropSection.bottom > hero.bottom && backdropSection.bottom >= rowBeforeScroll.bottom - 1f)
         screen.onNodeWithTag(ROW).performScrollTo()
         settle()
         val poster = screen.onNodeWithTag(posterTag(items.first()), useUnmergedTree = true)
