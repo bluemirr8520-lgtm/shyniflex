@@ -44,7 +44,7 @@ class PlexLibraryToolbarTest {
         screen.onNodeWithTag("library-option-MOVIES").assertIsSelected().performClick()
         screen.onNodeWithText("서버가 제공한 표시 종류 정보가 없습니다.").assertDoesNotExist()
         screen.onNodeWithTag("library-sort").assertTextEquals("제목 ▾")
-        screen.onNodeWithTag("library-sort-direction").assertExists()
+        screen.onNodeWithTag("library-sort-direction").assertDoesNotExist()
         screen.runOnIdle { assertTrue("Choosing the current type must not reload the catalog", state.changes.isEmpty()) }
     }
 
@@ -59,7 +59,25 @@ class PlexLibraryToolbarTest {
         screen.onNodeWithTag("library-option-SEASONS").assertExists()
         screen.onNodeWithTag("library-option-EPISODES").performClick()
         screen.onNodeWithTag("library-type").assertTextEquals("에피소드 ▾")
-        screen.runOnIdle { assertEquals(listOf("type:EPISODES"), state.changes) }
+        screen.onNodeWithTag("library-sort").assertTextEquals("최근 에피소드 ▾").performClick()
+        screen.onNodeWithTag("library-option-LATEST_EPISODE").assertIsSelected()
+        screen.onNodeWithTag("library-option-YEAR").assertDoesNotExist()
+        screen.onNodeWithTag("library-option-RELEASED_AT").assertDoesNotExist()
+        screen.onNodeWithTag("library-options-close").performClick()
+        screen.onNodeWithTag("library-type").performClick()
+        screen.onNodeWithTag("library-option-SEASONS").performClick()
+        screen.onNodeWithTag("library-sort").assertTextEquals("제목 ▾").performClick()
+        screen.onNodeWithTag("library-option-TITLE").assertIsSelected()
+        screen.onNodeWithTag("library-option-ADDED").assertExists()
+        screen.onNodeWithTag("library-option-LATEST_EPISODE").assertDoesNotExist()
+        screen.onNodeWithTag("library-options-close").performClick()
+        screen.onNodeWithTag("library-type").performClick()
+        screen.onNodeWithTag("library-option-SHOWS").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-LATEST_EPISODE").assertExists()
+        screen.onNodeWithTag("library-option-RATING").assertDoesNotExist()
+        screen.onNodeWithTag("library-options-close").performClick()
+        screen.runOnIdle { assertEquals(listOf("type:EPISODES", "type:SEASONS", "type:SHOWS"), state.changes) }
     }
 
     @Test fun sortCriteriaAndDirectionEmitOneExactSelectionEach() {
@@ -69,22 +87,52 @@ class PlexLibraryToolbarTest {
         screen.onNodeWithTag("library-option-TITLE").assertIsSelected()
         screen.onNodeWithTag("library-option-ADDED").assertExists()
         screen.onNodeWithTag("library-option-YEAR").assertExists()
-        screen.onNodeWithTag("library-option-DURATION").performClick()
-        screen.onNodeWithTag("library-sort").assertTextEquals("재생시간 ▾")
-        screen.onNodeWithTag("library-sort-direction").performClick()
-        screen.runOnIdle { assertEquals(listOf("sort:DURATION_ASC", "sort:DURATION_DESC"), state.changes) }
+        screen.onNodeWithTag("library-option-RATING").assertExists()
+        screen.onNodeWithTag("library-option-DURATION").assertDoesNotExist()
+        screen.onNodeWithTag("library-option-LATEST_EPISODE").assertDoesNotExist()
+        screen.onNodeWithTag("library-option-RELEASED_AT").assertTextEquals("출시일 ↓").performClick()
+        screen.onNodeWithTag("library-sort").assertTextEquals("출시일 ▾").performClick()
+        screen.onNodeWithTag("library-option-RELEASED_AT").assertIsSelected().performClick()
+        screen.runOnIdle { assertEquals(listOf("sort:RELEASED_DESC", "sort:RELEASED_ASC"), state.changes) }
         screen.onNodeWithTag("library-sort").performClick()
-        screen.onNodeWithTag("library-option-DURATION").performClick()
+        screen.onNodeWithTag("library-option-RELEASED_AT").assertTextEquals("✓ 출시일 ↑")
+        screen.onNodeWithTag("library-option-YEAR").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-YEAR").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-TITLE").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-TITLE").performClick()
         screen.runOnIdle {
-            assertEquals("Choosing the same field retains its direction", LibrarySort.DURATION_DESC, state.sort)
-            assertEquals(2, state.changes.size)
+            assertEquals(LibrarySort.TITLE_DESC, state.sort)
+            assertEquals(listOf("sort:RELEASED_DESC", "sort:RELEASED_ASC", "sort:YEAR_DESC", "sort:YEAR_ASC",
+                "sort:TITLE_ASC", "sort:TITLE_DESC"), state.changes)
         }
+    }
+
+    @Test fun addedRatingAndLatestEpisodeKeepServerDescendingDirection() {
+        val state = Fixture()
+        render(state)
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-ADDED").assertTextEquals("추가된 날짜").performClick()
         screen.onNodeWithTag("library-sort").performClick()
         screen.onNodeWithTag("library-option-ADDED").performClick()
-        screen.onNodeWithTag("library-sort-direction").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-RATING").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-RATING").performClick()
         screen.runOnIdle {
-            assertEquals(LibrarySort.RECENT_ASC, state.sort)
-            assertEquals(listOf("sort:DURATION_ASC", "sort:DURATION_DESC", "sort:RECENT", "sort:RECENT_ASC"), state.changes)
+            state.library = Library(9, "합성 시리즈", "tv")
+            state.type = LibraryContentType.SHOWS
+            state.sort = LibrarySort.TITLE_ASC
+        }
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-LATEST_EPISODE").performClick()
+        screen.onNodeWithTag("library-sort").performClick()
+        screen.onNodeWithTag("library-option-LATEST_EPISODE").performClick()
+        screen.runOnIdle {
+            assertEquals(LibrarySort.LATEST_EPISODE, state.sort)
+            assertEquals(listOf("sort:RECENT", "sort:RATING", "sort:LATEST_EPISODE"), state.changes)
         }
     }
 
@@ -95,7 +143,8 @@ class PlexLibraryToolbarTest {
         screen.runOnIdle { state.busy = true }
         screen.onNodeWithTag("library-option-MOVIES").assertIsNotEnabled()
         screen.onNodeWithTag("library-options-close").performClick()
-        for (tag in listOf("library-type", "library-sort", "library-sort-direction")) screen.onNodeWithTag(tag).assertIsNotEnabled()
+        for (tag in listOf("library-type", "library-sort")) screen.onNodeWithTag(tag).assertIsNotEnabled()
+        screen.onNodeWithTag("library-sort-direction").assertDoesNotExist()
         screen.runOnIdle { assertTrue(state.changes.isEmpty()) }
     }
 
@@ -126,7 +175,7 @@ class PlexLibraryToolbarTest {
             MaterialTheme { Surface {
                 PlexLibraryToolbar(state.library, state.sort, state.type, state.busy, state.unlocked,
                     onSort = { state.changes.add("sort:$it"); state.sort = it },
-                    onContentType = { state.changes.add("type:$it"); state.type = it },
+                    onContentType = { state.changes.add("type:$it"); state.type = it; state.sort = LibrarySort.defaultFor(it) },
                     modifier = Modifier.fillMaxWidth())
             } }
         }

@@ -10,13 +10,14 @@ import org.junit.Test
 
 class PlexLibraryFilterFieldsTest {
     @Test fun everySortHasOneFieldAndDirectionAndReversingTwiceRestoresIt() {
-        assertEquals(listOf(LibrarySortField.TITLE, LibrarySortField.ADDED, LibrarySortField.YEAR, LibrarySortField.DURATION),
+        assertEquals(listOf(LibrarySortField.TITLE, LibrarySortField.ADDED, LibrarySortField.YEAR,
+            LibrarySortField.RELEASED_AT, LibrarySortField.RATING, LibrarySortField.LATEST_EPISODE),
             LibrarySortField.entries.toList())
         for (field in LibrarySortField.entries) {
             assertEquals(field, field.ascending.field)
             assertEquals(field, field.descending.field)
             assertEquals(field, field.defaultSort.field)
-            assertTrue(field.ascending.isAscending)
+            assertEquals(field.isReversible, field.ascending.isAscending)
             assertFalse(field.descending.isAscending)
             assertEquals(field.descending, field.ascending.reversedDirection())
             assertEquals(field.ascending, field.descending.reversedDirection())
@@ -56,16 +57,23 @@ class PlexLibraryFilterFieldsTest {
         }
     }
 
-    @Test fun ascendingAddedUsesTheSameServerDescendingContractForEveryKind() {
-        for (library in listOf(Library(8, "영화", "movie"), Library(9, "TV", "tv"))) {
-            for (kind in LibraryContentType.availableFor(library)) {
-                assertEquals(LibrarySort.RECENT.query(library, kind), LibrarySort.RECENT_ASC.query(library, kind))
-            }
+    @Test fun availableFieldsAndTheirOrderMatchEachServerCatalog() {
+        assertEquals(listOf(LibrarySortField.TITLE, LibrarySortField.ADDED, LibrarySortField.YEAR,
+            LibrarySortField.RELEASED_AT, LibrarySortField.RATING), LibrarySortField.availableFor(LibraryContentType.MOVIES))
+        assertEquals(listOf(LibrarySortField.TITLE, LibrarySortField.ADDED, LibrarySortField.LATEST_EPISODE),
+            LibrarySortField.availableFor(LibraryContentType.SHOWS))
+        assertEquals(listOf(LibrarySortField.TITLE, LibrarySortField.ADDED),
+            LibrarySortField.availableFor(LibraryContentType.SEASONS))
+        assertEquals(listOf(LibrarySortField.LATEST_EPISODE, LibrarySortField.TITLE, LibrarySortField.ADDED),
+            LibrarySortField.availableFor(LibraryContentType.EPISODES))
+        for (sort in listOf(LibrarySort.RECENT, LibrarySort.RATING, LibrarySort.LATEST_EPISODE)) {
+            assertFalse(sort.field.isReversible)
+            assertFalse(sort.isAscending)
+            assertEquals(sort, sort.reversedDirection())
         }
-        assertEquals("sort=added&sort_dir=desc", LibrarySort.RECENT_ASC.query(Library(8, "영화", "movie")))
     }
 
-    @Test fun addedAscendingReversesTheWholeCatalogBeforeFilteringAndAllThreePages() = runBlocking {
+    @Test fun addedOrderStaysUnchangedThroughFilteringAndAllThreePages() = runBlocking {
         val server = MockWebServer().apply { start() }
         try {
             val rows = JSONArray((180 downTo 1).map { id -> JSONObject().put("id", id).put("title", "합성 $id")
@@ -74,41 +82,43 @@ class PlexLibraryFilterFieldsTest {
             repeat(3) { server.enqueue(MockResponse().setBody("{}")) }
             val client = ShyniClient(server.url("/").toString(), "synthetic")
             val library = Library(8, "영화", "movie")
-            suspend fun page(offset: Int) = client.items(library, offset = offset, sort = LibrarySort.RECENT_ASC,
+            suspend fun page(offset: Int) = client.items(library, offset = offset, sort = LibrarySort.RECENT,
                 genre = "액션", year = 2024, decade = 2020)
             val first = page(0)
             val second = page(60)
             val last = page(120)
-            assertEquals((1..60).toList(), first.items.map { it.id })
-            assertEquals((61..120).toList(), second.items.map { it.id })
-            assertEquals((121..135).toList(), last.items.map { it.id })
+            assertEquals((135 downTo 76).toList(), first.items.map { it.id })
+            assertEquals((75 downTo 16).toList(), second.items.map { it.id })
+            assertEquals((15 downTo 1).toList(), last.items.map { it.id })
             assertTrue(listOf(first, second, last).all { it.total == 135 })
             assertEquals(listOf(2024, 1994), first.years)
             assertEquals("/libraries/8/movies?sort=added&sort_dir=desc", server.takeRequest().path)
-            for (ids in listOf(1..60, 61..120, 121..135)) {
+            for (ids in listOf(135 downTo 76, 75 downTo 16, 15 downTo 1)) {
                 assertEquals(ids.joinToString(","), server.takeRequest().requestUrl!!.queryParameter("item_ids"))
             }
             assertEquals(4, server.requestCount)
         } finally { server.shutdown() }
     }
 
-    @Test fun searchUsesActualAddedDatesInBothDirectionsWithStableUnknownValuesLast() = runBlocking {
+    @Test fun searchKeepsRelevanceOrderInsteadOfSortingPartialDateMetadata() = runBlocking {
         val server = MockWebServer().apply { start() }
         try {
             val rows = """[{"id":1,"title":"합성 미상"},{"id":2,"title":"합성 오래됨","added_at":"2020-01-01T00:00:00Z"},{"id":3,"title":"합성 최근","added_at":"2024-01-01T00:00:00Z"},{"id":4,"title":"합성 잘못된 날짜","added_at":"2024-02-30T00:00:00Z"}]"""
             repeat(2) { server.enqueue(MockResponse().setBody(rows)); server.enqueue(MockResponse().setBody("{}")) }
             val client = ShyniClient(server.url("/").toString(), "synthetic")
             val library = Library(8, "영화", "movie")
-            val oldest = client.items(library, query = "합성", sort = LibrarySort.RECENT_ASC)
+            val byTitle = client.items(library, query = "합성", sort = LibrarySort.TITLE_DESC)
             val newest = client.items(library, query = "합성", sort = LibrarySort.RECENT)
-            assertEquals(listOf(2, 3, 1, 4), oldest.items.map { it.id })
-            assertEquals(listOf(3, 2, 1, 4), newest.items.map { it.id })
-            assertNull(oldest.items.last().addedAtMs)
+            assertEquals(listOf(1, 2, 3, 4), byTitle.items.map { it.id })
+            assertEquals(listOf(1, 2, 3, 4), newest.items.map { it.id })
+            assertNull(byTitle.items.last().addedAtMs)
             repeat(2) {
                 val search = server.takeRequest().requestUrl!!
                 assertEquals("/libraries/8/search", search.encodedPath)
                 assertEquals("합성", search.queryParameter("q"))
                 assertEquals("200", search.queryParameter("limit"))
+                assertNull(search.queryParameter("sort"))
+                assertNull(search.queryParameter("sort_dir"))
                 server.takeRequest()
             }
             assertEquals(4, server.requestCount)
@@ -126,6 +136,6 @@ class PlexLibraryFilterFieldsTest {
     @Test fun searchWithoutTimestampsRetainsUnknownOrderRatherThanInventingDates() {
         val items = listOf(MediaItem(2, 8, "B", "movie"), MediaItem(1, 8, "A", "movie"))
         assertEquals(items, sortedCatalog(items, LibrarySort.RECENT, LibraryContentType.MOVIES, search = true))
-        assertEquals(items, sortedCatalog(items, LibrarySort.RECENT_ASC, LibraryContentType.MOVIES, search = true))
+        assertEquals(items, sortedCatalog(items, LibrarySort.TITLE_DESC, LibraryContentType.MOVIES, search = true))
     }
 }

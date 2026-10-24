@@ -232,7 +232,7 @@ class ShyniClientTest {
         assertEquals(61, second.items.first().id)
         assertEquals(15, second.items.size)
         assertEquals(3, server.requestCount)
-        assertEquals("/libraries/8/movies?sort=title", server.takeRequest().path)
+        assertEquals("/libraries/8/movies?sort=title&sort_dir=asc", server.takeRequest().path)
         assertEquals((1..60).joinToString(","), server.takeRequest().requestUrl!!.queryParameter("item_ids"))
         assertEquals((61..75).joinToString(","), server.takeRequest().requestUrl!!.queryParameter("item_ids"))
     }

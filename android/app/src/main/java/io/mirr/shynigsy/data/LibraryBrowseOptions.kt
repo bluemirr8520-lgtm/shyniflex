@@ -5,33 +5,58 @@ import org.json.JSONObject
 import java.time.OffsetDateTime
 
 enum class LibrarySort(val label: String) {
-    TITLE_ASC("제목 오름차순"), TITLE_DESC("제목 내림차순"), RECENT("최근 추가순"), RECENT_ASC("오래된 추가순"),
+    TITLE_ASC("제목 오름차순"), TITLE_DESC("제목 내림차순"), RECENT("추가된 날짜"),
     YEAR_DESC("제작 연도 최신순"), YEAR_ASC("제작 연도 오래된순"),
-    DURATION_DESC("재생시간 긴순"), DURATION_ASC("재생시간 짧은순");
+    RELEASED_DESC("출시일 최신순"), RELEASED_ASC("출시일 오래된순"),
+    RATING("평점"), LATEST_EPISODE("최근 에피소드");
 
     val field: LibrarySortField get() = when (this) {
         TITLE_ASC, TITLE_DESC -> LibrarySortField.TITLE
-        RECENT, RECENT_ASC -> LibrarySortField.ADDED
+        RECENT -> LibrarySortField.ADDED
         YEAR_ASC, YEAR_DESC -> LibrarySortField.YEAR
-        DURATION_ASC, DURATION_DESC -> LibrarySortField.DURATION
+        RELEASED_ASC, RELEASED_DESC -> LibrarySortField.RELEASED_AT
+        RATING -> LibrarySortField.RATING
+        LATEST_EPISODE -> LibrarySortField.LATEST_EPISODE
     }
-    val isAscending: Boolean get() = this == this.field.ascending
-    fun reversedDirection(): LibrarySort = if (isAscending) field.descending else field.ascending
+    val isAscending: Boolean get() = this.field.isReversible && this == this.field.ascending
+    fun reversedDirection(): LibrarySort = if (!field.isReversible) this else if (isAscending) field.descending else field.ascending
 
-    internal fun query(library: Library, contentType: LibraryContentType = LibraryContentType.defaultFor(library)): String = when (this) {
-        TITLE_ASC -> "sort=title"
-        TITLE_DESC -> if (contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) "sort=title" else "sort=title&sort_dir=desc"
-        RECENT, RECENT_ASC -> if (contentType in setOf(LibraryContentType.SHOWS, LibraryContentType.EPISODES)) "sort=latest_episode&sort_dir=desc" else "sort=added&sort_dir=desc"
-        else -> "sort=title"
+    fun forContentType(contentType: LibraryContentType): LibrarySort =
+        takeIf { field in LibrarySortField.availableFor(contentType) } ?: defaultFor(contentType)
+
+    /** Match the server web player: nested catalogs have no sort_dir parameter. */
+    internal fun query(library: Library, contentType: LibraryContentType = LibraryContentType.defaultFor(library)): String {
+        val selected = forContentType(contentType)
+        val query = "sort=${selected.field.serverValue}"
+        return if (contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) query
+            else "$query&sort_dir=${if (selected.isAscending) "asc" else "desc"}"
+    }
+
+    companion object {
+        fun defaultFor(contentType: LibraryContentType): LibrarySort =
+            if (contentType == LibraryContentType.EPISODES) LATEST_EPISODE else TITLE_ASC
     }
 }
 
 enum class LibrarySortField(val label: String, val ascending: LibrarySort, val descending: LibrarySort,
-    val defaultSort: LibrarySort) {
-    TITLE("제목", LibrarySort.TITLE_ASC, LibrarySort.TITLE_DESC, LibrarySort.TITLE_ASC),
-    ADDED("추가일", LibrarySort.RECENT_ASC, LibrarySort.RECENT, LibrarySort.RECENT),
-    YEAR("연도", LibrarySort.YEAR_ASC, LibrarySort.YEAR_DESC, LibrarySort.YEAR_DESC),
-    DURATION("재생시간", LibrarySort.DURATION_ASC, LibrarySort.DURATION_DESC, LibrarySort.DURATION_ASC),
+    val defaultSort: LibrarySort, internal val serverValue: String) {
+    TITLE("제목", LibrarySort.TITLE_ASC, LibrarySort.TITLE_DESC, LibrarySort.TITLE_ASC, "title"),
+    ADDED("추가된 날짜", LibrarySort.RECENT, LibrarySort.RECENT, LibrarySort.RECENT, "added"),
+    YEAR("연도", LibrarySort.YEAR_ASC, LibrarySort.YEAR_DESC, LibrarySort.YEAR_DESC, "year"),
+    RELEASED_AT("출시일", LibrarySort.RELEASED_ASC, LibrarySort.RELEASED_DESC, LibrarySort.RELEASED_DESC, "released_at"),
+    RATING("평점", LibrarySort.RATING, LibrarySort.RATING, LibrarySort.RATING, "rating"),
+    LATEST_EPISODE("최근 에피소드", LibrarySort.LATEST_EPISODE, LibrarySort.LATEST_EPISODE, LibrarySort.LATEST_EPISODE, "latest_episode");
+
+    val isReversible: Boolean get() = ascending != descending
+
+    companion object {
+        fun availableFor(contentType: LibraryContentType): List<LibrarySortField> = when (contentType) {
+            LibraryContentType.MOVIES -> listOf(TITLE, ADDED, YEAR, RELEASED_AT, RATING)
+            LibraryContentType.SHOWS -> listOf(TITLE, ADDED, LATEST_EPISODE)
+            LibraryContentType.SEASONS -> listOf(TITLE, ADDED)
+            LibraryContentType.EPISODES -> listOf(LATEST_EPISODE, TITLE, ADDED)
+        }
+    }
 }
 
 enum class LibraryContentType(val label: String, internal val route: String, internal val itemType: String) {
@@ -94,21 +119,13 @@ internal fun filteredCatalog(items: List<MediaItem>, genre: String?, year: Int?,
         items.mapNotNull { it.year }.distinct().sortedDescending())
 }
 
-/** Keep unknown values at the end in either direction; do not synthesize years or runtimes. */
+/** Keep the server's complete catalog order, including ties and missing metadata. */
 internal fun sortedCatalog(items: List<MediaItem>, sort: LibrarySort, contentType: LibraryContentType,
-    search: Boolean = false): List<MediaItem> = when (sort) {
-    LibrarySort.YEAR_DESC -> items.sortedWith(compareByDescending<MediaItem> { it.year != null }.thenByDescending { it.year })
-    LibrarySort.YEAR_ASC -> items.sortedWith(compareByDescending<MediaItem> { it.year != null }.thenBy { it.year })
-    LibrarySort.DURATION_DESC -> items.sortedWith(compareByDescending<MediaItem> { it.durationMs > 0 }.thenByDescending { it.durationMs })
-    LibrarySort.DURATION_ASC -> items.sortedWith(compareByDescending<MediaItem> { it.durationMs > 0 }.thenBy { it.durationMs })
-    LibrarySort.TITLE_DESC -> if (contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) items.asReversed()
-        else if (search) items.sortedByDescending { it.title.lowercase(java.util.Locale.ROOT) } else items
-    LibrarySort.TITLE_ASC -> if (search) items.sortedBy { it.title.lowercase(java.util.Locale.ROOT) } else items
-    LibrarySort.RECENT -> if (search) items.sortedWith(compareByDescending<MediaItem> { it.addedAtMs != null }
-        .thenByDescending { it.addedAtMs }) else items
-    LibrarySort.RECENT_ASC -> if (search) items.sortedWith(compareByDescending<MediaItem> { it.addedAtMs != null }
-        .thenBy { it.addedAtMs }) else items.asReversed()
-}
+    search: Boolean = false): List<MediaItem> =
+    if (search && contentType !in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) items
+    else if (sort.forContentType(contentType) == LibrarySort.TITLE_DESC &&
+        contentType in setOf(LibraryContentType.SEASONS, LibraryContentType.EPISODES)) items.asReversed()
+    else items // The separate /search API defines its own relevance order, without media sort parameters.
 
 internal fun aggregateWatchState(item: MediaItem, episodes: List<MediaItem>): MediaItem {
     if (episodes.isEmpty() || episodes.any { it.watchState == null }) return item.copy(watchState = null)

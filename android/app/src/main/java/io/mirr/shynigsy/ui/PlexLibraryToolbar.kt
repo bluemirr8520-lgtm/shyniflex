@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -53,17 +52,21 @@ internal fun PlexLibraryToolbar(
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
             TvAction("${contentType.label} ▾", firstControlModifier.testTag("library-type"), enabled = !busy) { menu = LibraryMenu.TYPE }
             TvAction("${sort.field.label} ▾", Modifier.testTag("library-sort"), enabled = !busy) { menu = LibraryMenu.SORT }
-            TvAction(if (sort.isAscending) "↑" else "↓", Modifier.testTag("library-sort-direction").semantics {
-                contentDescription = if (sort.isAscending) "오름차순, 내림차순으로 변경" else "내림차순, 오름차순으로 변경"
-            }, enabled = !busy) { onSort(sort.reversedDirection()) }
     }
     when (menu) {
         LibraryMenu.TYPE -> LibraryOptionsDialog("표시 종류",
             LibraryContentType.availableFor(library).map { LibraryOption(it.name, it.label) }, contentType.name, busy,
             onDismiss = { menu = null }) { value -> select(value != contentType.name) { onContentType(LibraryContentType.valueOf(value)) } }
         LibraryMenu.SORT -> LibraryOptionsDialog("정렬 기준",
-            LibrarySortField.entries.map { LibraryOption(it.name, it.label) }, sort.field.name, busy,
-            onDismiss = { menu = null }) { value -> select(value != sort.field.name) { onSort(LibrarySortField.valueOf(value).defaultSort) } }
+            LibrarySortField.availableFor(contentType).map { field ->
+                val direction = if (field == sort.field) sort else field.defaultSort
+                LibraryOption(field.name, field.label + if (field.isReversible) " ${if (direction.isAscending) "↑" else "↓"}" else "")
+            }, sort.field.name, busy,
+            onDismiss = { menu = null }) { value ->
+                val field = LibrarySortField.valueOf(value)
+                val next = if (field == sort.field) sort.reversedDirection() else field.defaultSort
+                select(next != sort) { onSort(next) }
+            }
         null -> Unit
     }
 }

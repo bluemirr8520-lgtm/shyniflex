@@ -22,15 +22,13 @@ class PlexLibraryFilteringTest {
         assertEquals(listOf(2024, 2020), filteredCatalog(items, null, null, LibraryWatchFilter.WATCHED).years)
     }
 
-    @Test fun missingYearAndRuntimeStayLastForBothDirections() {
+    @Test fun catalogRetainsServerOrderWithMissingOrContradictingMetadata() {
         val items = listOf(MediaItem(1, 8, "unknown", "movie"),
             MediaItem(2, 8, "older", "movie", durationMs = 20_000, year = 2020),
             MediaItem(3, 8, "newer", "movie", durationMs = 10_000, year = 2024))
-        fun ids(sort: LibrarySort) = sortedCatalog(items, sort, LibraryContentType.MOVIES).map { it.id }
-        assertEquals(listOf(3, 2, 1), ids(LibrarySort.YEAR_DESC))
-        assertEquals(listOf(2, 3, 1), ids(LibrarySort.YEAR_ASC))
-        assertEquals(listOf(2, 3, 1), ids(LibrarySort.DURATION_DESC))
-        assertEquals(listOf(3, 2, 1), ids(LibrarySort.DURATION_ASC))
+        for (sort in LibrarySort.entries) {
+            assertEquals(sort.name, items, sortedCatalog(items, sort, LibraryContentType.MOVIES))
+        }
     }
 
     @Test fun tvKindsUseRealLibraryRoutesAndMovieLibrariesCannotSelectEpisodes() = runBlocking {
@@ -45,7 +43,7 @@ class PlexLibraryFilteringTest {
             assertTrue(client.items(tv, contentType = LibraryContentType.SEASONS).items.isEmpty())
             assertTrue(client.items(tv, contentType = LibraryContentType.EPISODES, sort = LibrarySort.RECENT).items.isEmpty())
             assertEquals("/libraries/9/seasons?sort=title", server.takeRequest().path)
-            assertEquals("/libraries/9/episodes?sort=latest_episode&sort_dir=desc", server.takeRequest().path)
+            assertEquals("/libraries/9/episodes?sort=added", server.takeRequest().path)
             val failure = runCatching { client.items(Library(8, "영화", "movie"), contentType = LibraryContentType.EPISODES) }.exceptionOrNull()
             assertTrue(failure is ApiException)
             assertEquals(2, server.requestCount)
@@ -68,7 +66,7 @@ class PlexLibraryFilteringTest {
             assertEquals(68, first.total)
             assertEquals((1..119 step 2).toList(), first.items.map { it.id })
             assertEquals((121..135 step 2).toList(), next.items.map { it.id })
-            assertEquals("/libraries/8/movies?sort=title", server.takeRequest().path)
+            assertEquals("/libraries/8/movies?sort=title&sort_dir=asc", server.takeRequest().path)
             repeat(2) { assertEquals("8", server.takeRequest().requestUrl!!.queryParameter("library_view_id")) }
             assertEquals(3, server.requestCount)
         } finally { server.shutdown() }
@@ -84,7 +82,7 @@ class PlexLibraryFilteringTest {
             val page = client.items(Library(9, "TV", "tv"), watchFilter = LibraryWatchFilter.WATCHED)
             assertEquals(listOf(1), page.items.map { it.id })
             assertEquals(MediaWatchState.WATCHED, page.items.single().watchState)
-            assertEquals("/libraries/9/shows?sort=title", server.takeRequest().path)
+            assertEquals("/libraries/9/shows?sort=title&sort_dir=asc", server.takeRequest().path)
             assertEquals("/libraries/9/episodes?sort=title", server.takeRequest().path)
             assertEquals("11,12,21,22,31", server.takeRequest().requestUrl!!.queryParameter("item_ids"))
             assertEquals(3, server.requestCount)

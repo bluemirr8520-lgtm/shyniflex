@@ -59,8 +59,9 @@ class LibraryBrowseOptionsTest {
     @Test fun titleAndRecentSortUseKnownMovieAndSeriesRoutes() {
         val movie = Library(8, "영화", "movie")
         val series = Library(9, "시리즈", "tv")
-        assertEquals("sort=title", LibrarySort.TITLE_ASC.query(movie))
+        assertEquals("sort=title&sort_dir=asc", LibrarySort.TITLE_ASC.query(movie))
         assertEquals("sort=title&sort_dir=desc", LibrarySort.TITLE_DESC.query(movie))
-        assertEquals("sort=latest_episode&sort_dir=desc", LibrarySort.RECENT.query(series))
+        assertEquals("sort=added&sort_dir=desc", LibrarySort.RECENT.query(series))
+        assertEquals("sort=latest_episode&sort_dir=desc", LibrarySort.LATEST_EPISODE.query(series))
     }
 }

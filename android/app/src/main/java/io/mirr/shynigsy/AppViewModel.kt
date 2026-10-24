@@ -854,10 +854,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val snapshot = mutableState.value
         val library = snapshot.library ?: return
         if (contentType !in LibraryContentType.availableFor(library)) return
-        mutableState.update { it.copy(librarySort = sort, libraryContentType = contentType, items = emptyList(), total = 0,
+        val selectedSort = if (contentType != snapshot.libraryContentType) LibrarySort.defaultFor(contentType)
+            else sort.forContentType(contentType)
+        mutableState.update { it.copy(librarySort = selectedSort, libraryContentType = contentType, items = emptyList(), total = 0,
             libraryBrowseRevision = it.libraryBrowseRevision + 1) }
         launchRequest {
-            val page = active.items(library, query = snapshot.query, sort = sort, contentType = contentType)
+            val page = active.items(library, query = snapshot.query, sort = selectedSort, contentType = contentType)
             mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
         }
     }

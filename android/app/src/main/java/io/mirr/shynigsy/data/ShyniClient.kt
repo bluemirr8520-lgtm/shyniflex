@@ -725,7 +725,7 @@ class ShyniClient(
     }
 
     /** Movies/shows are full arrays in beta4; paginate them locally, never fake API offsets. */
-    suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort = LibrarySort.TITLE_ASC,
+    suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort? = null,
         genre: String? = null, year: Int? = null,
         contentType: LibraryContentType = LibraryContentType.defaultFor(library),
         watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, decade: Int? = null): MediaPage = withContext(Dispatchers.Default) {
@@ -733,11 +733,12 @@ class ShyniClient(
         val normalizedQuery = query.trim()
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
         if (contentType !in LibraryContentType.availableFor(library)) throw ApiException("이 라이브러리에서 지원하지 않는 표시 종류입니다.")
-        val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$sort:$contentType:$watchFilter"
+        val selectedSort = (sort ?: LibrarySort.defaultFor(contentType)).forContentType(contentType)
+        val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$selectedSort:$contentType:$watchFilter"
         // Keep page offsets in the same catalog snapshot until an explicit first-page refresh.
         val cached = browseCache[key]?.takeIf { offset > 0 }
         val page = cached ?: run {
-            val parsed = browseCatalog(library, contentType, sort, normalizedQuery)
+            val parsed = browseCatalog(library, contentType, selectedSort, normalizedQuery)
             val watched = if (watchFilter == LibraryWatchFilter.ALL) parsed else {
                 if (contentType in setOf(LibraryContentType.MOVIES, LibraryContentType.EPISODES)) withProgress(parsed)
                 else {
