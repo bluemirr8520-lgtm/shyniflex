@@ -21,6 +21,7 @@ import coil3.network.okhttp.asNetworkClient
 import io.mirr.shynigsy.player.NativePlayerActivity
 import io.mirr.shynigsy.player.PlaybackCompletionSignals
 import io.mirr.shynigsy.ui.ShyniApp
+import io.mirr.shynigsy.ui.CinemaAppearanceTheme
 import io.mirr.shynigsy.ui.ArtworkNetworkClient
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
@@ -90,6 +91,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
+            CinemaAppearanceTheme {
             val updateState by updates.state.collectAsState()
             ShyniApp(model, onUpdate = { updates.check(manual = true) }) { spec ->
                 playback.launch(Intent(this, NativePlayerActivity::class.java)
@@ -98,6 +100,7 @@ class MainActivity : ComponentActivity() {
             }
             UpdateDialog(updateState, onInstall = ::requestUpdateInstall,
                 onCheck = { updates.check(manual = true) }, onDismiss = updates::dismiss)
+            }
         }
     }
 

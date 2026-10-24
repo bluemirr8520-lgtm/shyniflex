@@ -8,7 +8,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -20,7 +19,7 @@ internal fun UpdateDialog(state: UpdateState, onInstall: () -> Unit, onCheck: ()
     if (!state.visible) return
     val television = LocalContext.current.isTelevision()
     val cancel = remember { FocusRequester() }
-    MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF83E3C5))) {
+    MaterialTheme(colorScheme = MaterialTheme.colorScheme) {
     Dialog(onDismiss, DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.widthIn(max = 360.dp).fillMaxWidth(), shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surfaceContainer) {

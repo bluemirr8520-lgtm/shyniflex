@@ -91,6 +91,36 @@ class TvContinueBackdropUiTest {
         }
     }
 
+    @Test fun heroResumePlaysTheRotatedWorkWhileTheOriginalPosterKeepsFocus() {
+        withFixture(AppState(loggedIn = true, continueItems = listOf(first, second),
+            libraries = listOf(Library(7, "합성 영화", "movie")))) { fixture ->
+            renderHome(fixture)
+            focusCard(first)
+            waitForHero(second)
+            screen.onNodeWithTag(cardTag(first)).assertIsFocused()
+            assertTrue("Rotation does not start playback",
+                fixture.requests.none { it.first == "/playback/decision" })
+
+            val resume = screen.onNodeWithTag("cinema-hero-resume").assertIsDisplayed()
+            resume.performSemanticsAction(SemanticsActions.RequestFocus) { request ->
+                assertTrue("The hero action supports the TV remote", request())
+            }
+            screen.mainClock.advanceTimeBy(CONTINUE_BACKDROP_INTERVAL_MS + 600)
+            screen.waitForIdle()
+            assertTrue("Focusing the hero action holds the work that will play", heroExists(second))
+            resume.assertIsFocused().performClick()
+
+            screen.waitUntil(3_000) { fixture.requests.any { it.first == "/playback/decision" } }
+            val decisions = fixture.requests.filter { it.first == "/playback/decision" }
+            assertEquals("One deliberate hero click makes one playback request", 1, decisions.size)
+            val body = JSONObject(decisions.single().second)
+            assertEquals("The hero action uses the visible work, not the formerly focused poster",
+                second.viewItemId, body.getInt("view_item_id"))
+            assertEquals(second.id, body.getInt("metadata_item_id"))
+            assertEquals(second.libraryId, body.getInt("library_view_id"))
+        }
+    }
+
     @Test fun lockingTheActualTvHeroImmediatelyRemovesPrivateArtworkAndRotationDestinations() {
         withFixture(AppState(loggedIn = true, spoilerUnlocked = true,
             continueItems = listOf(hidden, first), libraries = listOf(Library(7, "합성 영화", "movie"),
@@ -121,7 +151,7 @@ class TvContinueBackdropUiTest {
         InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
         screen.setContent {
             inputMode = LocalInputModeManager.current
-            MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
+            MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
                 Surface {
                     TvSidebar(onLibraries = {}, onRefresh = {}, onLogout = {}, libraries = emptyList(),
                         homeSelected = true, searchSelected = false)
@@ -154,7 +184,7 @@ class TvContinueBackdropUiTest {
         InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
         screen.setContent {
             inputMode = LocalInputModeManager.current
-            MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
+            MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
                 Surface(Modifier.fillMaxSize()) {
                     Box(Modifier.fillMaxSize()) { TvHome(fixture.state.value, fixture.model, {}) }
                 }

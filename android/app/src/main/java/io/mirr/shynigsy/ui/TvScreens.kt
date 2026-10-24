@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -51,12 +53,15 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
@@ -66,6 +71,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import io.mirr.shynigsy.AppState
 import io.mirr.shynigsy.AppViewModel
 import io.mirr.shynigsy.isTelevision
@@ -123,31 +129,73 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
     libraries: List<Library> = emptyList(), selectedLibraryId: Int? = null, homeSelected: Boolean = true,
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
     spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
-    onSearch: () -> Unit = {}, searchSelected: Boolean = false) {
-    Column(Modifier.width(156.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainer)
-        .padding(horizontal = 8.dp, vertical = 8.dp).focusRestorer().focusGroup().testTag("tv-sidebar"),
-        verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text("shyniflex", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome)
-        TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
-        Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
-            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            items(libraries, key = { it.id }) { library ->
-                TvSidebarItem(library.title,
-                    if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder,
-                    selectedLibraryId == library.id, onClick = { onLibrary(library) })
+    onSearch: () -> Unit = {}, searchSelected: Boolean = false, onAppearance: () -> Unit = {}) {
+    BoxWithConstraints(Modifier.width(156.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainer)
+        .focusRestorer().focusGroup().testTag("tv-sidebar")) {
+        // A short window or a large system font must not squeeze the library list to zero height.
+        // Every action remains a separate lazy item so D-pad focus can reveal its full touch target.
+        if (maxHeight < 600.dp || LocalDensity.current.fontScale > 1.15f) {
+            LazyColumn(Modifier.fillMaxSize().testTag("tv-sidebar-scroll"),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                item(key = "sidebar-brand") {
+                    Text("shyniflex", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+                item(key = "sidebar-home") { TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome) }
+                item(key = "sidebar-search") {
+                    TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
+                }
+                item(key = "sidebar-library-heading") {
+                    Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                items(libraries, key = { "sidebar-library-${it.id}" }) { library ->
+                    TvSidebarItem(library.title,
+                        if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder,
+                        selectedLibraryId == library.id, onClick = { onLibrary(library) })
+                }
+                if (showLocked || spoilerUnlocked) item(key = "sidebar-spoiler-access") {
+                    TvSidebarItem(if (spoilerUnlocked) "스포일러 잠그기" else "잠긴 라이브러리",
+                        Icons.Rounded.Lock, false, if (spoilerUnlocked) onLockSpoiler else onLibraries)
+                }
+                item(key = "sidebar-divider") {
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                item(key = "sidebar-refresh") { TvSidebarItem("새로고침", Icons.Rounded.Refresh, false, onRefresh) }
+                item(key = "sidebar-appearance") {
+                    TvSidebarItem("화면 색상", Icons.Rounded.Palette, false, onAppearance, Modifier.testTag("sidebar-appearance"))
+                }
+                item(key = "sidebar-update") { TvSidebarItem("업데이트", Icons.Rounded.SystemUpdate, false, onUpdate) }
+                item(key = "sidebar-account") { TvSidebarItem("계정", Icons.Rounded.AccountCircle, false, onLogout) }
             }
-            if (showLocked || spoilerUnlocked) item(key = "spoiler-access") {
-                TvSidebarItem(if (spoilerUnlocked) "스포일러 잠그기" else "잠긴 라이브러리",
-                    Icons.Rounded.Lock, false, if (spoilerUnlocked) onLockSpoiler else onLibraries)
+        } else Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("shyniflex", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome)
+            TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
+            Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                items(libraries, key = { it.id }) { library ->
+                    TvSidebarItem(library.title,
+                        if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder,
+                        selectedLibraryId == library.id, onClick = { onLibrary(library) })
+                }
+                if (showLocked || spoilerUnlocked) item(key = "spoiler-access") {
+                    TvSidebarItem(if (spoilerUnlocked) "스포일러 잠그기" else "잠긴 라이브러리",
+                        Icons.Rounded.Lock, false, if (spoilerUnlocked) onLockSpoiler else onLibraries)
+                }
             }
+            HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
+            TvSidebarItem("새로고침", Icons.Rounded.Refresh, false, onRefresh)
+            TvSidebarItem("화면 색상", Icons.Rounded.Palette, false, onAppearance, Modifier.testTag("sidebar-appearance"))
+            TvSidebarItem("업데이트", Icons.Rounded.SystemUpdate, false, onUpdate)
+            TvSidebarItem("계정", Icons.Rounded.AccountCircle, false, onLogout)
         }
-        HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
-        TvSidebarItem("새로고침", Icons.Rounded.Refresh, false, onRefresh)
-        TvSidebarItem("업데이트", Icons.Rounded.SystemUpdate, false, onUpdate)
-        TvSidebarItem("계정", Icons.Rounded.AccountCircle, false, onLogout)
     }
 }
 
@@ -157,13 +205,15 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
     val interaction = remember { MutableInteractionSource() }
     val highlighted = selected || focused
     val accent = MaterialTheme.colorScheme.primary
-    val foreground = if (highlighted) accent else MaterialTheme.colorScheme.onSurfaceVariant
+    val highlight = if (highlighted) accent.copy(alpha = .12f) else Color.Transparent
+    val foreground = cinemaReadableColor(if (highlighted) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+        highlight.compositeOver(MaterialTheme.colorScheme.surfaceContainer))
     Surface(modifier = modifier.fillMaxWidth().heightIn(min = 48.dp)
         .semantics { this.selected = selected }
         .onFocusChanged { focused = it.isFocused }
         .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick),
         shape = RectangleShape,
-        color = if (highlighted) accent.copy(alpha = .12f) else Color.Transparent) {
+        color = highlight) {
         Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.width(2.dp).height(18.dp).background(if (highlighted) accent else Color.Transparent))
@@ -194,6 +244,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     var heroKey by rememberSaveable { mutableStateOf("") }
     val continueKeys = continuing.map(::tvMediaKey)
     var heroVisible by remember { mutableStateOf(false) }
+    var heroResumeFocused by remember { mutableStateOf(false) }
     var touchingContinue by remember { mutableStateOf(false) }
     var interactionRevision by remember { mutableIntStateOf(0) }
     val continueInteraction = remember { MutableInteractionSource() }
@@ -203,9 +254,10 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     val hero = state.continueDetails?.takeIf { heroItem != null && tvMediaKey(it) == tvMediaKey(heroItem) } ?: heroItem
     LaunchedEffect(continueKeys) {
         if (heroKey !in continueKeys) heroKey = continueKeys.firstOrNull().orEmpty()
+        if (continueKeys.isEmpty()) heroResumeFocused = false
     }
     rememberContinueBackdropRotation(keys = continueKeys, selectedKey = heroItem?.let(::tvMediaKey).orEmpty(),
-        enabled = heroVisible && !state.busy && !hoveringContinue && !touchingContinue,
+        enabled = heroVisible && !state.busy && !hoveringContinue && !touchingContinue && !heroResumeFocused,
         interactionRevision = interactionRevision,
         onAdvance = { heroKey = it })
     val shelfFocus = remember { FocusRequester() }
@@ -222,9 +274,14 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
         if (key == "continue") continuing.isNotEmpty()
         else recentByLibrary.keys.any { "recent-$it" == key }
     } ?: if (continuing.isNotEmpty()) "continue" else recent.firstOrNull()?.let { "recent-${it.libraryId}" }
-    BoxWithConstraints(Modifier.fillMaxSize().testTag("tv-home")) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag("tv-home")) {
         val compact = maxWidth < 600.dp
-        val heroHeight = if (compact) 210.dp else (maxHeight - 260.dp).coerceAtLeast(180.dp)
+        val homeCardWidth = if (compact) (maxWidth * .31f).coerceIn(112.dp, 126.dp)
+            else (maxWidth * .145f).coerceIn(120.dp, 144.dp)
+        val shelfHeight = homeCardWidth * 1.5f + 88.dp
+        val baseHeroHeight = if (compact) (maxHeight * .40f).coerceIn(280.dp, 288.dp)
+            else (maxHeight - shelfHeight).coerceIn(230.dp, 390.dp)
+        val heroHeight = baseHeroHeight + 180.dp * (LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)
         val scroll = rememberLazyListState()
         val homeScope = rememberCoroutineScope()
         // TV's default focus pivot scrolls an already visible poster upward and clips its hero.
@@ -237,7 +294,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
         } }
         CompositionLocalProvider(LocalBringIntoViewSpec provides reveal) {
         LazyColumn(Modifier.fillMaxSize(), state = scroll, contentPadding = PaddingValues(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            verticalArrangement = Arrangement.spacedBy(20.dp)) {
             item(key = "continue") {
                 // The backdrop belongs only to this section; other shelves keep a plain background.
                 Box(Modifier.fillMaxWidth().testTag("tv-continue-section").hoverable(continueInteraction)
@@ -256,25 +313,22 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                     if (hero != null) Box(Modifier.matchParentSize().testTag("tv-continue-backdrop")) {
                         Poster(hero, model, Modifier.matchParentSize(),
                             imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
+                        Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = .30f)))
                         Box(Modifier.matchParentSize().continueSectionBackdropFade(
                             heroHeight, MaterialTheme.colorScheme.background, wide = !compact))
                     }
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                        if (hero != null) Column(Modifier.fillMaxWidth(if (compact) 1f else .70f).height(heroHeight)
+                        if (hero != null && heroItem != null) Box(Modifier.fillMaxWidth().height(heroHeight)
                             .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
-                            .testTag("tv-continue-hero")
-                            .padding(start = 24.dp, top = 18.dp, end = 12.dp, bottom = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom)) {
-                            Text(hero.showTitle ?: hero.title, style = MaterialTheme.typography.headlineMedium,
-                                color = Color.White, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(continueHeroMetadata(hero), style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = .9f))
-                            Text(hero.summary, maxLines = 3, overflow = TextOverflow.Ellipsis,
-                                color = Color.White.copy(alpha = .88f), style = MaterialTheme.typography.bodyMedium)
+                            .testTag("tv-continue-hero")) {
+                            CinemaHomeHeroContent(hero = hero, source = heroItem, compact = compact,
+                                busy = state.busy, onResume = model::playContinue,
+                                onResumeFocus = { heroResumeFocused = it }, modifier = Modifier.fillMaxSize())
                         }
                         if (continuing.isNotEmpty()) TvShelf("이어서 보기", continuing, model, onWatchOptions,
                             modifier = if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus) else Modifier,
                             titleColor = Color.White,
+                            cinematic = true, cardWidth = homeCardWidth,
                             restoreKey = selectedKey, onSelect = {
                                 selectedKey = tvMediaKey(it); heroKey = tvMediaKey(it); interactionRevision++
                                 selectedShelf = "continue"; model.selectContinueItem(it)
@@ -300,6 +354,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                     TvShelf("최근 추가됨 · ${library.title}", media, model, onWatchOptions,
                         modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus) else Modifier,
                         restoreKey = selectedKey,
+                        cinematic = true, cardWidth = homeCardWidth,
                         onSelect = { selectedKey = tvMediaKey(it); selectedShelf = "recent-${library.id}" }, onClick = model::openItem)
                 }
             }
@@ -330,18 +385,18 @@ internal fun TvHomeClock(modifier: Modifier = Modifier, foreground: Color? = nul
 private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
     onWatchOptions: (MediaItem) -> Unit, modifier: Modifier = Modifier,
     onSelect: (MediaItem) -> Unit, onClick: (MediaItem) -> Unit, wide: Boolean = false, restoreKey: String = "",
-    titleColor: Color = MaterialTheme.colorScheme.onSurface) {
+    titleColor: Color = MaterialTheme.colorScheme.onSurface, cinematic: Boolean = false, cardWidth: Dp? = null) {
     val fallback = remember { FocusRequester() }
     val hasRestoreKey = remember(media, restoreKey) { media.any { tvMediaKey(it) == restoreKey } }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (cinematic) 8.dp else 4.dp)) {
         Text(title, Modifier.padding(horizontal = 24.dp), color = titleColor,
             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         LazyRow(modifier.focusRestorer(fallback).focusGroup(), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            horizontalArrangement = Arrangement.spacedBy(if (cinematic) 12.dp else 6.dp)) {
             items(media, key = ::tvMediaKey) { item ->
-                TvMediaCard(item, model, Modifier.width(if (wide) 200.dp else 114.dp)
+                TvMediaCard(item, model, Modifier.width(cardWidth ?: if (wide) 200.dp else 114.dp)
                     .then(if (tvMediaKey(item) == restoreKey || (!hasRestoreKey && item == media.first())) Modifier.focusRequester(fallback) else Modifier),
-                    wide = wide, onSelect = { onSelect(item) }, onClick = { onClick(item) },
+                    wide = wide, cinematic = cinematic, onSelect = { onSelect(item) }, onClick = { onClick(item) },
                     onWatchOptions = { onWatchOptions(item) })
             }
         }
@@ -350,8 +405,10 @@ private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
 
 @Composable
 internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifier = Modifier,
-    wide: Boolean = false, onSelect: () -> Unit = {}, onClick: () -> Unit, onWatchOptions: () -> Unit) {
+    wide: Boolean = false, onSelect: () -> Unit = {}, onClick: () -> Unit, onWatchOptions: () -> Unit,
+    cinematic: Boolean = false) {
     var focused by remember { mutableStateOf(false) }
+    val cardInteraction = remember { MutableInteractionSource() }
     val countRevision by remember(model) { model.state.map { it.seriesCountRevision }.distinctUntilChanged() }.collectAsState(0)
     val remaining by produceState<Int?>(null, item, countRevision) {
         value = null
@@ -360,19 +417,27 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
             value = model.seriesUnwatchedCount(item)
         }
     }
-    Column(modifier.tvFocus().onFocusChanged { focused = it.isFocused; if (it.isFocused) onSelect() }
+    val focusModifier = if (cinematic) modifier else modifier.tvFocus()
+    Column(focusModifier.onFocusChanged { focused = it.isFocused; if (it.isFocused) onSelect() }
         .onPreviewKeyEvent { event ->
             if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU && canChangeWatchState(item)) {
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP) onWatchOptions()
                 true
             } else false
         }
-        .combinedClickable(onClick = onClick, onLongClickLabel = "시청 상태 변경",
+        .combinedClickable(interactionSource = cardInteraction,
+            indication = if (cinematic) null else LocalIndication.current,
+            onClick = onClick, onLongClickLabel = "시청 상태 변경",
             onLongClick = if (canChangeWatchState(item)) onWatchOptions else null)
-        .padding(3.dp).testTag("tv-media-${item.libraryId}-${item.id}"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f)) {
+        .padding(if (cinematic) 0.dp else 3.dp).testTag("tv-media-${item.libraryId}-${item.id}"),
+        verticalArrangement = Arrangement.spacedBy(if (cinematic) 5.dp else 2.dp)) {
+        val shape = RoundedCornerShape(if (cinematic) 6.dp else 0.dp)
+        Box(Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f)
+            .then(if (cinematic) Modifier.border(if (focused) 2.dp else 1.dp,
+                if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = .12f), shape)
+                .clip(shape) else Modifier)) {
             Poster(item, model, Modifier.fillMaxSize(), imageUrl = if (wide) item.thumbnail ?: item.backdrop ?: item.poster else item.poster)
-            if (focused) Surface(Modifier.align(Alignment.Center).size(46.dp),
+            if (focused && !cinematic) Surface(Modifier.align(Alignment.Center).size(46.dp),
                 color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(23.dp),
                 border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onPrimary)) {
                 Icon(Icons.Rounded.PlayArrow, "이어보기 재생", Modifier.padding(9.dp), tint = MaterialTheme.colorScheme.onPrimary)

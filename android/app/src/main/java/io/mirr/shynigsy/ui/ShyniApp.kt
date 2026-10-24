@@ -118,24 +118,24 @@ import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.data.PlaybackSpec
 
-private val AppBackground = Color(0xFFF8FAFB)
-private val Panel = Color(0xFFEEF2F4)
-private val Accent = Color(0xFF006B5B)
-private val Muted = Color(0xFF52616F)
+private val AppBackground: Color @Composable get() = MaterialTheme.colorScheme.background
+private val Panel: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainer
+private val Accent: Color @Composable get() = MaterialTheme.colorScheme.primary
+private val Muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
 internal val ShyniColors = lightColorScheme(
-    primary = Accent,
+    primary = Color(0xFF006B5B),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD6EEE7),
     onPrimaryContainer = Color(0xFF002C24),
     secondary = Color(0xFF285F91),
     onSecondary = Color.White,
-    background = AppBackground,
+    background = Color(0xFFF8FAFB),
     onBackground = Color(0xFF18242F),
     surface = Color.White,
-    surfaceContainer = Panel,
+    surfaceContainer = Color(0xFFEEF2F4),
     surfaceVariant = Color(0xFFE6ECEF),
     onSurface = Color(0xFF18242F),
-    onSurfaceVariant = Muted,
+    onSurfaceVariant = Color(0xFF52616F),
     outline = Color(0xFF829199),
     outlineVariant = Color(0xFFCED8DD),
     error = Color(0xFFB3261E),
@@ -157,6 +157,8 @@ fun ShyniApp(
     val tvScreens = rememberSaveableStateHolder()
     var logoutConfirm by rememberSaveable { mutableStateOf(false) }
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
+    var appearanceOpen by rememberSaveable { mutableStateOf(false) }
+    val appearance = LocalCinemaAppearance.current
     var watchOptions by remember { mutableStateOf<MediaItem?>(null) }
     val onWatchOptions: (MediaItem) -> Unit = { if (canChangeWatchState(it)) watchOptions = it }
     val detail = state.detailStack.lastOrNull()
@@ -178,7 +180,7 @@ fun ShyniApp(
     BackHandler(enabled = state.loggedIn && (detail != null || state.library != null || state.searchOpen)) {
         viewModel.back()
     }
-    MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
+    MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = CompactTypography, shapes = CompactShapes) {
         Scaffold(
             containerColor = AppBackground,
             topBar = {
@@ -232,6 +234,7 @@ fun ShyniApp(
                             showLocked = !state.spoilerUnlocked,
                             spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler,
                             onUpdate = onUpdate, searchSelected = state.searchOpen,
+                            onAppearance = { appearanceOpen = true },
                             onSearch = { viewModel.openSearch(); scope.launch { drawer.close() } })
                         }
                         val content: @Composable () -> Unit = {
@@ -261,6 +264,9 @@ fun ShyniApp(
                 }
             }
         }
+        if (appearanceOpen) CinemaAppearanceSettings(initialBackground = appearance.backgroundArgb,
+            onDismiss = { appearanceOpen = false },
+            onApply = { color -> appearance.save(color); appearanceOpen = false })
         if (logoutConfirm) AlertDialog(
             onDismissRequest = { logoutConfirm = false },
             title = { Text("로그아웃") },
@@ -833,7 +839,7 @@ internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier
             .build()
     }
     Box(if (transparentBackground) modifier else modifier.background(Panel), contentAlignment = Alignment.Center) {
-        Icon(Icons.Rounded.Movie, null, tint = Color(0xFF42566D), modifier = Modifier.size(38.dp))
+        Icon(Icons.Rounded.Movie, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(38.dp))
         AsyncImage(model = request, contentDescription = "${item.title} 포스터",
             modifier = Modifier.fillMaxSize(), contentScale = contentScale, alignment = imageAlignment)
     }

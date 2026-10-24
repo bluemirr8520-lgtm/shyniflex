@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.compositeOver
 
 /** Menus stay clear at rest; touch, keyboard focus and selection supply the highlight. */
 @Composable
@@ -38,11 +39,14 @@ internal fun CompactMenuAction(
     val pressed by interaction.collectIsPressedAsState()
     val active = enabled && (selected || focused || pressed)
     val colors = MaterialTheme.colorScheme
+    val highlight = if (active) colors.primary.copy(alpha = if (focused || pressed) .22f else .12f) else Color.Transparent
+    val foreground = cinemaReadableColor(if (selected || focused) colors.primary else colors.onSurface,
+        highlight.compositeOver(colors.surface))
     TextButton(onClick = onClick, modifier = modifier.heightIn(min = 48.dp), enabled = enabled,
         shape = RectangleShape, interactionSource = interaction, contentPadding = contentPadding,
         colors = ButtonDefaults.textButtonColors(
-            containerColor = if (active) colors.primary.copy(alpha = if (focused || pressed) .22f else .12f) else Color.Transparent,
-            contentColor = if (selected || focused) colors.primary else colors.onSurface,
+            containerColor = highlight,
+            contentColor = foreground,
             disabledContainerColor = Color.Transparent,
             disabledContentColor = colors.onSurface.copy(alpha = .38f)), content = content)
 }
