@@ -4,8 +4,14 @@ import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -48,12 +54,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -145,13 +155,19 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
 @Composable
 private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     var focused by remember { mutableStateOf(false) }
-    val foreground = if (focused) MaterialTheme.colorScheme.onPrimary else if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().heightIn(min = 48.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val highlighted = selected || focused
+    val accent = MaterialTheme.colorScheme.primary
+    val foreground = if (highlighted) accent else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(modifier = modifier.fillMaxWidth().heightIn(min = 48.dp)
         .semantics { this.selected = selected }
-        .onFocusChanged { focused = it.isFocused }, shape = RectangleShape,
-        color = if (focused) MaterialTheme.colorScheme.primary else if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent) {
+        .onFocusChanged { focused = it.isFocused }
+        .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick),
+        shape = RectangleShape,
+        color = if (highlighted) accent.copy(alpha = .12f) else Color.Transparent) {
         Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.width(2.dp).height(18.dp).background(if (highlighted) accent else Color.Transparent))
             Icon(icon, null, Modifier.size(18.dp), tint = foreground)
             Text(label, color = foreground, style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -175,9 +191,24 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     val recentByLibrary = remember(recent) { recent.groupBy { it.libraryId } }
     var selectedKey by rememberSaveable { mutableStateOf("") }
     var selectedShelf by rememberSaveable { mutableStateOf("continue") }
+    // Background rotation owns a separate key; it never changes the focused card or its restore target.
+    var heroKey by rememberSaveable { mutableStateOf("") }
+    val continueKeys = continuing.map(::tvMediaKey)
+    var heroVisible by remember { mutableStateOf(false) }
+    var touchingContinue by remember { mutableStateOf(false) }
+    var interactionRevision by remember { mutableIntStateOf(0) }
+    val continueInteraction = remember { MutableInteractionSource() }
+    val hoveringContinue by continueInteraction.collectIsHoveredAsState()
     val hasMedia = continuing.isNotEmpty() || recent.isNotEmpty()
-    val heroItem = continuing.firstOrNull { tvMediaKey(it) == selectedKey } ?: continuing.firstOrNull()
+    val heroItem = continuing.firstOrNull { tvMediaKey(it) == heroKey } ?: continuing.firstOrNull()
     val hero = state.continueDetails?.takeIf { heroItem != null && tvMediaKey(it) == tvMediaKey(heroItem) } ?: heroItem
+    LaunchedEffect(continueKeys) {
+        if (heroKey !in continueKeys) heroKey = continueKeys.firstOrNull().orEmpty()
+    }
+    rememberContinueBackdropRotation(keys = continueKeys, selectedKey = heroItem?.let(::tvMediaKey).orEmpty(),
+        enabled = heroVisible && !state.busy && !hoveringContinue && !touchingContinue,
+        interactionRevision = interactionRevision,
+        onAdvance = { heroKey = it })
     val shelfFocus = remember { FocusRequester() }
     // Run once as content arrives, never steal focus on background refreshes.
     var focusRequested by remember { mutableStateOf(false) }
@@ -210,29 +241,46 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item(key = "continue") {
                 // The backdrop belongs only to this section; other shelves keep a plain background.
-                Box(Modifier.fillMaxWidth()) {
-                    if (hero != null) Poster(hero, model, Modifier.matchParentSize(),
-                        imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
-                    Box(Modifier.matchParentSize().background(Brush.horizontalGradient(listOf(
-                        MaterialTheme.colorScheme.background.copy(alpha = .98f), MaterialTheme.colorScheme.background.copy(alpha = .90f)))))
-                    Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-                        0f to MaterialTheme.colorScheme.background.copy(alpha = .25f), .58f to Color.Transparent,
-                        1f to MaterialTheme.colorScheme.background)))
+                Box(Modifier.fillMaxWidth().hoverable(continueInteraction)
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            touchingContinue = true
+                            try {
+                                do {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                } while (event.changes.any { it.pressed })
+                            }
+                            finally { touchingContinue = false; interactionRevision++ }
+                        }
+                    }) {
+                    if (hero != null) Box(Modifier.fillMaxWidth().height(heroHeight)
+                        .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
+                        .testTag("tv-continue-hero")) {
+                        Poster(hero, model, Modifier.matchParentSize(),
+                            imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
+                        Box(Modifier.matchParentSize().background(Brush.horizontalGradient(
+                            0f to Color.Black.copy(alpha = .78f), .58f to Color.Black.copy(alpha = .50f),
+                            1f to Color.Black.copy(alpha = .02f))))
+                        Box(Modifier.matchParentSize().background(Brush.verticalGradient(
+                            0f to Color.Transparent, .85f to Color.Transparent, 1f to Color.Black.copy(alpha = .22f))))
+                    }
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                         if (hero != null) Column(Modifier.fillMaxWidth(if (compact) 1f else .70f).height(heroHeight)
                             .padding(start = 24.dp, top = 18.dp, end = 12.dp, bottom = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom)) {
                             Text(hero.showTitle ?: hero.title, style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                color = Color.White, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text(continueHeroMetadata(hero), style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                color = Color.White.copy(alpha = .9f))
                             Text(hero.summary, maxLines = 3, overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyMedium)
+                                color = Color.White.copy(alpha = .88f), style = MaterialTheme.typography.bodyMedium)
                         }
                         if (continuing.isNotEmpty()) TvShelf("이어서 보기", continuing, model, onWatchOptions,
                             modifier = if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus) else Modifier,
                             restoreKey = selectedKey, onSelect = {
-                                selectedKey = tvMediaKey(it); selectedShelf = "continue"; model.selectContinueItem(it)
+                                selectedKey = tvMediaKey(it); heroKey = tvMediaKey(it); interactionRevision++
+                                selectedShelf = "continue"; model.selectContinueItem(it)
                                 if (scroll.firstVisibleItemIndex != 0 || scroll.firstVisibleItemScrollOffset != 0) {
                                     homeScope.launch { scroll.animateScrollToItem(0) }
                                 }
@@ -261,12 +309,13 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
             state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
         }
         }
-        TvHomeClock(Modifier.align(Alignment.TopEnd).padding(horizontal = 24.dp, vertical = 16.dp))
+        TvHomeClock(Modifier.align(Alignment.TopEnd).padding(horizontal = 24.dp, vertical = 16.dp),
+            foreground = if (hero != null && heroVisible) Color.White else null)
     }
 }
 
 @Composable
-internal fun TvHomeClock(modifier: Modifier = Modifier) {
+internal fun TvHomeClock(modifier: Modifier = Modifier, foreground: Color? = null) {
     val context = LocalContext.current
     val formatter = remember(context) { android.text.format.DateFormat.getTimeFormat(context) }
     val clock by produceState(formatter.format(java.util.Date()), formatter) {
@@ -276,7 +325,7 @@ internal fun TvHomeClock(modifier: Modifier = Modifier) {
         }
     }
     Text(clock, modifier.testTag("tv-home-clock").semantics { contentDescription = "현재 시각 $clock" },
-        style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.titleMedium, color = foreground ?: MaterialTheme.colorScheme.onSurface,
         fontWeight = FontWeight.Medium)
 }
 

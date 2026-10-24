@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.border
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -55,6 +58,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -71,7 +76,7 @@ import io.mirr.shynigsy.data.MediaItem
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-/** A finite, manually browsed shelf with details for the selected title. */
+/** A finite poster shelf with a vivid, independently rotating Continue Watching backdrop. */
 @Composable
 internal fun ContinueWatchingSection(
     items: List<MediaItem>,
@@ -99,7 +104,24 @@ internal fun ContinueWatchingSection(
     val visibleKeys = visibleItems.map(::continueIdentity)
     val dragging by row.interactionSource.collectIsDraggedAsState()
     var touchBrowsing by remember { mutableStateOf(false) }
-    fun select(item: MediaItem) { selectedKey = continueIdentity(item) }
+    var interactionRevision by remember { mutableStateOf(0) }
+    var metadataSelectionKey by remember { mutableStateOf(continueIdentity(selectedItem)) }
+    var heroVisible by remember { mutableStateOf(false) }
+    var heroFocused by remember { mutableStateOf(false) }
+    var touching by remember { mutableStateOf(false) }
+    var heroDragging by remember { mutableStateOf(false) }
+    val hoverInteraction = remember { MutableInteractionSource() }
+    val hovered by hoverInteraction.collectIsHoveredAsState()
+    fun select(item: MediaItem) {
+        selectedKey = continueIdentity(item)
+        metadataSelectionKey = selectedKey
+        interactionRevision++
+    }
+
+    rememberContinueBackdropRotation(visibleKeys, continueIdentity(selectedItem),
+        enabled = !busy && heroVisible && !dragging && !row.isScrollInProgress &&
+            !touching && !heroDragging && !hovered && !heroFocused,
+        interactionRevision = interactionRevision, onAdvance = { selectedKey = it })
 
     fun startHeroSwipe() {
         touchBrowsing = false
@@ -111,7 +133,7 @@ internal fun ContinueWatchingSection(
             row.stopScroll()
             if (!swipeEnabled || swipeItems.size < 2) return@launch
             val current = swipeItems.indexOfFirst { continueIdentity(it) == selectedKey }.coerceAtLeast(0)
-            val next = (current + direction).coerceIn(0, swipeItems.lastIndex)
+            val next = (current + direction + swipeItems.size) % swipeItems.size
             if (next == current) return@launch
             touchBrowsing = false
             select(swipeItems[next])
@@ -122,7 +144,10 @@ internal fun ContinueWatchingSection(
     LaunchedEffect(visibleItems.map(::continueIdentity)) {
         if (visibleItems.none { continueIdentity(it) == selectedKey }) select(visibleItems.first())
     }
-    LaunchedEffect(continueIdentity(selectedItem)) { onSelected(selectedItem) }
+    // Automatic slides reuse the row's metadata; only deliberate selection asks the server for detail.
+    LaunchedEffect(metadataSelectionKey) {
+        visibleItems.firstOrNull { continueIdentity(it) == metadataSelectionKey }?.let(onSelected)
+    }
     // Touch browsing follows the visible shelf; D-pad focus selects its own card.
     LaunchedEffect(row, dragging, visibleItems.map(::continueIdentity)) {
         if (dragging) {
@@ -144,7 +169,18 @@ internal fun ContinueWatchingSection(
     val accent = MaterialTheme.colorScheme.primary
     val screenHeight = LocalConfiguration.current.screenHeightDp
 
-    BoxWithConstraints(modifier.fillMaxWidth().testTag("continue-watching-section")) {
+    BoxWithConstraints(modifier.fillMaxWidth().hoverable(hoverInteraction)
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                touching = true
+                interactionRevision++
+                try {
+                    do { val event = awaitPointerEvent(PointerEventPass.Initial) }
+                    while (event.changes.any { it.pressed })
+                } finally { touching = false }
+            }
+        }.testTag("continue-watching-section")) {
         val wide = maxWidth >= 600.dp
         val heroHeight = if (wide) (screenHeight * .30f).dp.coerceIn(180.dp, 240.dp) else 240.dp
         val compact = wide && heroHeight < 210.dp
@@ -156,18 +192,20 @@ internal fun ContinueWatchingSection(
         val heroProgress = continuePlaybackProgress(hero.durationMs, selectedItem.resumeMs)
         Column(Modifier.fillMaxWidth()) {
                 Box(Modifier.fillMaxWidth().height(heroHeight).testTag("continue-watching-hero")
+                    .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
                     .pointerInput(visibleKeys, busy, swipeThreshold) {
                         if (busy || visibleKeys.size < 2) return@pointerInput
                         var horizontalDrag = 0f
                         detectHorizontalDragGestures(
-                            onDragStart = { horizontalDrag = 0f; startHeroSwipe() },
-                            onDragCancel = { horizontalDrag = 0f },
+                            onDragStart = { horizontalDrag = 0f; heroDragging = true; startHeroSwipe() },
+                            onDragCancel = { horizontalDrag = 0f; heroDragging = false },
                             onDragEnd = {
                                 when {
                                     horizontalDrag <= -swipeThreshold -> swipeHero(1)
                                     horizontalDrag >= swipeThreshold -> swipeHero(-1)
                                 }
                                 horizontalDrag = 0f
+                                heroDragging = false
                             },
                             onHorizontalDrag = { change, amount ->
                                 change.consume()
@@ -177,27 +215,30 @@ internal fun ContinueWatchingSection(
                     }) {
                     backdrop(hero, Modifier.matchParentSize())
                     if (wide) Box(Modifier.matchParentSize().background(Brush.horizontalGradient(
-                        listOf(background.copy(alpha = .94f), background.copy(alpha = .72f), background.copy(alpha = .12f)))))
+                        listOf(Color.Black.copy(alpha = .76f), Color.Black.copy(alpha = .42f), Color.Transparent))))
                     Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-                        listOf(background.copy(alpha = if (wide) .05f else .24f), background.copy(alpha = .56f), background))))
+                        0f to Color.Black.copy(alpha = if (wide) .08f else .48f),
+                        .85f to Color.Black.copy(alpha = if (wide) .16f else .56f),
+                        1f to background)))
                     Column(Modifier.fillMaxWidth(if (wide) .66f else 1f).align(if (wide) Alignment.CenterStart else Alignment.Center)
                         .padding(horizontal = 24.dp, vertical = 12.dp),
                         horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
-                        Text(hero.showTitle ?: hero.title, color = foreground,
+                        Text(hero.showTitle ?: hero.title, color = Color.White,
                             style = MaterialTheme.typography.headlineSmall,
                             fontSize = if (wide) 28.sp else 26.sp,
                             textAlign = if (wide) TextAlign.Start else TextAlign.Center,
                             fontWeight = FontWeight.Bold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("continue-hero-title"))
-                        Text(continueHeroMetadata(hero), color = foreground.copy(alpha = .86f),
+                        Text(continueHeroMetadata(hero), color = Color.White.copy(alpha = .9f),
                             style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("continue-hero-meta"))
                         Button(onClick = { onResume(selectedItem) }, enabled = !busy,
                             shape = RoundedCornerShape(50),
                             colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
                             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
-                            modifier = Modifier.height(40.dp).testTag("continue-hero-resume").semantics {
+                            modifier = Modifier.height(40.dp).onFocusChanged { heroFocused = it.isFocused }
+                                .testTag("continue-hero-resume").semantics {
                                 contentDescription = "${selectedItem.showTitle ?: selectedItem.title}, 이어보기"
                             }) {
                             Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(22.dp))
@@ -212,7 +253,7 @@ internal fun ContinueWatchingSection(
                                 fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.widthIn(max = 130.dp).testTag("continue-hero-remaining"))
                         }
-                        Text(hero.summary, color = foreground.copy(alpha = .82f),
+                        Text(hero.summary, color = Color.White.copy(alpha = .9f),
                             textAlign = if (wide) TextAlign.Start else TextAlign.Center,
                             style = MaterialTheme.typography.bodySmall, minLines = 2, maxLines = 2,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("continue-hero-summary"))

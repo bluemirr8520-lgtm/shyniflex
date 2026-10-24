@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +25,8 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
@@ -49,6 +50,7 @@ import io.mirr.shynigsy.data.MediaItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,6 +61,11 @@ import java.io.File
 class ContinueWatchingSectionTest {
     @get:Rule val screen = createComposeRule()
     private lateinit var inputModeManager: InputModeManager
+
+    @Before fun requireIsolatedSyntheticApplication() {
+        assertEquals("Synthetic UI verification must use the isolated application",
+            "io.mirr.shyniflex.spoilerqa", InstrumentationRegistry.getInstrumentation().targetContext.packageName)
+    }
 
     @Test fun heroFillsTheSectionAndEpisodeThumbnailsHaveCaptionsBelowThem() {
         val items = episodes(3)
@@ -130,6 +137,14 @@ class ContinueWatchingSectionTest {
         screen.onNodeWithTag(RESUME).performScrollTo()
         settle()
         assertHero(details.value!!)
+        screen.onNodeWithTag(RESUME).performSemanticsAction(SemanticsActions.RequestFocus) { request ->
+            assertTrue("The resume button can retain a remote user's current target", request())
+        }
+        settle()
+        advanceRotation()
+        advanceRotation()
+        assertHero(details.value!!)
+        screen.onNodeWithTag(RESUME).assertIsFocused()
         screen.onNodeWithTag(RESUME).performClick()
         screen.runOnIdle { assertEquals("Metadata cannot change the playback source or resume position", items[1], resumed) }
     }
@@ -150,17 +165,29 @@ class ContinueWatchingSectionTest {
         screen.runOnIdle { assertEquals(item, resumed) }
     }
 
-    @Test fun idleTimeDoesNotChangeTheSelectionOrAutomaticallyScrollTheRow() {
-        val items = episodes(20)
+    @Test fun idleBackdropLoopsWithoutScrollingRequestingMetadataOrStartingPlayback() {
+        val items = episodes(3)
         var resumes = 0
-        render(items, onResume = { resumes++ })
+        var resumed: MediaItem? = null
+        val selections = mutableListOf<MediaItem>()
+        render(items, onResume = { resumes++; resumed = it }, onSelected = { selections.add(it) })
         val before = rowScrollPosition()
-        screen.mainClock.advanceTimeBy(30_000)
-        screen.waitForIdle()
-        assertHero(items.first())
-        screen.onNodeWithTag(itemTag(items.first())).assertIsSelected()
-        assertEquals("The list never auto-advances", before, rowScrollPosition(), .001f)
-        screen.runOnIdle { assertEquals("Idle time must not start playback", 0, resumes) }
+        val manualRequests = screen.runOnIdle { selections.size }
+        listOf(items[1], items[2], items[0], items[1]).forEach { expected ->
+            advanceRotation()
+            assertHero(expected)
+            screen.onNodeWithTag(backdropTag(expected), useUnmergedTree = true).assertIsDisplayed()
+            assertEquals("Only the backdrop changes; the finite shelf stays put", before, rowScrollPosition(), .001f)
+            screen.runOnIdle {
+                assertEquals("An automatic slide does not fetch descriptive metadata", manualRequests, selections.size)
+                assertEquals("An automatic slide never starts playback", 0, resumes)
+            }
+        }
+        screen.onNodeWithTag(RESUME).performClick()
+        screen.runOnIdle {
+            assertEquals(1, resumes)
+            assertEquals("The CTA uses the exact source currently shown in the hero", items[1], resumed)
+        }
     }
 
     @Test fun heroSwipesChangeArtworkAndSelectionWhilePlayUsesTheExactSelectedSource() {
@@ -200,40 +227,32 @@ class ContinueWatchingSectionTest {
         }
     }
 
-    @Test fun heroSwipesStopAtBothEndsAndTheShelfCannotUndoTheLastSelection() {
+    @Test fun heroSwipesWrapAtBothEndsWhileTheShelfKeepsTheSelectedWork() {
         val items = episodes(3)
         val selections = mutableListOf<MediaItem>()
         var resumes = 0
         render(items, onSelected = { selections.add(it) }, onResume = { resumes++ })
         screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
         settle()
-        assertHero(items.first())
-        repeat(items.lastIndex) {
-            screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
-            settle()
-        }
         assertHero(items.last())
         screen.onNodeWithTag(itemTag(items.last())).assertIsSelected()
-        val atEnd = screen.runOnIdle { selections.size }
         screen.onNodeWithTag(HERO).performTouchInput { swipeLeft(durationMillis = 300) }
         settle()
-        // The row may have an earlier firstVisibleItemIndex when its last card is selected.
+        assertHero(items.first())
+        // A programmatic reveal must not let the row's earlier anchor undo a hero selection.
         screen.mainClock.advanceTimeBy(1_200)
         screen.waitForIdle()
-        assertHero(items.last())
-        screen.onNodeWithTag(backdropTag(items.last()), useUnmergedTree = true).assertIsDisplayed()
-        screen.runOnIdle { assertEquals("The final work does not wrap to the first", atEnd, selections.size) }
+        assertHero(items.first())
+        screen.onNodeWithTag(backdropTag(items.first()), useUnmergedTree = true).assertIsDisplayed()
 
-        repeat(items.lastIndex) {
+        items.asReversed().forEach { expected ->
             screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
             settle()
+            assertHero(expected)
         }
-        val atStart = screen.runOnIdle { selections.size }
-        screen.onNodeWithTag(HERO).performTouchInput { swipeRight(durationMillis = 300) }
-        settle()
         assertHero(items.first())
         screen.runOnIdle {
-            assertEquals("The first work does not wrap to the final work", atStart, selections.size)
+            assertEquals("Every explicit swipe selects metadata for that real work", items.first(), selections.last())
             assertEquals(0, resumes)
         }
     }
@@ -291,7 +310,66 @@ class ContinueWatchingSectionTest {
         screen.runOnIdle { details.value = hidden.copy(summary = "재잠금 뒤 도착한 비공개 소개") }
         settle()
         assertHero(publicFirst)
+        advanceRotation()
+        assertHero(publicLast)
+        screen.onNodeWithTag(backdropTag(hidden), useUnmergedTree = true).assertDoesNotExist()
         screen.runOnIdle { assertEquals("Selection and revocation do not start playback", 0, resumes) }
+    }
+
+    @Test fun busyAndChangedListsCannotRotateToARemovedWork() {
+        val original = episodes(3)
+        val items = mutableStateOf(original)
+        val busy = mutableStateOf(true)
+        var resumes = 0
+        render(original, itemsState = items, busy = busy, onResume = { resumes++ })
+        advanceRotation()
+        advanceRotation()
+        assertHero(original[0])
+
+        screen.runOnIdle {
+            items.value = listOf(original[2], original[1])
+            busy.value = false
+        }
+        settle()
+        assertHero(original[2])
+        advanceRotation()
+        assertHero(original[1])
+        screen.onNodeWithTag(backdropTag(original[0]), useUnmergedTree = true).assertDoesNotExist()
+
+        screen.runOnIdle { items.value = listOf(original[1]) }
+        settle()
+        advanceRotation()
+        assertHero(original[1])
+        screen.runOnIdle { items.value = emptyList() }
+        settle()
+        advanceRotation()
+        screen.onNodeWithTag(SECTION).assertDoesNotExist()
+        screen.runOnIdle { assertEquals(0, resumes) }
+    }
+
+    @Test fun scrollingTheHeroOffscreenStopsItsTimerUntilItIsVisibleAgain() {
+        val items = episodes(3)
+        var resumes = 0
+        render(items, onResume = { resumes++ }, scrollTail = true)
+        // Scroll-to animations need a running frame clock; the rotation interval is tested manually below.
+        screen.mainClock.autoAdvance = true
+        screen.onNodeWithTag(TAIL).performScrollTo()
+        screen.mainClock.autoAdvance = false
+        settle()
+        screen.onNodeWithTag(HERO).assertIsNotDisplayed()
+        advanceRotation()
+        advanceRotation()
+        assertHero(items.first())
+
+        screen.mainClock.autoAdvance = true
+        screen.onNodeWithTag(HERO).performScrollTo()
+        screen.mainClock.autoAdvance = false
+        settle()
+        screen.onNodeWithTag(HERO).assertIsDisplayed()
+        assertHero(items.first())
+        advanceRotation()
+        assertHero(items[1])
+        screen.runOnIdle { assertEquals("Visibility does not resume media automatically", 0, resumes) }
     }
 
     @Test fun posterRowStopsAtBothEndsWithoutWrappingOrVirtualPages() {
@@ -339,6 +417,10 @@ class ContinueWatchingSectionTest {
             assertEquals("Selection requests metadata for the focused work", items[1], selected)
             assertNull("Focusing artwork does not start playback", resumed)
         }
+        advanceRotation()
+        assertHero(items[2])
+        screen.onNodeWithTag(itemTag(items[1])).assertIsFocused()
+        screen.runOnIdle { assertEquals("Automatic background changes do not fetch new metadata", items[1], selected) }
         screen.onNodeWithTag(itemTag(items[1])).performClick()
         screen.runOnIdle { assertEquals("A poster click resumes directly", items[1], resumed) }
     }
@@ -485,6 +567,7 @@ class ContinueWatchingSectionTest {
         spoilerUnlocked: State<Boolean>? = null,
         busy: State<Boolean>? = null,
         scrollTail: Boolean = false,
+        itemsState: State<List<MediaItem>>? = null,
     ) {
         // Input mode is device-wide; a preceding TV case must not leave this
         // synthetic touch fixture in keyboard mode with focus-driven scrolling.
@@ -492,21 +575,20 @@ class ContinueWatchingSectionTest {
         screen.mainClock.autoAdvance = false
         screen.setContent {
             inputModeManager = LocalInputModeManager.current
-            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF83E3C5), background = Color(0xFF0B1220),
-                surface = Color(0xFF0B1220), surfaceContainer = Color(0xFF142033), onSurface = Color(0xFFF0F4FA),
-                onSurfaceVariant = Color(0xFFA6B6CB))) {
-                Column(Modifier.fillMaxSize().background(Color(0xFF0B1220)).verticalScroll(rememberScrollState()).testTag(CONTENT)) {
+            MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
+                Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+                    .verticalScroll(rememberScrollState()).testTag(CONTENT)) {
                     Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag(HOST)) {
-                        ContinueWatchingSection(items = items, busy = busy?.value ?: false, onResume = onResume,
-                            poster = { item, modifier -> SyntheticArtwork(item, modifier, backdrop = false) },
-                            backdrop = { item, modifier -> SyntheticArtwork(item, modifier.testTag(backdropTag(item)), backdrop = true) },
+                        ContinueWatchingSection(items = itemsState?.value ?: items, busy = busy?.value ?: false, onResume = onResume,
+                            poster = { item, modifier -> SyntheticArtwork(item, modifier) },
+                            backdrop = { item, modifier -> SyntheticArtwork(item, modifier.testTag(backdropTag(item))) },
                             thumbnail = { item, modifier -> Box(modifier) {
-                                SyntheticArtwork(item, Modifier.fillMaxSize().testTag("continue-thumbnail-slot-${item.id}"), backdrop = false)
+                                SyntheticArtwork(item, Modifier.fillMaxSize().testTag("continue-thumbnail-slot-${item.id}"))
                             } },
                             onSelected = onSelected, selectedDetails = selectedDetails?.value, onWatchOptions = onWatchOptions,
                             spoilerUnlocked = spoilerUnlocked?.value ?: false)
                     }
-                    if (scrollTail) Box(Modifier.fillMaxWidth().height(1_000.dp))
+                    if (scrollTail) Box(Modifier.fillMaxWidth().height(2_000.dp).testTag(TAIL))
                 }
             }
         }
@@ -538,6 +620,11 @@ class ContinueWatchingSectionTest {
         screen.waitForIdle()
     }
 
+    private fun advanceRotation() {
+        screen.mainClock.advanceTimeBy(CONTINUE_BACKDROP_INTERVAL_MS + 600)
+        screen.waitForIdle()
+    }
+
     private fun saveScreenshot(tag: String, filename: String) {
         val bitmap = screen.onNodeWithTag(tag).captureToImage().asAndroidBitmap()
         val directory = InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null)!!
@@ -546,9 +633,9 @@ class ContinueWatchingSectionTest {
         }
     }
 
-    @Composable private fun SyntheticArtwork(item: MediaItem, modifier: Modifier, backdrop: Boolean) {
+    @Composable private fun SyntheticArtwork(item: MediaItem, modifier: Modifier) {
         val color = if (item.id % 2 == 0) Color(0xFF2C5364) else Color(0xFF8A4A39)
-        Box(modifier.background(if (backdrop) color.copy(alpha = .75f) else color))
+        Box(modifier.background(color))
     }
 
     private fun episodes(count: Int) = (1..count).map { number ->
@@ -566,6 +653,7 @@ class ContinueWatchingSectionTest {
     private companion object {
         const val HOST = "continue-test-host"
         const val CONTENT = "continue-test-scroll-content"
+        const val TAIL = "continue-test-scroll-tail"
         const val SECTION = "continue-watching-section"
         const val HERO = "continue-watching-hero"
         const val ROW = "continue-watching-row"
