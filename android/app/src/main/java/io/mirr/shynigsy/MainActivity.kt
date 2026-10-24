@@ -23,6 +23,7 @@ import io.mirr.shynigsy.player.PlaybackCompletionSignals
 import io.mirr.shynigsy.ui.ShyniApp
 import io.mirr.shynigsy.ui.CinemaAppearanceTheme
 import io.mirr.shynigsy.ui.ArtworkNetworkClient
+import io.mirr.shynigsy.ui.ArtworkBrowsingState
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
@@ -37,6 +38,7 @@ import io.mirr.shynigsy.updates.UpdateDialog
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppViewModel
     private lateinit var updates: UpdateViewModel
+    private val artworkBrowsingOwner = Any()
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (packageManager.canRequestPackageInstalls()) installReadyUpdate()
         else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.")
@@ -54,7 +56,8 @@ class MainActivity : ComponentActivity() {
         SingletonImageLoader.setSafe { context ->
             val artworkHttp = OkHttpClient.Builder()
                 .followRedirects(false).followSslRedirects(false).build()
-            val artworkNetwork = ArtworkNetworkClient(artworkHttp.asNetworkClient())
+            val artworkNetwork = ArtworkNetworkClient(artworkHttp.asNetworkClient(), maxConcurrentRequests = 4,
+                isBrowsing = ArtworkBrowsingState.process::isBrowsing)
             ImageLoader.Builder(context)
                 .bitmapFactoryMaxParallelism(2)
                 .components {
@@ -102,6 +105,21 @@ class MainActivity : ComponentActivity() {
                 onCheck = { updates.check(manual = true) }, onDismiss = updates::dismiss)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ArtworkBrowsingState.process.started(artworkBrowsingOwner)
+    }
+
+    override fun onStop() {
+        ArtworkBrowsingState.process.stopped(artworkBrowsingOwner)
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        ArtworkBrowsingState.process.stopped(artworkBrowsingOwner)
+        super.onDestroy()
     }
 
     override fun onResume() {

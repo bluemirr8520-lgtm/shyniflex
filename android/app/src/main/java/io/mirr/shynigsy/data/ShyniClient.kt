@@ -728,10 +728,25 @@ class ShyniClient(
     suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort? = null,
         genre: String? = null, year: Int? = null,
         contentType: LibraryContentType = LibraryContentType.defaultFor(library),
-        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, decade: Int? = null): MediaPage = withContext(Dispatchers.Default) {
+        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, decade: Int? = null,
+        onCatalogReady: (suspend (MediaPage) -> Unit)? = null): MediaPage = withContext(Dispatchers.Default) {
         val generation = browseCacheGeneration.get()
+        val account = token
         val normalizedQuery = query.trim()
         if (library.isSpoiler && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+        val privateKey = spoilerKey()
+        val privateGrant = spoilerGrant()
+        suspend fun requireCurrent(privateContent: Boolean = library.isSpoiler) {
+            currentCoroutineContext().ensureActive()
+            if (generation != browseCacheGeneration.get() || account != token) throw CancellationException("목록 요청이 종료되었습니다.")
+            if (privateContent) {
+                if (!spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+                if (privateGrant == null || !SpoilerAccessRegistry.isCurrent(privateKey, privateGrant)) {
+                    throw CancellationException("목록 요청이 종료되었습니다.")
+                }
+            }
+        }
+        requireCurrent()
         if (contentType !in LibraryContentType.availableFor(library)) throw ApiException("이 라이브러리에서 지원하지 않는 표시 종류입니다.")
         val selectedSort = (sort ?: LibrarySort.defaultFor(contentType)).forContentType(contentType)
         val key = "${library.id}:${library.type}:${library.isSpoiler}:$normalizedQuery:$selectedSort:$contentType:$watchFilter"
@@ -763,7 +778,20 @@ class ShyniClient(
         val filtered = filteredCatalog(page.items, genre, year, watchFilter, decade)
         val start = offset.coerceIn(0, filtered.items.size)
         val visible = filtered.items.subList(start, minOf(start + PAGE_SIZE, filtered.items.size)).toList()
-        filtered.copy(items = if (watchFilter == LibraryWatchFilter.ALL) withProgress(visible) else visible)
+        val privateContent = library.isSpoiler || visible.any { it.isSpoiler }
+        requireCurrent(privateContent)
+        if (watchFilter == LibraryWatchFilter.ALL && onCatalogReady != null) {
+            // Artwork can start before the optional history read. Unknown history
+            // must not temporarily become an unwatched/completed assertion.
+            val artworkPage = filtered.copy(items = visible.map { item ->
+                if (item.playable) item.copy(watchState = null, watched = false, resumeMs = 0) else item
+            })
+            onCatalogReady(artworkPage)
+            requireCurrent(privateContent)
+        }
+        val enriched = if (watchFilter == LibraryWatchFilter.ALL) withProgress(visible) else visible
+        requireCurrent(privateContent)
+        filtered.copy(items = enriched)
     }
 
     private suspend fun browseCatalog(library: Library, contentType: LibraryContentType, sort: LibrarySort,

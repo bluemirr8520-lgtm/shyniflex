@@ -79,6 +79,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -825,8 +826,11 @@ internal fun WatchedOptionsDialog(item: MediaItem, onDismiss: () -> Unit, onSetW
 @Composable
 internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop, transparentBackground: Boolean = false,
-    imageUrl: String? = item.poster, imageAlignment: Alignment = Alignment.Center) {
+    imageUrl: String? = item.poster, imageAlignment: Alignment = Alignment.Center,
+    onArtworkSettled: () -> Unit = {}) {
     val context = LocalContext.current
+    val artworkSettled by rememberUpdatedState(onArtworkSettled)
+    LaunchedEffect(imageUrl) { if (imageUrl.isNullOrBlank()) artworkSettled() }
     val headers = imageUrl?.let(viewModel::posterHeaders).orEmpty()
     val request = remember(context, imageUrl, headers, item.isSpoiler) {
         val cacheKey = viewModel.posterCacheKey(imageUrl.orEmpty())
@@ -841,7 +845,8 @@ internal fun Poster(item: MediaItem, viewModel: AppViewModel, modifier: Modifier
     Box(if (transparentBackground) modifier else modifier.background(Panel), contentAlignment = Alignment.Center) {
         Icon(Icons.Rounded.Movie, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(38.dp))
         AsyncImage(model = request, contentDescription = "${item.title} 포스터",
-            modifier = Modifier.fillMaxSize(), contentScale = contentScale, alignment = imageAlignment)
+            modifier = Modifier.fillMaxSize(), contentScale = contentScale, alignment = imageAlignment,
+            onSuccess = { artworkSettled() }, onError = { artworkSettled() })
     }
 }
 

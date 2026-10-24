@@ -18,6 +18,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.util.UUID
 
 data class AppState(
@@ -806,6 +808,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(continueDetails = null) }
     }
 
+    /** Publish poster rows before optional history, only into the navigation that requested them. */
+    private fun libraryPagePublisher(active: ShyniClient, owner: AppState,
+        prefix: List<MediaItem> = emptyList(), reconcile: (AppState) -> AppState = { it }): suspend (MediaPage) -> Unit {
+        val navigation = revision
+        val account = active.token
+        val accessRevision = SpoilerAccessRegistry.changes.value
+        return { page ->
+            withContext(Dispatchers.Main.immediate) {
+                currentCoroutineContext().ensureActive()
+                val current = mutableState.value
+                val library = owner.library
+                if (active !== client || active.token != account || navigation != revision || !current.loggedIn ||
+                    library == null || current.library != library || current.query != owner.query ||
+                    current.librarySort != owner.librarySort || current.libraryContentType != owner.libraryContentType ||
+                    current.libraryBrowseRevision != owner.libraryBrowseRevision || current.searchOpen ||
+                    current.detailStack.isNotEmpty() ||
+                    ((library.isSpoiler || page.items.any { it.isSpoiler }) &&
+                        (accessRevision != SpoilerAccessRegistry.changes.value ||
+                            !current.spoilerUnlocked || !active.spoilerUnlocked))) {
+                    throw CancellationException("목록 요청이 종료되었습니다.")
+                }
+                // Use the original prefix for both stages. Appending the final page to its
+                // preliminary copy would keep unknown badges and incorrectly end pagination.
+                val displayed = if (prefix.isEmpty()) page else appendLibraryPage(prefix, page)
+                mutableState.update { reconcile(it.copy(items = displayed.items.map(::collectionWatchState), total = displayed.total)) }
+            }
+        }
+    }
+
     fun selectLibrary(library: Library) {
         val active = client ?: return
         if (library.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
@@ -817,8 +848,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             libraryBrowseRevision = it.libraryBrowseRevision + 1,
             detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
         launchRequest {
-            val page = active.items(library)
-            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+            val publish = libraryPagePublisher(active, mutableState.value)
+            val page = active.items(library, onCatalogReady = publish)
+            publish(page)
         }
     }
 
@@ -828,10 +860,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val library = snapshot.library ?: return
         if (snapshot.busy || snapshot.detailStack.isNotEmpty() || snapshot.items.size >= snapshot.total) return
         launchRequest {
+            val publish = libraryPagePublisher(active, snapshot, prefix = snapshot.items)
             val page = active.items(library, offset = snapshot.items.size, query = snapshot.query, sort = snapshot.librarySort,
-                contentType = snapshot.libraryContentType)
-            val appended = appendLibraryPage(snapshot.items, page)
-            mutableState.update { it.copy(items = appended.items.map(::collectionWatchState), total = appended.total) }
+                contentType = snapshot.libraryContentType, onCatalogReady = publish)
+            publish(page)
         }
     }
 
@@ -842,9 +874,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(query = query, items = emptyList(), total = 0,
             libraryBrowseRevision = it.libraryBrowseRevision + 1) }
         launchRequest {
+            val publish = libraryPagePublisher(active, mutableState.value)
             val page = active.items(library, query = query, sort = snapshot.librarySort,
-                contentType = snapshot.libraryContentType)
-            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+                contentType = snapshot.libraryContentType, onCatalogReady = publish)
+            publish(page)
         }
     }
 
@@ -859,8 +892,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(librarySort = selectedSort, libraryContentType = contentType, items = emptyList(), total = 0,
             libraryBrowseRevision = it.libraryBrowseRevision + 1) }
         launchRequest {
-            val page = active.items(library, query = snapshot.query, sort = selectedSort, contentType = contentType)
-            mutableState.update { it.copy(items = page.items.map(::collectionWatchState), total = page.total) }
+            val publish = libraryPagePublisher(active, mutableState.value)
+            val page = active.items(library, query = snapshot.query, sort = selectedSort, contentType = contentType,
+                onCatalogReady = publish)
+            publish(page)
         }
     }
 
@@ -1124,9 +1159,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } else if (snapshot.searchOpen) loadSearch(active, snapshot.searchQuery, reconcile)
                 else snapshot.library?.let { library ->
+                    val publish = libraryPagePublisher(active, snapshot, reconcile = reconcile)
                     val page = active.items(library, query = snapshot.query, sort = snapshot.librarySort,
-                        contentType = snapshot.libraryContentType)
-                    mutableState.update { reconcile(it.copy(items = page.items.map(::collectionWatchState), total = page.total)) }
+                        contentType = snapshot.libraryContentType, onCatalogReady = publish)
+                    publish(page)
                 }
             }
         }

@@ -409,11 +409,15 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
     cinematic: Boolean = false) {
     var focused by remember { mutableStateOf(false) }
     val cardInteraction = remember { MutableInteractionSource() }
+    val artworkUrl = if (wide) item.thumbnail ?: item.backdrop ?: item.poster else item.poster
+    val artworkSettled = remember(item.libraryId, item.id, item.type, item.viewItemId, artworkUrl, item.isSpoiler) {
+        kotlinx.coroutines.CompletableDeferred<Unit>().apply { if (artworkUrl.isNullOrBlank()) complete(Unit) }
+    }
     val countRevision by remember(model) { model.state.map { it.seriesCountRevision }.distinctUntilChanged() }.collectAsState(0)
-    val remaining by produceState<Int?>(null, item, countRevision) {
+    val remaining by produceState<Int?>(null, item, countRevision, artworkSettled) {
         value = null
         if (item.type in setOf("show", "tv", "season")) {
-            kotlinx.coroutines.delay(250)
+            awaitLibraryArtwork(artworkSettled)
             value = model.seriesUnwatchedCount(item)
         }
     }
@@ -436,7 +440,8 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
             .then(if (cinematic) Modifier.border(if (focused) 2.dp else 1.dp,
                 if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = .12f), shape)
                 .clip(shape) else Modifier)) {
-            Poster(item, model, Modifier.fillMaxSize(), imageUrl = if (wide) item.thumbnail ?: item.backdrop ?: item.poster else item.poster)
+            Poster(item, model, Modifier.fillMaxSize(), imageUrl = artworkUrl,
+                onArtworkSettled = { artworkSettled.complete(Unit) })
             if (focused && !cinematic) Surface(Modifier.align(Alignment.Center).size(46.dp),
                 color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(23.dp),
                 border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onPrimary)) {
