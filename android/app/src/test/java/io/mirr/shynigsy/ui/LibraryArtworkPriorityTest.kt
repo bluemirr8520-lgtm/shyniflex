@@ -10,7 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class LibraryArtworkPriorityTest {
-    @Test fun supplementalCountsWaitUntilThePosterSettles() = runBlocking {
+    @Test fun supplementalCountsWaitUntilThePosterSettles(): Unit = runBlocking {
         val artwork = CompletableDeferred<Unit>()
         val ready = async(start = CoroutineStart.UNDISPATCHED) {
             awaitLibraryArtwork(artwork, minimumDelayMs = 0, maxWaitMs = 1_000)
@@ -20,7 +20,7 @@ class LibraryArtworkPriorityTest {
         withTimeout(1_000) { ready.await() }
     }
 
-    @Test fun aHangingPosterDoesNotStarveCountsOrCancelTheImageSignal() = runBlocking {
+    @Test fun aHangingPosterDoesNotStarveCountsOrCancelTheImageSignal(): Unit = runBlocking {
         val artwork = CompletableDeferred<Unit>()
         withTimeout(1_000) { awaitLibraryArtwork(artwork, minimumDelayMs = 0, maxWaitMs = 20) }
         assertFalse(artwork.isCompleted)
@@ -28,7 +28,7 @@ class LibraryArtworkPriorityTest {
         artwork.complete(Unit)
     }
 
-    @Test fun aCachedOrMissingImageStillLeavesTheInitialQuietPeriod() = runBlocking {
+    @Test fun aCachedOrMissingImageStillLeavesTheInitialQuietPeriod(): Unit = runBlocking {
         val artwork = CompletableDeferred(Unit)
         val ready = async(start = CoroutineStart.UNDISPATCHED) {
             awaitLibraryArtwork(artwork, minimumDelayMs = 20, maxWaitMs = 1_000)
@@ -37,7 +37,7 @@ class LibraryArtworkPriorityTest {
         withTimeout(1_000) { ready.await() }
     }
 
-    @Test fun leavingTheCardCancelsItsWaitWithoutCancelingSharedArtwork() = runBlocking {
+    @Test fun leavingTheCardCancelsItsWaitWithoutCancelingSharedArtwork(): Unit = runBlocking {
         val artwork = CompletableDeferred<Unit>()
         val obsolete = async(start = CoroutineStart.UNDISPATCHED) {
             awaitLibraryArtwork(artwork, minimumDelayMs = 0, maxWaitMs = 1_000)
