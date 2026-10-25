@@ -78,6 +78,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private lateinit var segmentSkipButton: Button
     private lateinit var segmentActions: LinearLayout
     private lateinit var creditsNextButton: Button
+    private val tvSegmentFocusGate = TvSegmentFocusGate()
     private var remoteSeek: RemoteSeekTimeline? = null
     private var remoteSeekKey = KeyEvent.KEYCODE_UNKNOWN
     private var remoteSeekLastEventAt = 0L
@@ -355,7 +356,10 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (television && playerView.isControllerFullyVisible) playerView.hideController()
+                if (television && ::segmentActions.isInitialized && segmentActions.hasFocus()) {
+                    playerView.hideController()
+                    restoreSegmentPlaybackFocus()
+                } else if (television && playerView.isControllerFullyVisible) playerView.hideController()
                 else leavePlayer()
             }
         })
@@ -467,9 +471,6 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
             gestures.controllerVisible = visibility == View.VISIBLE && !gestures.locked
-            if (television) segmentActions.descendantFocusability =
-                if (visibility == View.VISIBLE || segmentActions.hasFocus()) ViewGroup.FOCUS_AFTER_DESCENDANTS
-                else ViewGroup.FOCUS_BLOCK_DESCENDANTS
             if (gestures.locked) {
                 if (visibility == View.VISIBLE) playerView.hideController()
             } else lockButton.visibility = if (!television && visibility == View.VISIBLE) View.VISIBLE else View.GONE
@@ -488,6 +489,8 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         root.addView(errorPanel, FrameLayout.LayoutParams(dp(410), -2, Gravity.CENTER))
         if (television) {
+            playerView.isFocusable = true
+            playerView.isFocusableInTouchMode = true
             // The screen lock is a touch control; a TV must always retain remote navigation.
             lockButton.visibility = View.GONE
             playerView.controllerShowTimeoutMs = 6000
@@ -499,10 +502,18 @@ class NativePlayerActivity : AppCompatActivity() {
                     background = androidx.core.content.ContextCompat.getDrawable(this@NativePlayerActivity, R.drawable.tv_player_button)
                     backgroundTintList = null
                     isFocusable = true
+                    isFocusableInTouchMode = true
                 }
             }
             applyControlHighlight(segmentSkipButton)
             applyControlHighlight(creditsNextButton)
+            segmentSkipButton.isFocusableInTouchMode = true
+            creditsNextButton.isFocusableInTouchMode = true
+            listOf(segmentSkipButton, creditsNextButton).forEach { button ->
+                button.setOnFocusChangeListener { _, focused -> if (focused) tvSegmentFocusGate.focused() }
+            }
+            segmentSkipButton.setOnKeyListener { _, key, event -> handleSegmentDirectionKey(false, key, event) }
+            creditsNextButton.setOnKeyListener { _, key, event -> handleSegmentDirectionKey(true, key, event) }
         }
         setContentView(root)
         ViewCompat.requestApplyInsets(root)
@@ -550,8 +561,17 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun updateSegmentSkipButton(positionMs: Long? = null) {
         if (!::segmentActions.isInitialized) return
-        activeSkipMarker = currentSegmentMarker(player, positionMs)
+        val candidate = currentSegmentMarker(player, positionMs)
+        if (television && activeSkipMarker != candidate) {
+            // An UP belonging to the old interval must not activate a reused
+            // button after its label/action has changed to another interval.
+            segmentSkipButton.isPressed = false; segmentSkipButton.cancelLongPress()
+            creditsNextButton.isPressed = false; creditsNextButton.cancelLongPress()
+        }
+        activeSkipMarker = candidate
         val marker = activeSkipMarker
+        val nextHadFocus = creditsNextButton.hasFocus()
+        if (television && marker == null && segmentActions.hasFocus()) restoreSegmentPlaybackFocus()
         segmentSkipButton.visibility = if (marker == null) View.GONE else View.VISIBLE
         if (marker != null) {
             segmentSkipButton.text = if (marker.type == "intro") "인트로 건너뛰기" else "크레딧 건너뛰기"
@@ -564,17 +584,60 @@ class NativePlayerActivity : AppCompatActivity() {
             "다음 화 재생, 시즌 ${it.seasonNumber} ${it.episodeNumber}화, ${it.title}"
         } ?: "다음 화 재생"
         creditsNextButton.tooltipText = creditsNextButton.contentDescription
-        if (television) segmentActions.descendantFocusability =
-            if (playerView.isControllerFullyVisible || segmentActions.hasFocus()) ViewGroup.FOCUS_AFTER_DESCENDANTS
-            else ViewGroup.FOCUS_BLOCK_DESCENDANTS
         segmentActions.visibility = if (marker == null) View.GONE else View.VISIBLE
+        if (television) {
+            segmentActions.descendantFocusability = if (marker != null) ViewGroup.FOCUS_AFTER_DESCENDANTS
+                else ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            // Timeline identity survives temporary loading/seek hides; only a genuine
+            // interval exit or another physical file rearms automatic focus.
+            val timelineMarker = currentSkipMarker(spec.markers, positionMs ?: player?.currentPosition ?: lastPosition, lastDuration)
+            val key = timelineMarker?.let { TvSegmentMarkerKey(spec.partId, it.type, it.startMs, it.endMs) }
+            if (marker != null && next == null && nextHadFocus) focusSegmentSkip()
+            tvSegmentFocusGate.offer(key, marker != null,
+                visible && hasWindowFocus() && !playerView.isControllerFullyVisible && remoteSeek == null) {
+                focusSegmentSkip()
+            }
+        }
     }
 
     private fun hideSegmentActions() {
         activeSkipMarker = null
+        if (television && ::segmentActions.isInitialized && segmentActions.hasFocus()) restoreSegmentPlaybackFocus()
         if (::segmentSkipButton.isInitialized) segmentSkipButton.visibility = View.GONE
         if (::creditsNextButton.isInitialized) creditsNextButton.visibility = View.GONE
         if (::segmentActions.isInitialized) segmentActions.visibility = View.GONE
+    }
+
+    private fun focusSegmentSkip(): Boolean {
+        if (!::segmentActions.isInitialized || !segmentActions.isShown || !segmentSkipButton.isShown || !segmentSkipButton.isEnabled) return false
+        segmentActions.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        return segmentSkipButton.requestFocus().also { if (it) tvSegmentFocusGate.focused() }
+    }
+
+    private fun restoreSegmentPlaybackFocus(showControls: Boolean = false) {
+        if (!::playerView.isInitialized) return
+        if (showControls) playerView.showController()
+        val target = if (playerView.isControllerFullyVisible)
+            playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause) else playerView
+        if (target?.requestFocus() != true) {
+            if (::segmentActions.isInitialized) segmentActions.clearFocus()
+            playerView.requestFocus()
+        }
+    }
+
+    private fun handleSegmentDirectionKey(fromNext: Boolean, key: Int, event: KeyEvent): Boolean {
+        if (key !in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) return false
+        // Move only on release, so a held key cannot escape into seeking or click
+        // a different newly focused control with the remainder of the same press.
+        if (event.action == KeyEvent.ACTION_UP) {
+            when {
+                fromNext && key == KeyEvent.KEYCODE_DPAD_LEFT -> focusSegmentSkip()
+                !fromNext && key == KeyEvent.KEYCODE_DPAD_RIGHT && creditsNextButton.isShown -> creditsNextButton.requestFocus()
+                else -> restoreSegmentPlaybackFocus(showControls = true)
+            }
+        }
+        return true
     }
 
     private fun refreshSegmentActions() {
@@ -613,6 +676,17 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (television && event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER)) {
+            if (event.action == KeyEvent.ACTION_DOWN) tvSegmentFocusGate.keyDown(event.keyCode)
+            else if (event.action == KeyEvent.ACTION_UP) {
+                tvSegmentFocusGate.keyUp(event.keyCode)
+                // A deferred automatic focus runs after this UP has reached its
+                // original target, never during the old confirm press.
+                handler.post { if (visible && !exiting) updateSegmentSkipButton() }
+            }
+        }
         if (television && ::playerView.isInitialized && ::errorPanel.isInitialized && errorPanel.isShown)
             return super.dispatchKeyEvent(event)
         if (television && ::gestures.isInitialized && !gestures.locked && handleTvKey(event)) return true
@@ -646,6 +720,11 @@ class NativePlayerActivity : AppCompatActivity() {
         val ready = prepared && !exiting && !refreshing && !navigationLoading && !conversionLoading
         val canSetPlaybackIntent = prepared && !exiting && !navigationLoading && !conversionLoading &&
             (!refreshing || spoilerPreparing)
+        if (playerView.isControllerFullyVisible && segmentSkipButton.isShown &&
+            currentFocus?.id == androidx.media3.ui.R.id.exo_play_pause && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            if (event.action == KeyEvent.ACTION_UP) focusSegmentSkip()
+            return true
+        }
         if (::segmentActions.isInitialized && segmentActions.isShown && segmentActions.hasFocus() &&
             event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_CENTER,
@@ -686,8 +765,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (event.action == KeyEvent.ACTION_UP) {
                     playerView.showController()
                     segmentActions.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-                    if (creditsNextButton.isShown) creditsNextButton.requestFocus()
-                    else playerView.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)?.requestFocus()
+                    if (!focusSegmentSkip()) restoreSegmentPlaybackFocus()
                 }
             }
             null -> return false
@@ -2135,7 +2213,15 @@ class NativePlayerActivity : AppCompatActivity() {
         if (::playerView.isInitialized) { handler.removeCallbacks(ticker); handler.post(ticker) }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!television) return
+        if (!hasFocus) tvSegmentFocusGate.clearHeldKeys()
+        else handler.post { if (visible && !exiting) updateSegmentSkipButton() }
+    }
+
     override fun onPause() {
+        tvSegmentFocusGate.clearHeldKeys()
         finishRemoteSeeking()
         visible = false
         playerGestureActive = false

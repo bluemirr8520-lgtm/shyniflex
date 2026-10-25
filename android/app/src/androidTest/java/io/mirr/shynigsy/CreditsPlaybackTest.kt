@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.security.NetworkSecurityPolicy
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -45,6 +46,135 @@ import kotlin.math.abs
 /** All preferences, sessions, media and HTTP belong to the synthetic QA package. */
 @RunWith(AndroidJUnit4::class)
 class CreditsPlaybackTest {
+    @Test fun tvIntroAndCreditsPreferTheSkipActionWithControlsHidden(): Unit =
+        withTvFixture { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 1_000)
+            waitFor(scenario, "The intro action must receive remote focus without opening ordinary controls") {
+                it.findViewById<Button>(R.id.player_segment_skip).let { skip ->
+                    skip.isShown && skip.hasFocus() && skip.text.toString() == "인트로 건너뛰기"
+                } && !video(it).isControllerFullyVisible
+            }
+            scenario.onActivity { assertFalse(it.findViewById<View>(R.id.player_credits_next).isShown) }
+
+            seekPaused(scenario, 2_000)
+            waitFor(scenario, "Leaving the intro must remove its focused action") {
+                !it.findViewById<View>(R.id.player_segment_skip).isShown
+            }
+            seekPaused(scenario, 3_000)
+            waitFor(scenario, "Credits must focus skip rather than the available next episode") {
+                it.findViewById<Button>(R.id.player_segment_skip).let { skip ->
+                    skip.isShown && skip.hasFocus() && skip.text.toString() == "크레딧 건너뛰기"
+                } && it.findViewById<View>(R.id.player_credits_next).isShown &&
+                    !it.findViewById<View>(R.id.player_credits_next).hasFocus()
+            }
+            scenario.onActivity { assertFalse(video(it).isControllerFullyVisible) }
+            assertEquals("Focusing an action must not start another episode", 0, fixture.count("/playback/decision"))
+            fixture.assertHealthy()
+        }
+
+    @Test fun tvNextFocusSurvivesTicksAndReturnsToSkipWhenNextDisappears(): Unit =
+        withTvFixture { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 3_000)
+            waitFor(scenario, "The credits skip action must have initial remote focus") {
+                it.findViewById<View>(R.id.player_segment_skip).hasFocus()
+            }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_RIGHT)
+            waitFor(scenario, "Right must reach the verified next episode action") {
+                it.findViewById<View>(R.id.player_credits_next).hasFocus()
+            }
+            scenario.onActivity { activity ->
+                repeat(3) { updateSegmentActions(activity) }
+                assertTrue("Ordinary action refreshes must retain the user's next-episode focus",
+                    activity.findViewById<View>(R.id.player_credits_next).hasFocus())
+                setField(activity, "playbackNeighbors", neighbors(activity).copy(nextEpisode = null))
+                updateSegmentActions(activity)
+            }
+            waitFor(scenario, "A disappearing next action must return focus to visible skip") {
+                !it.findViewById<View>(R.id.player_credits_next).isShown &&
+                    it.findViewById<View>(R.id.player_segment_skip).hasFocus()
+            }
+            assertEquals(0, fixture.count("/playback/decision"))
+            fixture.assertHealthy()
+        }
+
+    @Test fun tvConfirmHeldBeforeIntroCannotActivateTheNewlyFocusedAction(): Unit =
+        withTvFixture { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 500)
+            waitFor(scenario, "The confirm press must begin before any skip action appears") {
+                !it.findViewById<View>(R.id.player_segment_skip).isShown
+            }
+            val heldAt = SystemClock.uptimeMillis()
+            remoteKeyEvent(scenario, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.ACTION_DOWN, heldAt)
+            seekPaused(scenario, 1_000)
+            waitFor(scenario, "The intro action must be visible while the earlier confirm key is held") {
+                it.findViewById<View>(R.id.player_segment_skip).isShown
+            }
+            scenario.onActivity {
+                assertFalse("Automatic focus must wait until an existing confirm press is released",
+                    it.findViewById<View>(R.id.player_segment_skip).hasFocus())
+            }
+            remoteKeyEvent(scenario, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.ACTION_UP, heldAt)
+            waitFor(scenario, "Releasing the old confirm press makes skip reachable without clicking it") {
+                it.findViewById<View>(R.id.player_segment_skip).hasFocus()
+            }
+            scenario.onActivity {
+                assertTrue("The old key release must not seek to the intro end", abs(player(it).currentPosition - 1_000) < 125)
+                assertFalse(player(it).playWhenReady)
+            }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_CENTER)
+            waitFor(scenario, "A fresh confirm press must skip to the exact intro end") {
+                player(it).playbackState == Player.STATE_READY && abs(player(it).currentPosition - INTRO_END) < 125 &&
+                    !player(it).playWhenReady && !it.findViewById<View>(R.id.player_segment_skip).isShown
+            }
+            scenario.onActivity { assertEquals(PART, spec(it).partId) }
+            assertEquals(0, fixture.count("/playback/decision"))
+            fixture.assertHealthy()
+        }
+
+    @Test fun tvSkipFocusCanLeaveReenterAndRecoverAfterTheMarkerEnds(): Unit =
+        withTvFixture { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 3_000)
+            waitFor(scenario, "Credits must initially focus skip") {
+                it.findViewById<View>(R.id.player_segment_skip).hasFocus()
+            }
+            for (escape in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)) {
+                remoteKey(scenario, escape)
+                waitFor(scenario, "The skip action must release focus to ordinary playback controls") {
+                    video(it).isControllerFullyVisible && playPause(it).hasFocus()
+                }
+                remoteKey(scenario, KeyEvent.KEYCODE_DPAD_UP)
+                waitFor(scenario, "Up from play/pause must re-enter visible skip") {
+                    it.findViewById<View>(R.id.player_segment_skip).hasFocus()
+                }
+            }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_RIGHT)
+            waitFor(scenario, "Right from skip must focus next") {
+                it.findViewById<View>(R.id.player_credits_next).hasFocus()
+            }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_RIGHT)
+            waitFor(scenario, "Right from the final action must escape to ordinary controls") { playPause(it).hasFocus() }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_UP)
+            waitFor(scenario, "The remote must be able to re-enter skip again") {
+                it.findViewById<View>(R.id.player_segment_skip).hasFocus()
+            }
+            seekPaused(scenario, 4_900)
+            waitFor(scenario, "Ending the marker must not strand focus on a hidden action") {
+                !it.findViewById<View>(R.id.player_segment_skip).isShown &&
+                    !it.findViewById<View>(R.id.player_credits_next).isShown &&
+                    !it.findViewById<View>(R.id.player_segment_skip).hasFocus() &&
+                    !it.findViewById<View>(R.id.player_credits_next).hasFocus() && video(it).hasFocus()
+            }
+            scenario.onActivity { video(it).hideController() }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_UP)
+            waitFor(scenario, "Ordinary remote controls remain usable after the marker") { playPause(it).hasFocus() }
+            assertEquals(0, fixture.count("/playback/decision"))
+            fixture.assertHealthy()
+        }
+
     @Test fun creditsActionsFollowSourceClockSeekBackAndLockWithControlsHidden() =
         withFixture { fixture, scenario ->
             preparePaused(scenario)
@@ -218,6 +348,36 @@ class CreditsPlaybackTest {
         }
     }
 
+    private fun withTvFixture(test: (Fixture, ActivityScenario<NativePlayerActivity>) -> Unit) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        // Guard before delegating to any preferences, sessions, assets or sockets.
+        assumeTrue("Only the isolated synthetic QA package may run TV focus tests", context.packageName.endsWith(".spoilerqa"))
+        assumeTrue("Remote window-focus tests require an Android TV device", context.isTelevision())
+        withFixture(test = test)
+    }
+
+    private fun remoteKey(scenario: ActivityScenario<NativePlayerActivity>, keyCode: Int) {
+        val downAt = SystemClock.uptimeMillis()
+        remoteKeyEvent(scenario, keyCode, KeyEvent.ACTION_DOWN, downAt)
+        remoteKeyEvent(scenario, keyCode, KeyEvent.ACTION_UP, downAt)
+    }
+
+    private fun remoteKeyEvent(scenario: ActivityScenario<NativePlayerActivity>, keyCode: Int, action: Int, downAt: Long) {
+        scenario.onActivity { it.dispatchKeyEvent(KeyEvent(downAt, SystemClock.uptimeMillis(), action, keyCode, 0)) }
+    }
+
+    private fun playPause(activity: NativePlayerActivity): View =
+        activity.findViewById(androidx.media3.ui.R.id.exo_play_pause)
+
+    private fun updateSegmentActions(activity: NativePlayerActivity) {
+        NativePlayerActivity::class.java.getDeclaredMethod("updateSegmentSkipButton", java.lang.Long::class.java)
+            .apply { isAccessible = true }.invoke(activity, null)
+    }
+
+    private fun setField(activity: NativePlayerActivity, name: String, value: Any?) {
+        NativePlayerActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.set(activity, value)
+    }
+
     private fun preparePaused(scenario: ActivityScenario<NativePlayerActivity>) {
         waitFor(scenario, "The real local stream and optional episode metadata must prepare", 15_000) { activity ->
             activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -346,6 +506,7 @@ class CreditsPlaybackTest {
                     when (request.path) {
                         "/libraries/$VIEW/media_info/$PART", "/libraries/$VIEW/media_info/item/$ITEM" ->
                             json(connection, info(ITEM, PART, true).put("markers", JSONArray().put(JSONObject()
+                                .put("segment_type", "intro").put("start_ms", INTRO_START).put("end_ms", INTRO_END)).put(JSONObject()
                                 .put("segment_type", "credits").put("start_ms", CREDITS_START).put("end_ms", CREDITS_END))))
                         "/libraries/$VIEW/media_info/$NEXT_PART", "/libraries/$VIEW/media_info/item/$NEXT_ITEM" ->
                             json(connection, info(NEXT_ITEM, NEXT_PART, false))
@@ -447,6 +608,8 @@ class CreditsPlaybackTest {
         const val ALTERNATE_PART = 79
         const val CREDITS_START = 2_250L
         const val CREDITS_END = 4_750L
+        const val INTRO_START = 750L
+        const val INTRO_END = 1_750L
         const val DEVICE = "synthetic-credits-device"
         const val SESSION = "synthetic-credits-account-session"
         const val TICKET = "synthetic-credits-original-ticket"
