@@ -21,6 +21,7 @@ internal data class PlexSubtitleAppearance(
     val backgroundColor: Int = Color.TRANSPARENT,
     val edgeType: Int = CaptionStyleCompat.EDGE_TYPE_OUTLINE,
     val edgeColor: Int = Color.BLACK,
+    val verticalSpacingPercent: Int = 100,
 )
 
 internal object PlexSubtitleFonts {
@@ -114,7 +115,7 @@ internal class PlexSubtitleOverlayView(context: Context) : FrameLayout(context) 
             visibility = if (appearance.verticalWriting) View.VISIBLE else View.GONE
             subtitleTypeface = this@PlexSubtitleOverlayView.subtitleTypeface
             subtitleTextSizePx = 30f * density * scale
-            glyphAdvancePx = 28.5f * density * scale
+            glyphAdvancePx = verticalSubtitleGlyphAdvancePx(28.5f * density * scale, appearance.verticalSpacingPercent)
             subtitleFillColor = appearance.foregroundColor
             subtitleBackgroundColor = appearance.backgroundColor
             subtitleEdgeType = appearance.edgeType

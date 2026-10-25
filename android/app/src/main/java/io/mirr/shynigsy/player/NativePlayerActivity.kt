@@ -269,7 +269,8 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitleFont = settings.getString("subtitle_font", "system") ?: "system"
         subtitleAppearance = PlexSubtitleAppearance(sizePercent = settings.getInt("subtitle_size", 100),
             horizontalOffsetPercent = settings.getInt("subtitle_x", 0), verticalOffsetPercent = settings.getInt("subtitle_y", 0),
-            verticalWriting = settings.getBoolean("subtitle_vertical", false))
+            verticalWriting = settings.getBoolean("subtitle_vertical", false),
+            verticalSpacingPercent = normalizedVerticalSubtitleSpacingPercent(settings.getInt("subtitle_vertical_spacing", 100)))
         watchedMs = savedInstanceState?.getLong("watched", 0) ?: 0
         resumeWhenVisible = savedInstanceState?.getBoolean("playing", true) ?: true
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1848,6 +1849,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun applySubtitleStyle() {
+        subtitleAppearance = subtitleAppearance.copy(
+            verticalSpacingPercent = normalizedVerticalSubtitleSpacingPercent(subtitleAppearance.verticalSpacingPercent))
         subtitleFont = PlexSubtitleFonts.normalizedKey(this, subtitleFont)
         val typeface = PlexSubtitleFonts.typeface(this, subtitleFont)
         subtitleOverlay.appearance = subtitleAppearance; subtitleOverlay.subtitleTypeface = typeface
@@ -1855,12 +1858,14 @@ class NativePlayerActivity : AppCompatActivity() {
         player?.let { renderEmbeddedCues(it.currentCues) }
         getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("subtitle_font", subtitleFont)
             .putInt("subtitle_size", subtitleAppearance.sizePercent).putInt("subtitle_x", subtitleAppearance.horizontalOffsetPercent)
-            .putInt("subtitle_y", subtitleAppearance.verticalOffsetPercent).putBoolean("subtitle_vertical", subtitleAppearance.verticalWriting).apply()
+            .putInt("subtitle_y", subtitleAppearance.verticalOffsetPercent).putBoolean("subtitle_vertical", subtitleAppearance.verticalWriting)
+            .putInt("subtitle_vertical_spacing", subtitleAppearance.verticalSpacingPercent).apply()
     }
 
     private fun showSubtitleAppearance() {
         AlertDialog.Builder(this).setTitle("자막 모양")
-            .setItems(arrayOf("글꼴", "크기 (${subtitleAppearance.sizePercent}%)", "위치", "세로 쓰기 ${if (subtitleAppearance.verticalWriting) "켜짐" else "꺼짐"}", "색상·테두리")) { _, index ->
+            .setItems(arrayOf("글꼴", "크기 (${subtitleAppearance.sizePercent}%)", "위치", "세로 쓰기 ${if (subtitleAppearance.verticalWriting) "켜짐" else "꺼짐"}", "색상·테두리",
+                "세로 자간 (${subtitleAppearance.verticalSpacingPercent}%)")) { _, index ->
                 when (index) {
                     0 -> showSubtitleFont()
                     1 -> {
@@ -1876,8 +1881,21 @@ class NativePlayerActivity : AppCompatActivity() {
                             backgroundColor = if (selected == 2) 0x80000000.toInt() else Color.TRANSPARENT)
                         applySubtitleStyle()
                     }.setNegativeButton("닫기", null).show()
+                    5 -> showSubtitleVerticalSpacing()
                 }
             }.setNegativeButton("닫기", null).show()
+    }
+
+    private fun showSubtitleVerticalSpacing() {
+        val current = normalizedVerticalSubtitleSpacingPercent(subtitleAppearance.verticalSpacingPercent)
+        val values = ((50..200 step 10).toList() + current).distinct().sorted()
+        val labels = values.map { if (it == 100) "100% (기본)" else "$it%" }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("세로 자막 자간")
+            .setSingleChoiceItems(labels, values.indexOf(current)) { dialog, selected ->
+                subtitleAppearance = subtitleAppearance.copy(verticalSpacingPercent = values[selected])
+                applySubtitleStyle()
+                dialog.dismiss()
+            }.setNegativeButton("취소", null).show()
     }
 
     private fun showSubtitleFont() {
