@@ -102,6 +102,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var subtitleTimeline: SubtitleTimeline? = null
     private var subtitleJob: Job? = null
     private var subtitleDialog: AlertDialog? = null
+    private var tvSubtitlePositionDialog: TvSubtitlePositionDialog? = null
     private var subtitleSelectionRevision = 0
     private var externalSubtitleId: Int? = null
     private var embeddedServerSubtitleId: Int? = null
@@ -400,6 +401,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 playerGestureActive = active
                 if (active) {
                     subtitleDialog?.dismiss()
+                    dismissTvSubtitlePosition()
                     hideSegmentActions()
                     playerView.hideController()
                     hideLockControl()
@@ -430,6 +432,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 playerView.useController = !gestures.locked
                 if (gestures.locked) {
                     subtitleDialog?.dismiss()
+                    dismissTvSubtitlePosition()
                     playerView.hideController()
                     showUnlockControl()
                 } else playerView.showController()
@@ -2023,6 +2026,22 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun showSubtitlePosition() {
+        if (television) {
+            if (exiting || isFinishing || isDestroyed) return
+            if (tvSubtitlePositionDialog?.dialog?.isShowing == true) return
+            lateinit var positionDialog: TvSubtitlePositionDialog
+            positionDialog = TvSubtitlePositionDialog(this,
+                subtitleAppearance.horizontalOffsetPercent, subtitleAppearance.verticalOffsetPercent,
+                onPreview = ::previewTvSubtitlePosition,
+                onCommit = { x, y ->
+                    previewTvSubtitlePosition(x, y)
+                    applySubtitleStyle()
+                },
+                onDismiss = { if (tvSubtitlePositionDialog === positionDialog) tvSubtitlePositionDialog = null })
+            tvSubtitlePositionDialog = positionDialog
+            positionDialog.show()
+            return
+        }
         AlertDialog.Builder(this).setTitle("자막 위치 · 길게 눌러 드래그")
             .setItems(arrayOf("위로", "아래로", "왼쪽으로", "오른쪽으로", "기본 위치")) { _, index ->
                 subtitleAppearance = when (index) {
@@ -2033,6 +2052,26 @@ class NativePlayerActivity : AppCompatActivity() {
                     else -> subtitleAppearance.copy(horizontalOffsetPercent = 0, verticalOffsetPercent = 0)
                 }; applySubtitleStyle(); showSubtitlePosition()
             }.setNegativeButton("닫기", null).show()
+    }
+
+    /** Held remote keys update only placement; fonts and preferences are applied once per gesture. */
+    private fun previewTvSubtitlePosition(x: Int, y: Int) {
+        val next = subtitleAppearance.copy(horizontalOffsetPercent = x.coerceIn(-80, 80),
+            verticalOffsetPercent = y.coerceIn(-80, 80))
+        if (next == subtitleAppearance) return
+        subtitleAppearance = next
+        if (::subtitleOverlay.isInitialized) subtitleOverlay.appearance = next
+        if (::playerView.isInitialized) playerView.subtitleView?.let { view ->
+            view.translationX = view.width * next.horizontalOffsetPercent / 100f
+            view.translationY = view.height * next.verticalOffsetPercent / 100f
+            view.invalidate()
+        }
+    }
+
+    private fun dismissTvSubtitlePosition() {
+        val dialog = tvSubtitlePositionDialog
+        tvSubtitlePositionDialog = null
+        dialog?.dismiss()
     }
 
     private fun showSubtitleOffset() {
@@ -2149,6 +2188,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        dismissTvSubtitlePosition()
         cancelPlaybackMetadata()
         spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
         subtitleDialog?.dismiss(); subtitleDialog = null
@@ -2190,6 +2230,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        dismissTvSubtitlePosition()
         val interruptedSpoilerRotation = spoilerRecovery != null || spoilerRotationJob?.isActive == true
         activityStarted = false
         cancelSpoilerPlaybackReauthentication()
@@ -2221,6 +2262,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        dismissTvSubtitlePosition()
         tvSegmentFocusGate.clearHeldKeys()
         finishRemoteSeeking()
         visible = false
