@@ -47,12 +47,9 @@ import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.rememberDrawerState
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -153,24 +150,30 @@ fun ShyniApp(
 ) {
     val state by viewModel.state.collectAsState()
     val tv = LocalContext.current.isTelevision()
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
     val tvScreens = rememberSaveableStateHolder()
     var logoutConfirm by rememberSaveable { mutableStateOf(false) }
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
     var appearanceOpen by rememberSaveable { mutableStateOf(false) }
+    var mobileMoreOpen by rememberSaveable { mutableStateOf(false) }
     val appearance = LocalCinemaAppearance.current
     var watchOptions by remember { mutableStateOf<MediaItem?>(null) }
     val onWatchOptions: (MediaItem) -> Unit = { if (canChangeWatchState(it)) watchOptions = it }
     val detail = state.detailStack.lastOrNull()
     LaunchedEffect(state.loggedIn) {
-        if (!state.loggedIn) libraryPickerOpen = false
+        if (!state.loggedIn) {
+            libraryPickerOpen = false
+            mobileMoreOpen = false
+            appearanceOpen = false
+        }
     }
     LaunchedEffect(state.loggedIn, state.spoilerUnlocked, watchOptions) {
         if (!state.loggedIn || (watchOptions?.isSpoiler == true && !state.spoilerUnlocked)) watchOptions = null
     }
     LaunchedEffect(state.spoilerUnlocked) {
-        if (state.spoilerUnlocked) libraryPickerOpen = true
+        if (state.spoilerUnlocked) {
+            mobileMoreOpen = false
+            libraryPickerOpen = true
+        }
     }
     LaunchedEffect(state.playback) {
         state.playback?.let { spec ->
@@ -190,11 +193,8 @@ fun ShyniApp(
                     if (tv || detail != null || state.library != null || state.searchOpen) {
                     Column(Modifier.statusBarsPadding()) {
                     if (!tv) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { scope.launch { drawer.open() } },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) { Text("☰  메뉴") }
                         Text(detail?.item?.title ?: state.library?.title ?: if (state.searchOpen) "검색" else "shyniflex", Modifier.weight(1f).padding(start = 8.dp),
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (state.library != null) LibraryHomeButton(onHome = viewModel::openHome)
                     }
                     else if (detail != null || state.library != null || state.searchOpen) TvHeader(
                         title = detail?.item?.title ?: state.library?.title ?: "검색",
@@ -214,14 +214,15 @@ fun ShyniApp(
                 )
             },
             bottomBar = {
-                if (state.loggedIn && !tv && detail == null) {
+                if (state.loggedIn && !tv) {
                     CinemaHomeBottomNavigation(
-                        homeSelected = state.library == null && !state.searchOpen,
-                        searchSelected = state.searchOpen,
-                        librarySelected = state.library != null && !state.searchOpen,
-                        onHome = { viewModel.openHome(); scope.launch { drawer.close() } },
-                        onSearch = { viewModel.openSearch(); scope.launch { drawer.close() } },
-                        onLibraries = { libraryPickerOpen = true; scope.launch { drawer.close() } },
+                        homeSelected = !mobileMoreOpen && !libraryPickerOpen && detail == null && state.library == null && !state.searchOpen,
+                        searchSelected = !mobileMoreOpen && !libraryPickerOpen && detail == null && state.searchOpen,
+                        librarySelected = !mobileMoreOpen && (libraryPickerOpen || (state.library != null && !state.searchOpen)),
+                        onHome = { mobileMoreOpen = false; libraryPickerOpen = false; viewModel.openHome() },
+                        onSearch = { mobileMoreOpen = false; libraryPickerOpen = false; viewModel.openSearch() },
+                        onLibraries = { mobileMoreOpen = false; libraryPickerOpen = true },
+                        onMore = { libraryPickerOpen = false; mobileMoreOpen = true }, moreSelected = mobileMoreOpen,
                     )
                 }
             },
@@ -245,13 +246,13 @@ fun ShyniApp(
                             libraries = state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler },
                             selectedLibraryId = state.library?.id,
                             homeSelected = state.library == null && detail == null && !state.searchOpen,
-                            onHome = { viewModel.openHome(); scope.launch { drawer.close() } },
-                            onLibrary = { viewModel.selectLibrary(it); scope.launch { drawer.close() } },
+                            onHome = viewModel::openHome,
+                            onLibrary = viewModel::selectLibrary,
                             showLocked = !state.spoilerUnlocked,
                             spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler,
                             onUpdate = onUpdate, searchSelected = state.searchOpen,
                             onAppearance = { appearanceOpen = true },
-                            onSearch = { viewModel.openSearch(); scope.launch { drawer.close() } })
+                            onSearch = viewModel::openSearch)
                         }
                         val content: @Composable () -> Unit = {
                         Box(Modifier.fillMaxSize()) {
@@ -264,17 +265,13 @@ fun ShyniApp(
                                 state.library != null -> TvLibrary(state, viewModel, onWatchOptions)
                                 else -> TvHome(state, viewModel, onWatchOptions,
                                     onAppearance = { appearanceOpen = true },
-                                    onSearch = viewModel::openSearch,
-                                    onMenu = if (tv) null else ({ scope.launch { drawer.open() }; Unit }))
+                                    onSearch = viewModel::openSearch)
                             }
                         }
                         }
                         }
                         if (tv) Row(Modifier.fillMaxSize()) { sidebar(); Box(Modifier.weight(1f)) { content() } }
-                        else ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-                            ModalDrawerSheet(modifier = Modifier.width(136.dp),
-                                drawerContainerColor = MaterialTheme.colorScheme.background) { sidebar() }
-                        }) { content() }
+                        else content()
                     }
 
                 }
@@ -283,6 +280,17 @@ fun ShyniApp(
                 }
             }
         }
+        if (mobileMoreOpen && state.loggedIn && !tv) MobileMoreMenu(
+            spoilerUnlocked = state.spoilerUnlocked,
+            onDismiss = { mobileMoreOpen = false },
+            onRefresh = viewModel::refresh,
+            onAppearance = { appearanceOpen = true },
+            onUpdate = onUpdate,
+            onLogout = { logoutConfirm = true },
+            onSpoilerAccess = {
+                if (state.spoilerUnlocked) viewModel.lockSpoiler() else libraryPickerOpen = true
+            },
+        )
         if (appearanceOpen) CinemaAppearanceSettings(initialBackground = appearance.backgroundArgb,
             onDismiss = { appearanceOpen = false },
             onApply = { color -> appearance.save(color); appearanceOpen = false })
@@ -525,8 +533,9 @@ private fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LibraryPicker(
+internal fun LibraryPicker(
     libraries: List<Library>,
     selectedLibraryId: Int?,
     busy: Boolean,
@@ -538,7 +547,59 @@ private fun LibraryPicker(
     spoilerError: String?,
     onUnlockSpoiler: () -> Unit,
     onLockSpoiler: () -> Unit,
+    television: Boolean = LocalContext.current.isTelevision(),
 ) {
+    val visibleLibraries = libraries.filter { spoilerUnlocked || !it.isSpoiler }
+    if (!television) {
+        val maxHeight = (LocalConfiguration.current.screenHeightDp * .85f).dp
+        ModalBottomSheet(onDismissRequest = onDismiss,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.testTag("cinema-mobile-libraries-sheet")) {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = maxHeight).testTag("cinema-mobile-libraries-list"),
+                contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item(key = "heading") {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("라이브러리", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold)
+                        TextButton(onClick = onDismiss, modifier = Modifier.testTag("mobile-library-close")) { Text("닫기") }
+                    }
+                }
+                if (spoilerAvailable || spoilerUnlocked) item(key = "spoiler") {
+                    CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
+                        enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth()
+                            .testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
+                        Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null, Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (spoilerUnlocked) "스포일러 라이브러리 잠금" else "스포일러 라이브러리 열기")
+                    }
+                }
+                if (spoilerBusy) item(key = "unlock-loading") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                if (spoilerError != null) item(key = "unlock-error") { Text(spoilerError, color = MaterialTheme.colorScheme.error) }
+                if (visibleLibraries.isEmpty()) item(key = "empty") {
+                    EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
+                }
+                items(visibleLibraries, key = { "library-${it.id}" }) { library ->
+                    CompactMenuAction(onClick = { onSelect(library) }, selected = library.id == selectedLibraryId,
+                        modifier = Modifier.fillMaxWidth().testTag("mobile-library-${library.id}"),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)) {
+                        Icon(if (library.type == "movie") Icons.Rounded.Movie else Icons.Rounded.Folder,
+                            null, Modifier.size(20.dp), tint = Accent)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(library.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text((if (library.isSpoiler) "비공개 · " else "") + if (library.type == "movie") "영화" else "시리즈",
+                                style = MaterialTheme.typography.bodySmall, color = Muted)
+                        }
+                        if (library.id == selectedLibraryId) Icon(Icons.Rounded.Check, "선택됨", Modifier.size(18.dp), tint = Accent)
+                    }
+                }
+            }
+        }
+        return
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("라이브러리") },
@@ -552,10 +613,10 @@ private fun LibraryPicker(
             }
             if (spoilerBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (spoilerError != null) Text(spoilerError, color = MaterialTheme.colorScheme.error)
-            if (libraries.isEmpty()) EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
+            if (visibleLibraries.isEmpty()) EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
             else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(libraries, key = { it.id }) { library ->
+                items(visibleLibraries, key = { it.id }) { library ->
                     CompactMenuAction(onClick = { onSelect(library) }, modifier = Modifier.fillMaxWidth(),
                         selected = library.id == selectedLibraryId, contentPadding = PaddingValues(0.dp)) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically,

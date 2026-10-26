@@ -227,7 +227,7 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit,
-    onAppearance: () -> Unit = {}, onSearch: () -> Unit = {}, onMenu: (() -> Unit)? = null) {
+    onAppearance: () -> Unit = {}, onSearch: () -> Unit = {}) {
     val modelIsTelevision = LocalContext.current.isTelevision()
     val continuing = remember(state.continueItems, state.spoilerUnlocked) {
         state.continueItems.filter { state.spoilerUnlocked || !it.isSpoiler }
@@ -317,7 +317,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                         Column(Modifier.fillMaxWidth().height(heroHeight)
                             .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
                             .testTag("tv-continue-hero")) {
-                            CinemaHomeHeader(compact, onAppearance, onSearch, onMenu,
+                            CinemaHomeHeader(compact, onAppearance, onSearch,
                                 Modifier.fillMaxWidth().height(headerHeight))
                             if (hero != null && heroItem != null) {
                                 CinemaHomeHeroContent(hero = hero, source = heroItem, compact = compact,

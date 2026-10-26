@@ -21,7 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.mirr.shynigsy.isTelevision
 
 /** The surrounding hero always supplies a dark scrim, even with a light custom page color. */
 @Composable
@@ -50,21 +52,23 @@ internal fun CinemaHomeHeader(
     compact: Boolean,
     onAppearance: () -> Unit,
     onSearch: () -> Unit,
-    onMenu: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    television: Boolean = LocalContext.current.isTelevision(),
 ) {
     val ivory = Color(0xFFF4E8D1)
     Row(modifier.fillMaxWidth().padding(horizontal = if (compact) 12.dp else 24.dp, vertical = 4.dp)
         .testTag("cinema-home-header"), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 8.dp)) {
-        if (onMenu != null) CinemaHeaderAction(Icons.Rounded.Menu, "메뉴", onMenu, "cinema-home-menu")
-        Text("SHYNIFLEX", Modifier.weight(1f).padding(start = if (onMenu == null) 4.dp else 0.dp),
+        Text("SHYNIFLEX", Modifier.weight(1f).padding(start = 4.dp),
             color = ivory, fontSize = if (compact) 13.sp else 14.sp,
             letterSpacing = if (compact) 2.sp else 4.sp,
             fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (!compact) TvHomeClock(Modifier.padding(end = 8.dp), foreground = ivory)
-        CinemaHeaderAction(Icons.Rounded.Palette, "화면 색상", onAppearance, "cinema-home-appearance")
-        CinemaHeaderAction(Icons.Rounded.Search, "검색", onSearch, "cinema-home-search")
+        // Device type owns navigation. A wide phone/tablet still keeps every action at the bottom.
+        if (television) {
+            if (!compact) TvHomeClock(Modifier.padding(end = 8.dp), foreground = ivory)
+            CinemaHeaderAction(Icons.Rounded.Palette, "화면 색상", onAppearance, "cinema-home-appearance")
+            CinemaHeaderAction(Icons.Rounded.Search, "검색", onSearch, "cinema-home-search")
+        }
     }
 }
 
@@ -91,6 +95,8 @@ internal fun CinemaHomeBottomNavigation(
     onSearch: () -> Unit,
     onLibraries: () -> Unit,
     modifier: Modifier = Modifier,
+    onMore: () -> Unit = {},
+    moreSelected: Boolean = false,
 ) {
     Row(modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).navigationBarsPadding()
         .testTag("cinema-mobile-navigation"), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -100,6 +106,8 @@ internal fun CinemaHomeBottomNavigation(
             Modifier.weight(1f).testTag("cinema-mobile-search"))
         CinemaNavigationItem("라이브러리", Icons.Rounded.Folder, librarySelected, onLibraries,
             Modifier.weight(1f).testTag("cinema-mobile-libraries"))
+        CinemaNavigationItem("더보기", Icons.Rounded.MoreHoriz, moreSelected, onMore,
+            Modifier.weight(1f).testTag("cinema-mobile-more"))
     }
 }
 
