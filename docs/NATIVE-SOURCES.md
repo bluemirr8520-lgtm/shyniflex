@@ -1,16 +1,16 @@
 # 네이티브 대응 소스
 
-shyniflex 1.0.45은 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. 전체 대응 소스는 APK와 함께 제공하는 `outputs/shyniflex-1.0.45-corresponding-source.zip`이며, 그 안의 `app-source.zip`이 해당 빌드의 앱 소스입니다.
+shyniflex 1.0.46은 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 네이티브 라이브러리를 수정하지 않고 사용합니다. 전체 대응 소스는 APK와 함께 제공하는 `outputs/shyniflex-1.0.46-corresponding-source.zip`이며, 그 안의 `app-source.zip`이 해당 빌드의 앱 소스입니다.
 
-- [APK와 CPU별 설치 파일](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.45)
-- [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.45/shyniflex-1.0.45-corresponding-source.zip)
-- [앱 소스 태그 v1.0.45](https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.45)
+- [APK와 CPU별 설치 파일](https://github.com/bluemirr8520-lgtm/shyniflex/releases/tag/v1.0.46)
+- [전체 대응 소스 ZIP](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/v1.0.46/shyniflex-1.0.46-corresponding-source.zip)
+- [앱 소스 태그 v1.0.46](https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.46)
 
 CPU별 APK와 통합 APK는 동일한 앱 소스·버전·서명을 사용합니다. 이 대응 소스 ZIP에 세 CPU의 전체 네이티브 소스를 함께 제공합니다.
 
 ## 소스 묶음의 내용
 
-`app-source.zip`은 해당 릴리스의 앱 소스입니다. `source-archives/`에는 원본 mpv-android 래퍼·빌드 스크립트와 주요 네이티브 의존성 14개, 하위 모듈 7개의 소스를 보관합니다. `native-source-manifest.json`에 각 아카이브의 출처·정확한 버전 또는 커밋·SHA-256·복원 위치를 기록하고, 원본 라이선스와 고지를 보존합니다. `jvm-source-jars/`에는 실제 런타임 Maven 의존성의 정확한 소스 JAR 102개와 버전·해시 명세를 제공합니다. 코드가 없는 충돌 방지용 Guava JAR 1개는 빈 아티팩트임을 검증해 명세에 기록했습니다. 서명키와 계정·서버 자료는 포함하지 않습니다.
+`app-source.zip`은 해당 릴리스의 앱 소스입니다. `source-archives/`에는 원본 mpv-android 래퍼·빌드 스크립트와 주요 네이티브 의존성 14개, 하위 모듈 7개의 소스를 보관합니다. `native-source-manifest.json`에 각 아카이브의 출처·정확한 버전 또는 커밋·SHA-256·복원 위치를 기록하고, 원본 라이선스와 고지를 보존합니다. `jvm-source-jars/`에는 실제 런타임 Maven 의존성의 정확한 소스 JAR 103개와 버전·해시 명세를 제공합니다. 코드가 없는 충돌 방지용 Guava JAR 1개는 빈 아티팩트임을 검증해 명세에 기록했습니다. QR 코드 생성용 `com.google.zxing:core:3.5.4`의 소스 JAR과 Apache-2.0 고지도 포함합니다. 서명키와 계정·서버 자료는 포함하지 않습니다.
 
 상위 저장소의 ZIP에는 Git 하위 모듈의 실제 내용이 포함되지 않습니다. 그래서 FreeType의 dlg와 libplacebo의 glad·Jinja·MarkupSafe·fast_float·Vulkan-Headers·Nuklear를 각각의 고정 커밋으로 함께 제공합니다. Vulkan과 데모가 비활성화된 구성에서도 원본 재귀 체크아웃을 복원할 수 있도록 전체 하위 모듈을 보존합니다.
 

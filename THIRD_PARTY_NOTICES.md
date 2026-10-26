@@ -109,3 +109,7 @@ The small audio/video instrumentation fixtures are original FFmpeg-generated
 tones and test patterns. Their generation commands and checksums are documented
 under `android/app/src/androidTest/assets/media3/`. They do not contain films,
 music recordings, account data or private server responses.
+
+## QR code encoding
+
+TV login QR codes are encoded locally with [ZXing Core 3.5.4](https://github.com/zxing/zxing/tree/zxing-3.5.4), copyright ZXing authors, under the Apache License, Version 2.0. The unchanged license is included at [`android/app/src/main/assets/licenses/ZXING-LICENSE.txt`](android/app/src/main/assets/licenses/ZXING-LICENSE.txt). The Maven coordinate is `com.google.zxing:core:3.5.4`. The exact sources JAR is included in the release corresponding-source bundle and its `jvm-source-manifest.json`; no remote QR image service receives the login link.

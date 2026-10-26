@@ -34,6 +34,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import io.mirr.shynigsy.updates.UpdateViewModel
 import io.mirr.shynigsy.updates.UpdateDialog
+import io.mirr.shynigsy.data.parseTvLoginLink
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppViewModel
@@ -66,6 +67,7 @@ class MainActivity : ComponentActivity() {
         }
         model = ViewModelProvider(this)[AppViewModel::class.java]
         updates = ViewModelProvider(this)[UpdateViewModel::class.java]
+        consumeTvLoginIntent(intent)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaybackCompletionSignals.changes.combine(model.state) { revision, state -> revision to state }
@@ -112,7 +114,21 @@ class MainActivity : ComponentActivity() {
         ArtworkBrowsingState.process.started(artworkBrowsingOwner)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (::model.isInitialized) consumeTvLoginIntent(intent)
+    }
+
+    private fun consumeTvLoginIntent(incoming: Intent?) {
+        if (incoming?.action != Intent.ACTION_VIEW) return
+        val link = incoming.dataString?.let(::parseTvLoginLink)
+        // A recreation or a later launcher visit must not replay an approval request.
+        setIntent(Intent(this, MainActivity::class.java).setAction(Intent.ACTION_MAIN))
+        link?.let(model::receiveTvLoginLink)
+    }
+
     override fun onStop() {
+        if (::model.isInitialized) model.cancelTvQrLogin()
         ArtworkBrowsingState.process.stopped(artworkBrowsingOwner)
         super.onStop()
     }

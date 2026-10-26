@@ -109,6 +109,7 @@ import coil3.request.CachePolicy
 import coil3.request.crossfade
 import androidx.compose.ui.layout.ContentScale
 import io.mirr.shynigsy.AppViewModel
+import io.mirr.shynigsy.TvQrLoginState
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaDetails
@@ -175,6 +176,15 @@ fun ShyniApp(
             libraryPickerOpen = true
         }
     }
+    LaunchedEffect(state.tvLoginApproval?.link) {
+        if (state.tvLoginApproval != null) {
+            mobileMoreOpen = false
+            libraryPickerOpen = false
+            appearanceOpen = false
+            logoutConfirm = false
+            watchOptions = null
+        }
+    }
     LaunchedEffect(state.playback) {
         state.playback?.let { spec ->
             onPlay(spec)
@@ -229,7 +239,11 @@ fun ShyniApp(
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when {
-                    !state.loggedIn -> LoginScreen(
+                    !state.loggedIn -> Column(Modifier.fillMaxSize()) {
+                        state.tvLoginApproval?.let { pending ->
+                            TvLoginPendingHint(pending, onCancel = viewModel::dismissTvLoginApproval)
+                        }
+                        LoginScreen(
                         initialServer = state.server,
                         initialUser = state.userName,
                         busy = state.busy,
@@ -238,7 +252,11 @@ fun ShyniApp(
                         onLogin = viewModel::login,
                         onTotp = viewModel::submitTotp,
                         onCancelTotp = viewModel::cancelTotp,
+                        tvQrState = state.tvQrLogin,
+                        onStartTvQr = viewModel::startTvQrLogin,
+                        onCancelTvQr = viewModel::cancelTvQrLogin,
                     )
+                    }
                     state.loggedIn -> {
                         val sidebar: @Composable () -> Unit = {
                         TvSidebar(onLibraries = { libraryPickerOpen = true }, onRefresh = viewModel::refresh,
@@ -279,6 +297,10 @@ fun ShyniApp(
                     LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 }
             }
+        }
+        if (state.loggedIn) state.tvLoginApproval?.let { pending ->
+            TvLoginApprovalDialog(pending, accountServer = state.server, userName = state.userName,
+                onApprove = viewModel::approveTvLogin, onDismiss = viewModel::dismissTvLoginApproval)
         }
         if (mobileMoreOpen && state.loggedIn && !tv) MobileMoreMenu(
             spoilerUnlocked = state.spoilerUnlocked,
@@ -389,15 +411,23 @@ internal fun LoginScreen(
     onLogin: (String, String, String) -> Unit,
     onTotp: (String) -> Unit,
     onCancelTotp: () -> Unit,
+    tvQrState: TvQrLoginState = TvQrLoginState(),
+    onStartTvQr: (String) -> Unit = {},
+    onCancelTvQr: () -> Unit = {},
 ) {
+    val tv = LocalContext.current.isTelevision()
+    if (tv && totpChallenge == null) {
+        TvQrLoginScreen(initialServer, initialUser, busy, error, tvQrState,
+            onStartQr = onStartTvQr, onCancelQr = onCancelTvQr, onLogin = onLogin)
+        return
+    }
     var server by rememberSaveable(initialServer) { mutableStateOf(initialServer) }
     var user by rememberSaveable(initialUser) { mutableStateOf(initialUser) }
     // Passwords and one-time codes deliberately stay in memory, outside saved instance state.
-    var password by remember { mutableStateOf("") }
+    var password by remember(initialServer) { mutableStateOf("") }
     var code by remember(totpChallenge) { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
-    val tv = LocalContext.current.isTelevision()
     val initialFocus = remember { FocusRequester() }
     LaunchedEffect(tv, totpChallenge, busy) {
         if (tv && !busy) { androidx.compose.runtime.withFrameNanos { }; initialFocus.requestFocus() }
@@ -426,7 +456,7 @@ internal fun LoginScreen(
         }
         if (totpChallenge == null) {
             item {
-                OutlinedTextField(server, { server = it }, label = { Text("서버 주소") },
+                OutlinedTextField(server, { server = it; password = "" }, label = { Text("서버 주소") },
                     enabled = !busy,
                     singleLine = true, modifier = Modifier.fillMaxWidth().then(if (tv) Modifier.focusRequester(initialFocus) else Modifier).tvOnlyFocus().testTag("login_server"),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next))

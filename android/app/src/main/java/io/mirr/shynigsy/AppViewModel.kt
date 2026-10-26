@@ -51,6 +51,8 @@ data class AppState(
     val versions: List<MediaVersion> = emptyList(),
     val selectedPartId: Int? = null,
     val totpChallenge: String? = null,
+    val tvQrLogin: TvQrLoginState = TvQrLoginState(),
+    val tvLoginApproval: TvLoginApprovalState? = null,
     val playback: PlaybackSpec? = null,
     val spoilerAvailable: Boolean = false,
     val spoilerPinEnabled: Boolean = true,
@@ -135,6 +137,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppState> = mutableState.asStateFlow()
     private var client: ShyniClient? = null
     private var requestJob: Job? = null
+    private var tvQrLoginJob: Job? = null
+    private var tvQrLoginRevision = 0L
+    private var tvApprovalJob: Job? = null
+    private var tvApprovalRevision = 0L
     private var refreshJob: Job? = null
     private var revision = 0
     private var homeRefreshRevision = 0
@@ -219,6 +225,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (current == revision) {
                     if (error is ApiException && error.status == 401 &&
                         (mutableState.value.loggedIn || !client?.token.isNullOrBlank())) {
+                        cancelTvQrLogin()
+                        dismissTvLoginApproval()
                         client?.let { sessionStore.clear(it.server) }
                         continueOwner = null
                         collectionWatch.clear()
@@ -239,6 +247,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun login(server: String, user: String, password: String) {
+        cancelTvQrLogin()
         if (server.isBlank()) {
             mutableState.update { it.copy(error = "서버 주소를 입력하세요.") }
             return
@@ -246,6 +255,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (user.isBlank() || password.isBlank()) {
             mutableState.update { it.copy(error = "아이디와 비밀번호를 입력하세요.") }
             return
+        }
+        mutableState.value.tvLoginApproval?.let {
+            if (!sameTvLoginServer(it.link.server, server)) dismissTvLoginApproval()
         }
         cancelDetailDiscoveryJobs(clear = true)
         collectionWatch.clear()
@@ -261,6 +273,124 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             client = active
             mutableState.update { it.copy(server = address, totpChallenge = null) }
             acceptLogin(active, active.login(user, password))
+        }
+    }
+
+    /** The relay job never becomes the ordinary home-loading job. */
+    fun startTvQrLogin(server: String) {
+        cancelTvQrLogin()
+        if (mutableState.value.loggedIn || mutableState.value.busy || mutableState.value.totpChallenge != null) return
+        val address = server.trim().trimEnd('/')
+        val active = runCatching {
+            requireHttps(address)
+            ShyniClient(address, deviceId = deviceId)
+        }.getOrElse {
+            mutableState.update { state -> state.copy(tvQrLogin = TvQrLoginState(
+                phase = TvQrLoginPhase.ERROR, message = "올바른 HTTPS 서버 주소를 입력하세요.")) }
+            return
+        }
+        cancelDetailDiscoveryJobs(clear = true)
+        requestJob?.cancel(); revision++
+        client?.clearSpoilerGrant()
+        client = null
+        continueOwner = null
+        collectionWatch.clear()
+        clearSpoilerUi()
+        clearContinueSelection()
+        val generation = ++tvQrLoginRevision
+        mutableState.update { it.copy(server = address, error = null, busy = false,
+            tvQrLogin = TvQrLoginState(phase = TvQrLoginPhase.CREATING)) }
+        fun current(): Boolean = generation == tvQrLoginRevision && !mutableState.value.loggedIn &&
+            mutableState.value.totpChallenge == null && sameTvLoginServer(address, mutableState.value.server)
+        tvQrLoginJob = viewModelScope.launch {
+            try {
+                val result = awaitTvPairing(active, "shyniflex Android TV",
+                    qrUrlForNonce = { tvLoginQrUrl(address, it) },
+                    onState = { status -> if (current()) mutableState.update { it.copy(tvQrLogin = status) } })
+                currentCoroutineContext().ensureActive()
+                if (!current()) return@launch
+                // LoginScreen leaves composition after acceptLogin. Its disposal must not cancel Home.
+                tvQrLoginJob = null
+                tvQrLoginRevision++
+                mutableState.update { it.copy(tvQrLogin = TvQrLoginState()) }
+                active.token = result.token
+                client = active
+                launchRequest { acceptLogin(active, result) }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                if (current() && mutableState.value.tvQrLogin.phase !in setOf(TvQrLoginPhase.ERROR, TvQrLoginPhase.EXPIRED))
+                    mutableState.update { it.copy(tvQrLogin = TvQrLoginState(phase = TvQrLoginPhase.ERROR,
+                        message = "QR 로그인을 완료하지 못했습니다. 새 코드로 다시 시도하세요.")) }
+            } finally {
+                if (generation == tvQrLoginRevision) tvQrLoginJob = null
+            }
+        }
+    }
+
+    fun cancelTvQrLogin() {
+        if (tvQrLoginJob == null && mutableState.value.tvQrLogin.phase == TvQrLoginPhase.IDLE) return
+        tvQrLoginRevision++
+        tvQrLoginJob?.cancel()
+        tvQrLoginJob = null
+        mutableState.update { it.copy(tvQrLogin = TvQrLoginState()) }
+    }
+
+    /** A scanned link only stages an explicit phone confirmation; it never approves by itself. */
+    fun receiveTvLoginLink(link: TvLoginLink) {
+        val checked = runCatching { parseTvLoginLink(tvLoginQrUrl(link.server, link.nonce)) }.getOrNull() ?: return
+        cancelTvQrLogin()
+        dismissTvLoginApproval()
+        if (!mutableState.value.loggedIn) {
+            requestJob?.cancel(); revision++
+            client?.clearSpoilerGrant()
+            client = null
+            mutableState.update { it.copy(server = checked.server, totpChallenge = null, busy = false, error = null) }
+        }
+        mutableState.update { it.copy(tvLoginApproval = TvLoginApprovalState(checked,
+            android.os.SystemClock.elapsedRealtime() + 120_000L)) }
+    }
+
+    fun dismissTvLoginApproval() {
+        tvApprovalRevision++
+        tvApprovalJob?.cancel()
+        tvApprovalJob = null
+        mutableState.update { it.copy(tvLoginApproval = null) }
+    }
+
+    fun approveTvLogin() {
+        val pending = mutableState.value.tvLoginApproval?.takeUnless { it.busy || it.approved } ?: return
+        val active = client ?: return
+        if (!mutableState.value.loggedIn) return
+        if (!sameTvLoginServer(active.server, pending.link.server)) {
+            mutableState.update { it.copy(tvLoginApproval = pending.copy(error = "QR 코드의 서버와 현재 로그인한 서버가 다릅니다.")) }
+            return
+        }
+        if (android.os.SystemClock.elapsedRealtime() >= pending.expiresAtMs) {
+            mutableState.update { it.copy(tvLoginApproval = pending.copy(error = "QR 코드가 만료되었습니다. TV에서 새 코드를 만들어 주세요.")) }
+            return
+        }
+        val accountToken = active.token
+        val generation = ++tvApprovalRevision
+        mutableState.update { it.copy(tvLoginApproval = pending.copy(busy = true, error = null)) }
+        fun current(): Boolean = generation == tvApprovalRevision && active === client &&
+            active.token == accountToken && mutableState.value.loggedIn &&
+            mutableState.value.tvLoginApproval?.link == pending.link
+        tvApprovalJob = viewModelScope.launch {
+            try {
+                kotlinx.coroutines.withTimeout(20_000L) { active.approveTvPairing(pending.link.nonce) }
+                currentCoroutineContext().ensureActive()
+                if (current()) mutableState.update { it.copy(tvLoginApproval = pending.copy(approved = true)) }
+            } catch (cancel: CancellationException) {
+                if (cancel is kotlinx.coroutines.TimeoutCancellationException && current()) {
+                    mutableState.update { it.copy(tvLoginApproval = pending.copy(error = "응답이 지연됩니다. TV의 연결 상태를 확인하고 새 코드로 다시 시도하세요.")) }
+                } else throw cancel
+            } catch (_: Exception) {
+                if (current()) mutableState.update { it.copy(tvLoginApproval = pending.copy(
+                    error = "TV 연결을 승인하지 못했습니다. 로그인 상태를 확인하고 TV에서 새 코드를 만들어 주세요.")) }
+            } finally {
+                if (generation == tvApprovalRevision) tvApprovalJob = null
+            }
         }
     }
 
@@ -285,6 +415,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelTotp() {
+        cancelTvQrLogin()
         cancelDetailDiscoveryJobs(clear = true)
         requestJob?.cancel(); revision++
         client?.clearSpoilerGrant()
@@ -1169,6 +1300,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        cancelTvQrLogin()
+        dismissTvLoginApproval()
         cancelDetailDiscoveryJobs(clear = true)
         requestJob?.cancel(); revision++
         continueOwner = null

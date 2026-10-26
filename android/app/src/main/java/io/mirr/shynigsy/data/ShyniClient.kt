@@ -43,7 +43,7 @@ class ShyniClient(
     token: String? = null,
     httpClient: OkHttpClient = OkHttpClient(),
     val deviceId: String = UUID.randomUUID().toString(),
-) {
+) : TvPairingApi {
     private val origin = server.trim().trimEnd('/').toHttpUrl().also {
         require(it.username.isEmpty() && it.password.isEmpty()) { "서버 주소에 계정 정보를 넣을 수 없습니다." }
         require(it.encodedPath == "/" && it.query == null && it.fragment == null) {
@@ -512,6 +512,44 @@ class ShyniClient(
         // An omitted optional field is unknown; an explicit [] clears the old markers.
         val markers = if (info.isNull("markers")) JSONArray(spec.markers.map { it.asJson() }) else info.opt("markers")
         PlaybackMarker.parse(markers, spec.durationMs)
+    }
+
+    override suspend fun createTvPairingSession(): TvPairingSession = parseTvPairingSession(
+        request("/auth/tv-login/pairing/sessions", JSONObject(), authenticated = false,
+            responseLimit = 32_768, singleAttempt = true).objectValue(),
+    )
+
+    override suspend fun claimTvPairing(session: TvPairingSession, deviceName: String): TvPairingClaim {
+        require(deviceName.isNotBlank() && deviceName.length <= 200 && deviceName.none { it.code < 32 || it.code == 127 }) {
+            "기기 이름이 올바르지 않습니다."
+        }
+        return parseTvPairingClaim(request("/auth/tv-login/pairing/claim", session.claimBody(deviceName),
+            authenticated = false, responseLimit = 32_768, singleAttempt = true).objectValue())
+    }
+
+    /** The phone's explicit approval mints a one-use ticket, then hands it to the owned TV nonce. */
+    suspend fun approveTvPairing(nonce: String) {
+        require(tvPairingCredential.matches(nonce)) { "TV 로그인 코드가 올바르지 않습니다." }
+        val account = token?.takeIf { it.isNotBlank() } ?: throw ApiException("로그인이 필요합니다.", 401)
+        fun stillOwned() {
+            if (token != account) throw CancellationException("로그인 정보가 변경되었습니다.")
+        }
+        val response = request("/auth/tv-login/tickets", JSONObject(), responseLimit = 32_768,
+            singleAttempt = true).objectValue()
+        currentCoroutineContext().ensureActive(); stillOwned()
+        val ticket = (response.opt("ticket") as? String)?.takeIf(tvPairingCredential::matches)
+            ?: throw ApiException("서버의 TV 로그인 승인 정보가 올바르지 않습니다.")
+        val seconds = (response.opt("expires_in") as? Number)?.let { value ->
+            runCatching { java.math.BigDecimal(value.toString()).longValueExact() }.getOrNull()
+        }?.takeIf { it in 1..MAX_TV_PAIRING_SECONDS.toLong() }
+            ?: throw ApiException("서버의 TV 로그인 승인 시간이 올바르지 않습니다.")
+        // The ticket is deliberately local to this operation, never UI state or saved preferences.
+        val approved = kotlinx.coroutines.withTimeoutOrNull(seconds * 1_000L) {
+            request("/auth/tv-login/pairing/pair/$nonce", JSONObject().put("ticket", ticket),
+                responseLimit = 32_768, singleAttempt = true).objectValue()
+        } ?: throw ApiException("TV 로그인 승인 시간이 초과되었습니다. 새 QR 코드로 다시 시도하세요.", 408)
+        currentCoroutineContext().ensureActive(); stillOwned()
+        if (approved.opt("status") != "approved") throw ApiException("TV 로그인 승인을 확인하지 못했습니다.")
     }
 
     suspend fun login(username: String, password: String): LoginOutcome = loginResult(
@@ -1871,8 +1909,10 @@ class ShyniClient(
                             // Current Shyni web servers may issue an HttpOnly session
                             // instead of a JSON bearer. Keep that session scoped to
                             // this origin, encrypted by SessionStore like a bearer.
-                            if (!authenticated && path in setOf("/auth/login", "/auth/login/totp") &&
-                                json is JSONObject && !json.optBoolean("require_totp") && json.stringOrNull("token") == null) {
+                            val cookieLogin = path in setOf("/auth/login", "/auth/login/totp") ||
+                                (path == "/auth/tv-login/pairing/claim" && json is JSONObject && json.opt("status") == "approved")
+                            if (!authenticated && cookieLogin && json is JSONObject &&
+                                !json.optBoolean("require_totp") && json.stringOrNull("token") == null) {
                                 val cookie = Cookie.parseAll(url, it.headers).filter { value -> value.matches(origin) }
                                     .joinToString("; ") { value -> "${value.name}=${value.value}" }
                                 if (cookie.isNotBlank()) json.put("token", "cookie:$cookie")
