@@ -3,6 +3,8 @@ package io.mirr.shynigsy.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,6 +92,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -670,32 +673,49 @@ internal fun LibraryPicker(
 
 /** PIN text exists only while this dialog is composed; it never enters saved UI or account state. */
 @Composable
-private fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Unit, onUnlock: (String) -> Unit) {
+internal fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Unit, onUnlock: (String) -> Unit) {
     var pin by remember { mutableStateOf("") }
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val screenHeight = LocalConfiguration.current.screenHeightDp
+    // An IME inset change must not repeatedly change the dialog's own text budget.
+    val textHeight = remember { (screenHeight * .45f).dp.coerceIn(120.dp, 320.dp) }
     fun submit() {
         if (!busy && pin.isNotBlank()) {
             val entered = pin
             pin = ""
+            focus.clearFocus()
+            keyboard?.hide()
             onUnlock(entered)
         }
     }
-    AlertDialog(onDismissRequest = { pin = ""; onDismiss() }, modifier = Modifier.testTag("spoiler-pin-dialog"),
+    fun dismiss() {
+        pin = ""
+        focus.clearFocus()
+        keyboard?.hide()
+        onDismiss()
+    }
+    AlertDialog(onDismissRequest = { dismiss() }, modifier = Modifier.testTag("spoiler-pin-dialog"),
         title = { Text("스포일러 라이브러리") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("PIN을 입력해 잠금을 해제하세요.")
+            Column(Modifier.fillMaxWidth().heightIn(max = textHeight).verticalScroll(rememberScrollState())
+                .testTag("spoiler-pin-content"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(if (busy) "PIN을 확인하고 있습니다." else "PIN을 입력해 잠금을 해제하세요.",
+                    modifier = Modifier.testTag("spoiler-pin-status"))
                 OutlinedTextField(value = pin, onValueChange = { pin = it.take(16) }, enabled = !busy,
                     label = { Text("PIN") }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submit() }),
                     modifier = Modifier.fillMaxWidth().tvOnlyFocus().testTag("spoiler-pin"))
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
+                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().testTag("spoiler-pin-progress"))
+                if (error != null) Text(error, color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("spoiler-pin-error"))
             }
         },
         confirmButton = { TextButton(onClick = { submit() }, enabled = !busy && pin.isNotBlank(),
-            modifier = Modifier.tvOnlyFocus().testTag("spoiler-unlock")) { Text("잠금 해제") } },
-        dismissButton = { TextButton(onClick = { pin = ""; onDismiss() }, modifier = Modifier.tvOnlyFocus()) { Text("취소") } },
+            modifier = Modifier.tvOnlyFocus().testTag("spoiler-unlock")) { Text(if (busy) "확인 중…" else "잠금 해제") } },
+        dismissButton = { TextButton(onClick = { dismiss() },
+            modifier = Modifier.tvOnlyFocus().testTag("spoiler-pin-cancel")) { Text("취소") } },
     )
 }
 

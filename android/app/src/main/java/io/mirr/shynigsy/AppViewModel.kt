@@ -68,6 +68,19 @@ data class AppState(
 internal fun initialServerAddress(savedAddress: String?, sessionAddress: String?): String =
     savedAddress?.takeIf { it.isNotBlank() } ?: sessionAddress?.takeIf { it.isNotBlank() } ?: ""
 
+/** Show an actionable PIN result without echoing a server response or submitted credentials. */
+internal fun spoilerUnlockFailureMessage(error: Exception, unlocked: Boolean): String {
+    if (unlocked) return "비공개 목록을 불러오지 못했습니다. 새로고침해 주세요."
+    return when ((error as? ApiException)?.status) {
+        401 -> "로그인이 만료되었습니다. 다시 로그인한 뒤 PIN을 입력해 주세요."
+        403 -> "PIN이 올바르지 않거나 접근이 허용되지 않습니다. PIN을 확인하고 다시 시도하세요."
+        408 -> "PIN 확인 응답이 늦어 중단했습니다. 서버 상태를 확인한 뒤 다시 시도하세요."
+        429 -> "PIN 확인 요청이 너무 많습니다. 잠시 후 다시 시도하세요."
+        in 500..599 -> "서버가 PIN 확인을 처리하지 못했습니다. 잠시 후 다시 시도하세요."
+        else -> "PIN을 확인하지 못했습니다. PIN과 서버 연결 상태를 확인하고 다시 시도하세요."
+    }
+}
+
 /** Prefer the ordinary first season; specials remain selectable without a detour. */
 internal fun initialEpisodeSeason(seasons: List<MediaItem>): MediaItem? {
     val available = seasons.filter { it.episodeCount != 0 }.ifEmpty { seasons }
@@ -658,16 +671,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 check(status.unlocked && active.spoilerUnlocked)
                 requestJob?.cancel(); revision++
-                mutableState.update { it.copy(spoilerUnlocked = true, spoilerPromptOpen = false,
+                mutableState.update { it.copy(spoilerUnlocked = true, spoilerPromptOpen = false, spoilerBusy = false,
                     spoilerAvailable = status.available, spoilerPinEnabled = status.pinEnabled != false, busy = false) }
                 scheduleSpoilerExpiry(active)
                 loadHome(active)
             } catch (cancel: CancellationException) {
                 throw cancel
-            } catch (_: Exception) {
+            } catch (error: Exception) {
                 if (active === client && current == spoilerRevision) {
-                    mutableState.update { it.copy(spoilerError = if (active.spoilerUnlocked)
-                        "비공개 목록을 불러오지 못했습니다. 새로고침해 주세요." else "잠금을 해제하지 못했습니다. PIN과 서버 연결을 확인하세요.") }
+                    mutableState.update { it.copy(spoilerError = spoilerUnlockFailureMessage(error, active.spoilerUnlocked)) }
                 }
             } finally {
                 if (active === client && current == spoilerRevision) mutableState.update { it.copy(spoilerBusy = false) }

@@ -6,6 +6,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -123,7 +125,11 @@ class ShyniClient(
     suspend fun spoilerStatus(): SpoilerStatus = parseSpoilerStatus(
         request("/spoiler/client/status", spoiler = spoilerUnlocked).objectValue())
 
-    suspend fun unlockSpoiler(pin: String): SpoilerStatus {
+    suspend fun unlockSpoiler(pin: String): SpoilerStatus = unlockSpoiler(pin, 20_000L)
+
+    /** The manual PIN deadline includes dispatcher queueing; renewal has its own player budget. */
+    internal suspend fun unlockSpoiler(pin: String, timeoutMs: Long): SpoilerStatus {
+        require(timeoutMs > 0)
         val value = pin.trim()
         if (value.isEmpty() || value.length > 16 || value.any { it == '\r' || it == '\n' }) {
             throw ApiException("스포일러 PIN을 입력해 주세요.")
@@ -133,7 +139,16 @@ class ShyniClient(
         val started = SpoilerAccessRegistry.started()
         val pinChars = value.toCharArray()
         try {
-            val json = request("/spoiler/client/unlock", JSONObject().put("pin", value)).objectValue()
+            val json = try {
+                withTimeout(timeoutMs) {
+                    request("/spoiler/client/unlock", JSONObject().put("pin", value),
+                        responseLimit = 32_768, singleAttempt = true).objectValue()
+                }
+            } catch (_: TimeoutCancellationException) {
+                // A cancelled screen, account change or outer timeout must remain cancellation.
+                currentCoroutineContext().ensureActive()
+                throw ApiException("서버 응답이 지연됩니다. 잠시 후 PIN 잠금 해제를 다시 시도해 주세요.", 408)
+            }
             currentCoroutineContext().ensureActive()
             val (grant, seconds) = spoilerGrantResponse(json)
             if (identity != spoilerKey() || !SpoilerAccessRegistry.completeUnlock(identity, unlock,
