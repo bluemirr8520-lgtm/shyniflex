@@ -81,6 +81,13 @@ internal fun spoilerUnlockFailureMessage(error: Exception, unlocked: Boolean): S
     }
 }
 
+/** An optional catalog status timeout must not remove explicit PIN entry. */
+internal fun spoilerUnlockPromptState(state: AppState, hasClient: Boolean): AppState {
+    if (!state.loggedIn || !hasClient || state.spoilerBusy) return state
+    return state.copy(spoilerPromptOpen = true, spoilerError = if (!state.spoilerPinEnabled)
+        "서버에서 비공개 PIN을 먼저 설정해 주세요." else null)
+}
+
 /** Prefer the ordinary first season; specials remain selectable without a detour. */
 internal fun initialEpisodeSeason(seasons: List<MediaItem>): MediaItem? {
     val available = seasons.filter { it.episodeCount != 0 }.ifEmpty { seasons }
@@ -645,9 +652,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun requestSpoilerUnlock() {
-        if (mutableState.value.spoilerBusy || !mutableState.value.spoilerAvailable) return
-        if (!mutableState.value.spoilerPinEnabled) mutableState.update { it.copy(spoilerError = "서버에서 비공개 PIN을 먼저 설정해 주세요.") }
-        else mutableState.update { it.copy(spoilerPromptOpen = true, spoilerError = null) }
+        mutableState.update { spoilerUnlockPromptState(it, hasClient = client != null) }
     }
 
     fun dismissSpoilerUnlock() {

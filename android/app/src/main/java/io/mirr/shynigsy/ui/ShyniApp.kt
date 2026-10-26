@@ -313,7 +313,8 @@ fun ShyniApp(
             onUpdate = onUpdate,
             onLogout = { logoutConfirm = true },
             onSpoilerAccess = {
-                if (state.spoilerUnlocked) viewModel.lockSpoiler() else libraryPickerOpen = true
+                libraryPickerOpen = false
+                if (state.spoilerUnlocked) viewModel.lockSpoiler() else viewModel.requestSpoilerUnlock()
             },
         )
         if (appearanceOpen) CinemaAppearanceSettings(initialBackground = appearance.backgroundArgb,
@@ -339,7 +340,7 @@ fun ShyniApp(
             spoilerBusy = state.spoilerBusy,
             spoilerError = state.spoilerError,
             onUnlockSpoiler = {
-                if (state.spoilerPinEnabled) libraryPickerOpen = false
+                libraryPickerOpen = false
                 viewModel.requestSpoilerUnlock()
             },
             onLockSpoiler = viewModel::lockSpoiler,
@@ -347,6 +348,7 @@ fun ShyniApp(
         if (state.spoilerPromptOpen && state.loggedIn) SpoilerPinDialog(
             busy = state.spoilerBusy, error = state.spoilerError,
             onDismiss = viewModel::dismissSpoilerUnlock, onUnlock = viewModel::unlockSpoiler,
+            pinEnabled = state.spoilerPinEnabled,
         )
         watchOptions?.takeIf { !it.isSpoiler || state.spoilerUnlocked }?.let { item ->
             WatchedOptionsDialog(item, onDismiss = { watchOptions = null }, onSetWatched = { watched ->
@@ -600,7 +602,8 @@ internal fun LibraryPicker(
                         TextButton(onClick = onDismiss, modifier = Modifier.testTag("mobile-library-close")) { Text("닫기") }
                     }
                 }
-                if (spoilerAvailable || spoilerUnlocked) item(key = "spoiler") {
+                // Cached capability is advisory; a failed status fetch must not hide the PIN entry point.
+                item(key = "spoiler") {
                     CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
                         enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth()
                             .testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
@@ -638,7 +641,7 @@ internal fun LibraryPicker(
         title = { Text("라이브러리") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (spoilerAvailable || spoilerUnlocked) CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
+            CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
                 enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
                 Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null)
                 Spacer(Modifier.width(8.dp))
@@ -673,7 +676,13 @@ internal fun LibraryPicker(
 
 /** PIN text exists only while this dialog is composed; it never enters saved UI or account state. */
 @Composable
-internal fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Unit, onUnlock: (String) -> Unit) {
+internal fun SpoilerPinDialog(
+    busy: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onUnlock: (String) -> Unit,
+    pinEnabled: Boolean = true,
+) {
     var pin by remember { mutableStateOf("") }
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -681,7 +690,7 @@ internal fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Un
     // An IME inset change must not repeatedly change the dialog's own text budget.
     val textHeight = remember { (screenHeight * .45f).dp.coerceIn(120.dp, 320.dp) }
     fun submit() {
-        if (!busy && pin.isNotBlank()) {
+        if (pinEnabled && !busy && pin.isNotBlank()) {
             val entered = pin
             pin = ""
             focus.clearFocus()
@@ -700,9 +709,13 @@ internal fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Un
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = textHeight).verticalScroll(rememberScrollState())
                 .testTag("spoiler-pin-content"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(if (busy) "PIN을 확인하고 있습니다." else "PIN을 입력해 잠금을 해제하세요.",
+                Text(when {
+                    busy -> "PIN을 확인하고 있습니다."
+                    !pinEnabled -> "서버의 PIN 설정을 확인해 주세요."
+                    else -> "PIN을 입력해 잠금을 해제하세요."
+                },
                     modifier = Modifier.testTag("spoiler-pin-status"))
-                OutlinedTextField(value = pin, onValueChange = { pin = it.take(16) }, enabled = !busy,
+                OutlinedTextField(value = pin, onValueChange = { pin = it.take(16) }, enabled = pinEnabled && !busy,
                     label = { Text("PIN") }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submit() }),
@@ -712,7 +725,7 @@ internal fun SpoilerPinDialog(busy: Boolean, error: String?, onDismiss: () -> Un
                     modifier = Modifier.testTag("spoiler-pin-error"))
             }
         },
-        confirmButton = { TextButton(onClick = { submit() }, enabled = !busy && pin.isNotBlank(),
+        confirmButton = { TextButton(onClick = { submit() }, enabled = pinEnabled && !busy && pin.isNotBlank(),
             modifier = Modifier.tvOnlyFocus().testTag("spoiler-unlock")) { Text(if (busy) "확인 중…" else "잠금 해제") } },
         dismissButton = { TextButton(onClick = { dismiss() },
             modifier = Modifier.tvOnlyFocus().testTag("spoiler-pin-cancel")) { Text("취소") } },

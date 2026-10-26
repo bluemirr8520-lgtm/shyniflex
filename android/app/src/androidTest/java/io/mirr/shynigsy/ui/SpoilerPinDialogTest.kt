@@ -18,7 +18,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Density
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import io.mirr.shynigsy.data.Library
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -86,6 +88,58 @@ class SpoilerPinDialogTest {
         screen.onNodeWithTag("spoiler-unlock").assertIsNotEnabled()
     }
 
+    @Test fun unknownCapabilityMobileMenusStillOpenPinWithoutExposingPrivateLibraries() {
+        var pickerOpen by mutableStateOf(true)
+        var moreOpen by mutableStateOf(false)
+        var promptOpen by mutableStateOf(false)
+        val requests = mutableListOf<String>()
+        val openPrompt = { pickerOpen = false; promptOpen = true }
+        screen.setContent {
+            MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
+                if (pickerOpen) LibraryPicker(
+                    libraries = listOf(Library(1, "공개 영화", "movie"), Library(2, "비공개 영화", "movie", true)),
+                    selectedLibraryId = null, busy = false, onDismiss = { pickerOpen = false }, onSelect = {},
+                    spoilerAvailable = false, spoilerUnlocked = false, spoilerBusy = false, spoilerError = null,
+                    onUnlockSpoiler = openPrompt, onLockSpoiler = {}, television = false,
+                )
+                if (moreOpen) MobileMoreMenu(spoilerUnlocked = false, onDismiss = { moreOpen = false },
+                    onRefresh = {}, onAppearance = {}, onUpdate = {}, onLogout = {},
+                    onSpoilerAccess = { assertFalse(moreOpen); openPrompt() })
+                if (promptOpen) SpoilerPinDialog(busy = false, error = null,
+                    onDismiss = { promptOpen = false }, onUnlock = { requests += it })
+            }
+        }
+        screen.onNodeWithTag("mobile-library-1").assertExists()
+        screen.onNodeWithTag("mobile-library-2").assertDoesNotExist()
+        screen.onNodeWithTag("spoiler-open-unlock").assertIsEnabled().performClick()
+        screen.onNodeWithTag("cinema-mobile-libraries-sheet").assertDoesNotExist()
+        pin().assertIsDisplayed().performTextInput("1234")
+        screen.onNodeWithTag("spoiler-unlock").performClick()
+        screen.runOnIdle { assertEquals(listOf("1234"), requests) }
+        screen.onNodeWithTag("spoiler-pin-cancel").performClick()
+        screen.runOnIdle { moreOpen = true }
+        screen.onNodeWithTag("mobile-more-actions").performScrollToNode(hasTestTag("mobile-more-spoiler"))
+        screen.onNodeWithTag("mobile-more-spoiler").performClick()
+        screen.onNodeWithTag("mobile-more-sheet").assertDoesNotExist()
+        pin().assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        screen.runOnIdle { assertEquals("Opening a prompt does not grant or submit access", listOf("1234"), requests) }
+    }
+
+    @Test fun disabledPinConfigurationShowsAnErrorInsteadOfSilentlyIgnoringTheAction() {
+        val fixture = Fixture().apply {
+            pinEnabled = false
+            error = "서버에서 비공개 PIN을 먼저 설정해 주세요."
+        }
+        render(fixture)
+        screen.onNodeWithTag("spoiler-pin-dialog").assertExists()
+        pin().assertIsNotEnabled()
+        screen.onNodeWithTag("spoiler-unlock").assertIsNotEnabled()
+        screen.onNodeWithTag("spoiler-pin-error").assertIsDisplayed().assertTextEquals(fixture.error!!)
+        screen.onNodeWithTag("spoiler-pin-status").assertIsDisplayed()
+        screen.onNodeWithTag("spoiler-pin-cancel").assertIsEnabled().performClick()
+        screen.runOnIdle { assertTrue(fixture.requests.isEmpty()); assertEquals(1, fixture.dismissals) }
+    }
+
     private fun pin() = screen.onNodeWithTag("spoiler-pin")
 
     private fun render(fixture: Fixture, shortLargeText: Boolean = false) {
@@ -98,7 +152,8 @@ class SpoilerPinDialogTest {
                 MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
                     if (fixture.open) SpoilerPinDialog(fixture.busy, fixture.error,
                         onDismiss = { fixture.dismissals++; fixture.open = false },
-                        onUnlock = { fixture.requests += it; if (fixture.becomeBusyOnSubmit) fixture.busy = true })
+                        onUnlock = { fixture.requests += it; if (fixture.becomeBusyOnSubmit) fixture.busy = true },
+                        pinEnabled = fixture.pinEnabled)
                 }
             }
         }
@@ -107,6 +162,7 @@ class SpoilerPinDialogTest {
     private class Fixture {
         var open by mutableStateOf(true)
         var busy by mutableStateOf(false)
+        var pinEnabled by mutableStateOf(true)
         var error by mutableStateOf<String?>(null)
         var becomeBusyOnSubmit = false
         var dismissals = 0
