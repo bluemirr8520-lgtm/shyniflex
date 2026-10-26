@@ -129,26 +129,32 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
     spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
     onSearch: () -> Unit = {}, searchSelected: Boolean = false, onAppearance: () -> Unit = {}) {
-    BoxWithConstraints(Modifier.width(136.dp).fillMaxHeight().background(MaterialTheme.colorScheme.background)
+    val fontScale = LocalDensity.current.fontScale
+    val sidebarWidth = 240.dp + 80.dp * (fontScale - 1f).coerceIn(0f, 1f)
+    // Keep focus indicators and headings inside the TV overscan-safe area.
+    val sidebarPadding = PaddingValues(start = 48.dp, end = 12.dp, top = 27.dp, bottom = 27.dp)
+    BoxWithConstraints(Modifier.width(sidebarWidth).fillMaxHeight().background(MaterialTheme.colorScheme.background)
         .focusRestorer().focusGroup().testTag("tv-sidebar")) {
         // A short window or a large system font must not squeeze the library list to zero height.
         // Every action remains a separate lazy item so D-pad focus can reveal its full touch target.
-        if (maxHeight < 600.dp || LocalDensity.current.fontScale > 1.15f) {
+        if (maxHeight < 600.dp || fontScale > 1.15f) {
             LazyColumn(Modifier.fillMaxSize().testTag("tv-sidebar-scroll"),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                contentPadding = sidebarPadding,
                 verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 item(key = "sidebar-brand") {
-                    Text("SHYNIFLEX", Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                    Text("SHYNIFLEX", Modifier.padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
                         color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp)
+                        style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 item(key = "sidebar-home") { TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome) }
                 item(key = "sidebar-search") {
                     TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
                 }
                 item(key = "sidebar-library-heading") {
-                    Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
-                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 items(libraries, key = { "sidebar-library-${it.id}" }) { library ->
                     TvSidebarItem(library.title,
@@ -169,15 +175,17 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                 item(key = "sidebar-update") { TvSidebarItem("업데이트", Icons.Rounded.SystemUpdate, false, onUpdate) }
                 item(key = "sidebar-account") { TvSidebarItem("계정", Icons.Rounded.AccountCircle, false, onLogout) }
             }
-        } else Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
+        } else Column(Modifier.fillMaxSize().padding(sidebarPadding),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("SHYNIFLEX", Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+            Text("SHYNIFLEX", Modifier.padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
                 color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp)
+                style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             TvSidebarItem("홈", Icons.Rounded.Home, homeSelected, onHome)
             TvSidebarItem("검색", Icons.Rounded.Search, searchSelected, onSearch, Modifier.testTag("sidebar-search"))
-            Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
-                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 items(libraries, key = { it.id }) { library ->
                     TvSidebarItem(library.title,
@@ -217,9 +225,9 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
             Box(Modifier.width(2.dp).height(if (focused) 24.dp else 18.dp)
                 .background(if (highlighted) accent else Color.Transparent))
             Icon(icon, null, Modifier.size(18.dp), tint = foreground)
-            Text(label, color = foreground, style = MaterialTheme.typography.bodyMedium,
+            Text(label, modifier = Modifier.weight(1f), color = foreground, style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
