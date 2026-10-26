@@ -130,7 +130,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
     spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
     onSearch: () -> Unit = {}, searchSelected: Boolean = false, onAppearance: () -> Unit = {}) {
     val fontScale = LocalDensity.current.fontScale
-    val sidebarWidth = 240.dp + 80.dp * (fontScale - 1f).coerceIn(0f, 1f)
+    val sidebarWidth = 216.dp + 64.dp * (fontScale - 1f).coerceIn(0f, 1f)
     // Keep focus indicators and headings inside the TV overscan-safe area.
     val sidebarPadding = PaddingValues(start = 48.dp, end = 12.dp, top = 27.dp, bottom = 27.dp)
     BoxWithConstraints(Modifier.width(sidebarWidth).fillMaxHeight().background(MaterialTheme.colorScheme.background)

@@ -263,24 +263,26 @@ fun ShyniApp(
                     )
                     }
                     state.loggedIn -> {
-                        val sidebar: @Composable () -> Unit = {
-                        TvSidebar(onLibraries = { libraryPickerOpen = true }, onRefresh = viewModel::refresh,
-                            onLogout = { logoutConfirm = true },
+                        val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
+                            ?: if (state.searchOpen) "search" else state.library?.let { "library:${it.id}" } ?: "home"
+                        val sidebar: @Composable (() -> Unit) -> Unit = { closeSidebar ->
+                        TvSidebar(onLibraries = { closeSidebar(); libraryPickerOpen = true },
+                            onRefresh = { closeSidebar(); viewModel.refresh() },
+                            onLogout = { closeSidebar(); logoutConfirm = true },
                             libraries = state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler },
                             selectedLibraryId = state.library?.id,
                             homeSelected = state.library == null && detail == null && !state.searchOpen,
-                            onHome = viewModel::openHome,
-                            onLibrary = viewModel::selectLibrary,
+                            onHome = { closeSidebar(); viewModel.openHome() },
+                            onLibrary = { library -> closeSidebar(); viewModel.selectLibrary(library) },
                             showLocked = !state.spoilerUnlocked,
-                            spoilerUnlocked = state.spoilerUnlocked, onLockSpoiler = viewModel::lockSpoiler,
-                            onUpdate = onUpdate, searchSelected = state.searchOpen,
-                            onAppearance = { appearanceOpen = true },
-                            onSearch = viewModel::openSearch)
+                            spoilerUnlocked = state.spoilerUnlocked,
+                            onLockSpoiler = { closeSidebar(); viewModel.lockSpoiler() },
+                            onUpdate = { closeSidebar(); onUpdate() }, searchSelected = state.searchOpen,
+                            onAppearance = { closeSidebar(); appearanceOpen = true },
+                            onSearch = { closeSidebar(); viewModel.openSearch() })
                         }
                         val content: @Composable () -> Unit = {
                         Box(Modifier.fillMaxSize()) {
-                        val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
-                            ?: if (state.searchOpen) "search" else state.library?.let { "library:${it.id}" } ?: "home"
                         tvScreens.SaveableStateProvider(screenKey) {
                             when {
                                 detail != null -> TvDetail(state, viewModel, onWatchOptions)
@@ -293,7 +295,9 @@ fun ShyniApp(
                         }
                         }
                         }
-                        if (tv) Row(Modifier.fillMaxSize()) { sidebar(); Box(Modifier.weight(1f)) { content() } }
+                        if (tv) TvSidebarDrawer(screenKey = screenKey, sidebar = sidebar) {
+                            Box(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 27.dp)) { content() }
+                        }
                         else content()
                     }
 
