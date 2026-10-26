@@ -124,7 +124,8 @@ class TvPairingRelayFlowTest {
                             throw IOException("Unowned fixture origin")
                         }
                         logicalRequests += "${request.url.scheme}://${request.url.host}:${request.url.port}"
-                        val local = relay.url(request.url.encodedPath).newBuilder().encodedQuery(request.url.encodedQuery).build()
+                        val local = relay.url(request.url.encodedPath).newBuilder().host("127.0.0.1")
+                            .encodedQuery(request.url.encodedQuery).build()
                         chain.proceed(request.newBuilder().url(local).build())
                     }.build()
                     try {
