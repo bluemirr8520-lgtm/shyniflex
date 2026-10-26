@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -583,16 +585,22 @@ internal fun LibraryPicker(
     onUnlockSpoiler: () -> Unit,
     onLockSpoiler: () -> Unit,
     television: Boolean = LocalContext.current.isTelevision(),
+    modifier: Modifier = Modifier,
 ) {
     val visibleLibraries = libraries.filter { spoilerUnlocked || !it.isSpoiler }
     if (!television) {
-        val maxHeight = (LocalConfiguration.current.screenHeightDp * .85f).dp
+        val listState = rememberLazyListState()
         ModalBottomSheet(onDismissRequest = onDismiss,
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetGesturesEnabled = false,
+            dragHandle = null,
             containerColor = MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.testTag("cinema-mobile-libraries-sheet")) {
-            LazyColumn(Modifier.fillMaxWidth().heightIn(max = maxHeight).testTag("cinema-mobile-libraries-list"),
+            modifier = modifier.testTag("cinema-mobile-libraries-sheet")) {
+            // A stable viewport keeps lazy row heights and arriving private catalogs from moving the sheet.
+            // Only the list consumes vertical swipes; back, outside tap and the close action still dismiss.
+            LazyColumn(Modifier.fillMaxWidth().fillMaxHeight(.85f).testTag("cinema-mobile-libraries-list"),
+                state = listState,
                 contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 item(key = "heading") {
@@ -638,6 +646,7 @@ internal fun LibraryPicker(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = modifier,
         title = { Text("라이브러리") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
