@@ -186,6 +186,8 @@ fun ShyniApp(
             containerColor = AppBackground,
             topBar = {
                 if (state.loggedIn) {
+                    // The home hero owns its transparent cinema header on phones.
+                    if (tv || detail != null || state.library != null || state.searchOpen) {
                     Column(Modifier.statusBarsPadding()) {
                     if (!tv) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { scope.launch { drawer.open() } },
@@ -199,6 +201,7 @@ fun ShyniApp(
                         onHome = if (state.library != null) viewModel::openHome else null,
                     )
                     }
+                    }
                 } else
                 AppHeader(
                     loggedIn = state.loggedIn,
@@ -209,6 +212,18 @@ fun ShyniApp(
                     onLogout = { logoutConfirm = true },
                     onLibraries = { libraryPickerOpen = true },
                 )
+            },
+            bottomBar = {
+                if (state.loggedIn && !tv && detail == null) {
+                    CinemaHomeBottomNavigation(
+                        homeSelected = state.library == null && !state.searchOpen,
+                        searchSelected = state.searchOpen,
+                        librarySelected = state.library != null && !state.searchOpen,
+                        onHome = { viewModel.openHome(); scope.launch { drawer.close() } },
+                        onSearch = { viewModel.openSearch(); scope.launch { drawer.close() } },
+                        onLibraries = { libraryPickerOpen = true; scope.launch { drawer.close() } },
+                    )
+                }
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
@@ -247,15 +262,18 @@ fun ShyniApp(
                                 detail != null -> TvDetail(state, viewModel, onWatchOptions)
                                 state.searchOpen -> GlobalSearchScreen(state, viewModel, onWatchOptions)
                                 state.library != null -> TvLibrary(state, viewModel, onWatchOptions)
-                                else -> TvHome(state, viewModel, onWatchOptions)
+                                else -> TvHome(state, viewModel, onWatchOptions,
+                                    onAppearance = { appearanceOpen = true },
+                                    onSearch = viewModel::openSearch,
+                                    onMenu = if (tv) null else ({ scope.launch { drawer.open() }; Unit }))
                             }
                         }
                         }
                         }
                         if (tv) Row(Modifier.fillMaxSize()) { sidebar(); Box(Modifier.weight(1f)) { content() } }
                         else ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-                            ModalDrawerSheet(modifier = Modifier.width(156.dp),
-                                drawerContainerColor = MaterialTheme.colorScheme.surfaceContainer) { sidebar() }
+                            ModalDrawerSheet(modifier = Modifier.width(136.dp),
+                                drawerContainerColor = MaterialTheme.colorScheme.background) { sidebar() }
                         }) { content() }
                     }
 

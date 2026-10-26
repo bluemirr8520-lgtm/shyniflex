@@ -17,6 +17,15 @@ sources and seven pinned recursive submodule sources, manifests, license texts,
 and a hash-verifying restoration script. The application source is also
 identified by [tag v1.0.11](https://github.com/bluemirr8520-lgtm/shyniflex/tree/v1.0.11).
 
+## Original decorative artwork
+
+The theater backdrop at
+`android/app/src/main/res/drawable-nodpi/cinema_paradiso_backdrop.png`
+was generated for this project with the built-in `image_gen` tool on
+2026-10-26. It is original decorative artwork inspired by classic Italian
+cinemas. No existing film still or poster files were used as source assets
+for this backdrop.
+
 ## Native playback runtime
 
 [`android/setup-mpv.ps1`](android/setup-mpv.ps1) fetches the official

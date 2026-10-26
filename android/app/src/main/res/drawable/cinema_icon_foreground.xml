@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- The theater silhouette stays within the adaptive icon's central safe region. -->
+    <path android:fillColor="#D8AC68" android:pathData="M30,42V40C30,29 40,22 54,22C68,22 78,29 78,40V42Z" />
+    <path android:fillColor="#D8AC68" android:pathData="M31,48H77V76H31Z" />
+    <path android:fillColor="#211914" android:pathData="M42,76V61C42,54 47,49 54,49C61,49 66,54 66,61V76Z" />
+    <path android:fillColor="#F4E8D1" android:pathData="M34,55H38V72H34Z M70,55H74V72H70Z M45,32H63V35H45Z" />
+    <path android:fillColor="#D8AC68" android:pathData="M25,40H83V52H25Z" />
+    <path android:fillColor="#F4E8D1" android:pathData="M30.5,46C30.5,44 33.5,44 33.5,46C33.5,48 30.5,48 30.5,46Z M41.5,46C41.5,44 44.5,44 44.5,46C44.5,48 41.5,48 41.5,46Z M52.5,46C52.5,44 55.5,44 55.5,46C55.5,48 52.5,48 52.5,46Z M63.5,46C63.5,44 66.5,44 66.5,46C66.5,48 63.5,48 63.5,46Z M74.5,46C74.5,44 77.5,44 77.5,46C77.5,48 74.5,48 74.5,46Z" />
+    <path android:fillColor="#F4E8D1" android:pathData="M50,58L61,65L50,72Z" />
+    <path android:fillColor="#D8AC68" android:pathData="M33,76H75V79H33Z" />
+</vector>

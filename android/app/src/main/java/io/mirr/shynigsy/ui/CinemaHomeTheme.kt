@@ -22,7 +22,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 
-internal const val DEFAULT_CINEMA_BACKGROUND = 0xFF0B0C10.toInt()
+internal const val DEFAULT_CINEMA_BACKGROUND = 0xFF211914.toInt()
 
 internal fun parseHomeBackgroundColor(hex: String): Int? {
     val digits = hex.trim().removePrefix("#")
@@ -47,8 +47,11 @@ internal fun cinemaReadableColor(preferred: Color, background: Color): Color =
 
 internal fun cinemaColorScheme(background: Color): ColorScheme {
     val base = background.copy(alpha = 1f)
-    val foreground = foregroundOn(base)
-    val dark = foreground == Color.White
+    val contrastForeground = foregroundOn(base)
+    val dark = contrastForeground == Color.White
+    val ivory = Color(0xFFF4E8D1)
+    // Preserve the user's hue; soften dark themes to ivory only where contrast allows it.
+    val foreground = if (dark && cinemaContrastRatio(ivory, base) >= 4.5f) ivory else contrastForeground
     fun safeSurface(amount: Float): Color = lerp(base, foreground, amount).let {
         if (cinemaContrastRatio(foreground, it) >= 4.5f) it else base
     }
@@ -57,7 +60,7 @@ internal fun cinemaColorScheme(background: Color): ColorScheme {
     fun acrossSurfaces(preferred: Color): Color = if (listOf(base, surface, panel).all {
         cinemaContrastRatio(preferred, it) >= 4.5f
     }) preferred else foreground
-    val primary = acrossSurfaces(if (dark) Color(0xFFC5A771) else Color(0xFF765019))
+    val primary = acrossSurfaces(if (dark) Color(0xFFD8AC68) else Color(0xFF765019))
     val primaryContainer = lerp(base, primary, .14f)
     val mutedCandidate = lerp(foreground, base, .22f)
     val muted = if (cinemaContrastRatio(mutedCandidate, base) >= 4.5f &&

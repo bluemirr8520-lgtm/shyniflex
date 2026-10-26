@@ -12,6 +12,23 @@ import kotlin.math.max
 import kotlin.math.min
 
 class CinemaAppearancePolicyTest {
+    @Test fun cinemaParadisoDefaultUsesEspressoIvoryAndChampagne() {
+        val scheme = cinemaColorScheme(Color(DEFAULT_CINEMA_BACKGROUND))
+        assertEquals(Color(0xFF211914), scheme.background)
+        assertEquals(Color(0xFFF4E8D1), scheme.onBackground)
+        assertEquals(Color(0xFFD8AC68), scheme.primary)
+        assertReadable(scheme, "cinema default")
+    }
+
+    @Test fun customBackgroundHuesArePreservedAndContrastSurvivesTheIvoryBoundary() {
+        for (red in 0..255 step 17) for (green in 0..255 step 17) for (blue in 0..255 step 17) {
+            val background = Color(red, green, blue)
+            val scheme = cinemaColorScheme(background)
+            assertEquals("The chosen color must never be tinted", background, scheme.background)
+            assertReadable(scheme, "custom $red/$green/$blue")
+        }
+    }
+
     @Test fun blackWhiteAndMiddleGrayKeepBodyAndButtonTextReadable() {
         listOf(Color.Black, Color.White, Color(0xFF777777), Color(0xFF3B3B3B)).forEach { background ->
             assertReadable(cinemaColorScheme(background), "neutral $background")
