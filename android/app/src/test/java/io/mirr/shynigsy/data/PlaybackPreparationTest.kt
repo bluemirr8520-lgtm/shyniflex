@@ -98,10 +98,9 @@ class PlaybackPreparationTest {
         assertFalse(result.sourceItem!!.watched)
         assertNull(result.requestedPartId)
         assertTrue(result.url.endsWith("/stream/90?ticket=fixture-media-ticket"))
-        assertEquals(listOf("/playback/decision", "/stream-ticket/90"),
-            List(2) { request().requestUrl!!.encodedPath })
-        assertEquals(setOf("/subtitles/90", "/playback/progress"),
-            List(2) { request().requestUrl!!.encodedPath }.toSet())
+        assertEquals("/playback/decision", request().requestUrl!!.encodedPath)
+        assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"),
+            List(3) { request().requestUrl!!.encodedPath }.toSet())
     }
 
     @Test fun aWatchedCardStillStartsFromTheBeginningWhenProgressIdentityIsUnknown() = runBlocking {
@@ -125,9 +124,11 @@ class PlaybackPreparationTest {
     @Test fun ticketAccessDenialKeepsItsStatusAndStopsPreparation() = runBlocking {
         respond(decision)
         respondError(403, "재생 권한이 없습니다.")
+        respondMetadata("/subtitles/90", "[]")
+        respondMetadata("/playback/progress", "{}")
         val caught = runCatching { client.playback(item) }.exceptionOrNull()
         failure(caught, "재생 티켓 발급", 403, "재생 권한이 없습니다.")
-        assertEquals(2, server.requestCount)
+        assertTrue(server.requestCount in 2..4)
     }
 
     @Test fun subtitleIdentityFailureIsReportedInsteadOfSilentlyDroppingSubtitles() = runBlocking {
@@ -160,8 +161,8 @@ class PlaybackPreparationTest {
         respond("""{"selected":{"part_id":90},"library_view_id":9,"view_item_id":602,
             "playback_context_token":"fixture-context","decision":"video_transcode",
             "selected_audio_stream_index":2,"transcode":{"mode":"video","max_height":720,"audio_stream_index":2}}""")
-        respond("""{"ticket":"fixture-transcode-ticket"}""")
-        respond("""{"ticket":"fixture-original-subtitle-ticket"}""")
+        metadata.enqueuePost("/playback/transcode-ticket/90", MockResponse().setBody("""{"ticket":"fixture-transcode-ticket"}"""))
+        metadata.enqueuePost("/stream-ticket/90", MockResponse().setBody("""{"ticket":"fixture-original-subtitle-ticket"}"""))
         respondMetadata("/subtitles/90", """[{"id":4,"source":"embedded","format":"ass","lang_code":"ko","playable":true,"stream_index":3}]""")
         progressError(422)
         val result = client.playback(item)
@@ -176,11 +177,9 @@ class PlaybackPreparationTest {
         assertEquals("external", subtitle.source)
         assertEquals("fixture-original-subtitle-ticket", subtitle.url.toHttpUrl().queryParameter("ticket"))
         assertEquals("fixture-context", subtitle.url.toHttpUrl().queryParameter("playback_context_token"))
-        assertEquals(listOf("/playback/decision", "/playback/transcode-ticket/90"),
-            List(2) { request().requestUrl!!.encodedPath })
-        val enrichment = List(3) { request().requestUrl!!.encodedPath }
-        assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"), enrichment.toSet())
-        assertTrue(enrichment.indexOf("/stream-ticket/90") < enrichment.indexOf("/subtitles/90"))
+        assertEquals("/playback/decision", request().requestUrl!!.encodedPath)
+        assertEquals(setOf("/playback/transcode-ticket/90", "/stream-ticket/90", "/subtitles/90", "/playback/progress"),
+            List(4) { request().requestUrl!!.encodedPath }.toSet())
     }
 
     @Test fun privatePreparationNeverDowngradesItsGrantForOptionalProgressFallback() = runBlocking {
@@ -227,8 +226,9 @@ class PlaybackPreparationTest {
             }
             try {
                 val observed = withContext(Dispatchers.IO) { List(4) { request() } }
-                assertEquals(setOf("/subtitles/90", "/playback/progress"),
-                    observed.drop(2).map { it.requestUrl!!.encodedPath }.toSet())
+                assertEquals("/playback/decision", observed.first().requestUrl!!.encodedPath)
+                assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"),
+                    observed.drop(1).map { it.requestUrl!!.encodedPath }.toSet())
                 preparing.cancelAndJoin()
                 cancellationObserved.await()
                 httpCancelled.await()

@@ -33,11 +33,11 @@ class EndResumePlaybackTest {
         val requests = List(4) {
             server.takeRequest(10, TimeUnit.SECONDS) ?: throw AssertionError("Missing preparation request")
         }
-        assertEquals(listOf("/playback/decision", "/stream-ticket/90"),
-            requests.take(2).map { it.requestUrl!!.encodedPath })
-        assertEquals(setOf("/subtitles/90", "/playback/progress"),
-            requests.drop(2).map { it.requestUrl!!.encodedPath }.toSet())
-        assertEquals(listOf("POST", "POST", "GET", "GET"), requests.map { it.method })
+        assertEquals("/playback/decision", requests.first().requestUrl!!.encodedPath)
+        assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"),
+            requests.drop(1).map { it.requestUrl!!.encodedPath }.toSet())
+        assertEquals(2, requests.count { it.method == "POST" })
+        assertEquals(2, requests.count { it.method == "GET" })
         val progress = requests.single { it.requestUrl!!.encodedPath == "/playback/progress" }
         assertEquals("24", progress.requestUrl!!.queryParameter("item_ids"))
         assertEquals("9", progress.requestUrl!!.queryParameter("library_view_id"))

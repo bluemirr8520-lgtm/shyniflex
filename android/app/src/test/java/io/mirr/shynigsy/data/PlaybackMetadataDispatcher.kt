@@ -10,19 +10,23 @@ internal class PlaybackMetadataDispatcher : QueueDispatcher() {
     private val metadata = mutableMapOf<String, java.util.ArrayDeque<Pending>>()
 
     @Synchronized fun enqueueMetadata(path: String, response: MockResponse) {
-        metadata.getOrPut(path) { java.util.ArrayDeque() }.addLast(Pending(response))
+        metadata.getOrPut("GET $path") { java.util.ArrayDeque() }.addLast(Pending(response))
+    }
+
+    @Synchronized fun enqueuePost(path: String, response: MockResponse) {
+        metadata.getOrPut("POST $path") { java.util.ArrayDeque() }.addLast(Pending(response))
     }
 
     @Synchronized fun enqueueTogether(firstPath: String, first: MockResponse, secondPath: String, second: MockResponse) {
         val barrier = java.util.concurrent.CountDownLatch(2)
-        metadata.getOrPut(firstPath) { java.util.ArrayDeque() }.addLast(Pending(first, barrier))
-        metadata.getOrPut(secondPath) { java.util.ArrayDeque() }.addLast(Pending(second, barrier))
+        metadata.getOrPut("GET $firstPath") { java.util.ArrayDeque() }.addLast(Pending(first, barrier))
+        metadata.getOrPut("GET $secondPath") { java.util.ArrayDeque() }.addLast(Pending(second, barrier))
     }
 
     override fun dispatch(request: RecordedRequest): MockResponse {
         val path = request.requestUrl?.encodedPath
         val pending = synchronized(this) {
-            if (request.method == "GET" && path != null) metadata[path]?.let { queue ->
+            if (path != null) metadata["${request.method} $path"]?.let { queue ->
                 queue.pollFirst() ?: Pending(MockResponse().setResponseCode(500)
                     .setBody("""{"detail":"Unexpected fixture metadata request"}"""))
             } else null

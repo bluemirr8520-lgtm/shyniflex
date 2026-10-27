@@ -350,6 +350,7 @@ fun ShyniApp(
                 viewModel.requestSpoilerUnlock()
             },
             onLockSpoiler = viewModel::lockSpoiler,
+            spoilerLibrariesLoading = state.spoilerLibrariesLoading,
         )
         if (state.spoilerPromptOpen && state.loggedIn) SpoilerPinDialog(
             busy = state.spoilerBusy, error = state.spoilerError,
@@ -590,6 +591,7 @@ internal fun LibraryPicker(
     onLockSpoiler: () -> Unit,
     television: Boolean = LocalContext.current.isTelevision(),
     modifier: Modifier = Modifier,
+    spoilerLibrariesLoading: Boolean = false,
 ) {
     val visibleLibraries = libraries.filter { spoilerUnlocked || !it.isSpoiler }
     if (!television) {
@@ -624,10 +626,14 @@ internal fun LibraryPicker(
                         Text(if (spoilerUnlocked) "스포일러 라이브러리 잠금" else "스포일러 라이브러리 열기")
                     }
                 }
-                if (spoilerBusy) item(key = "unlock-loading") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                if (spoilerBusy || spoilerLibrariesLoading) item(key = "unlock-loading") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
                 if (spoilerError != null) item(key = "unlock-error") { Text(spoilerError, color = MaterialTheme.colorScheme.error) }
                 if (visibleLibraries.isEmpty()) item(key = "empty") {
-                    EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
+                    EmptyMessage(when {
+                        spoilerLibrariesLoading -> "비공개 라이브러리를 불러오는 중입니다"
+                        busy -> "라이브러리를 불러오는 중입니다"
+                        else -> "표시할 라이브러리가 없습니다"
+                    })
                 }
                 items(visibleLibraries, key = { "library-${it.id}" }) { library ->
                     CompactMenuAction(onClick = { onSelect(library) }, selected = library.id == selectedLibraryId,
@@ -660,9 +666,13 @@ internal fun LibraryPicker(
                 Spacer(Modifier.width(8.dp))
                 Text(if (spoilerUnlocked) "스포일러 라이브러리 잠금" else "스포일러 라이브러리 열기")
             }
-            if (spoilerBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (spoilerBusy || spoilerLibrariesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (spoilerError != null) Text(spoilerError, color = MaterialTheme.colorScheme.error)
-            if (visibleLibraries.isEmpty()) EmptyMessage(if (busy) "라이브러리를 불러오는 중입니다" else "표시할 라이브러리가 없습니다")
+            if (visibleLibraries.isEmpty()) EmptyMessage(when {
+                spoilerLibrariesLoading -> "비공개 라이브러리를 불러오는 중입니다"
+                busy -> "라이브러리를 불러오는 중입니다"
+                else -> "표시할 라이브러리가 없습니다"
+            })
             else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(visibleLibraries, key = { it.id }) { library ->

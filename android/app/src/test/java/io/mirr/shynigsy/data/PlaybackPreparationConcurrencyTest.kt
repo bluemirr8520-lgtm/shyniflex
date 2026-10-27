@@ -61,16 +61,17 @@ class PlaybackPreparationConcurrencyTest {
         withTimeout(30_000) {
             for (converted in listOf(false, true)) {
                 val reads = CountDownLatch(2)
+                val decisionCount = AtomicInteger()
                 val ticketCount = AtomicInteger()
                 server.dispatcher = object : Dispatcher() {
                     override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl!!.encodedPath) {
-                        "/playback/decision" -> decision(converted)
+                        "/playback/decision" -> decision(converted).also { decisionCount.incrementAndGet() }
                         "/playback/transcode-ticket/90", "/stream-ticket/90" -> {
                             ticketCount.incrementAndGet()
                             json("""{"ticket":"fixture-ticket"}""")
                         }
                         subtitlePath, progressPath -> {
-                            assertTrue("Metadata must follow a scoped playback ticket", ticketCount.get() > 0)
+                            assertTrue("Metadata must follow the selected scoped decision", decisionCount.get() > 0)
                             if (request.requestUrl!!.encodedPath == subtitlePath) {
                                 assertEquals("fixture-context", request.requestUrl!!.queryParameter("playback_context_token"))
                             } else {

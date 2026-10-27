@@ -381,8 +381,8 @@ class ShyniClientTest {
         assertEquals("mobile", decision.getString("platform"))
         assertEquals("android", decision.getString("client_app"))
         assertFalse("Native automatic playback must not invent a transcode profile", decision.has("client_profile"))
-        assertEquals("part-context", server.takeRequest().requestUrl!!.queryParameter("playback_context_token"))
-        val enrichment = List(2) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        val enrichment = List(3) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        assertEquals("part-context", enrichment.getValue("/stream-ticket/90").requestUrl!!.queryParameter("playback_context_token"))
         assertEquals("part-context", enrichment.getValue("/subtitles/90").requestUrl!!.queryParameter("playback_context_token"))
         assertEquals("8", enrichment.getValue("/playback/progress").requestUrl!!.queryParameter("library_view_id"))
     }
@@ -472,8 +472,8 @@ class ShyniClientTest {
         assertEquals(91, decision.getInt("part_id"))
         assertFalse(decision.has("metadata_item_id"))
         assertEquals(501, decision.getInt("view_item_id"))
-        assertEquals("version-context", server.takeRequest().requestUrl!!.queryParameter("playback_context_token"))
-        val enrichment = List(2) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        val enrichment = List(3) { server.takeRequest() }.associateBy { it.requestUrl!!.encodedPath }
+        assertEquals("version-context", enrichment.getValue("/stream-ticket/91").requestUrl!!.queryParameter("playback_context_token"))
         assertEquals("version-context", enrichment.getValue("/subtitles/91").requestUrl!!.queryParameter("playback_context_token"))
         assertEquals("23", enrichment.getValue("/playback/progress").requestUrl!!.queryParameter("item_ids"))
         val progress = body()
@@ -591,8 +591,8 @@ class ShyniClientTest {
         for (mode in listOf("remux", "audio", "video")) {
             respond("""{"selected":{"part_id":90,"duration_sec":7200},"library_view_id":8,"view_item_id":501,
                 "playback_context_token":"context","transcode":{"mode":"$mode","max_height":720}}""")
-            respond("""{"ticket":"conversion-ticket"}""")
-            respond("""{"ticket":"subtitle-ticket"}""")
+            metadata.enqueuePost("/playback/transcode-ticket/90", MockResponse().setBody("""{"ticket":"conversion-ticket"}"""))
+            metadata.enqueuePost("/stream-ticket/90", MockResponse().setBody("""{"ticket":"subtitle-ticket"}"""))
             respondMetadata("/subtitles/90", """[{"id":4,"source":"embedded","format":"ass","stream_index":5,"playable":true}]""")
             respondMetadata("/playback/progress", "{}")
             val spec = client.playback(movie)
@@ -604,10 +604,8 @@ class ShyniClientTest {
             assertNull(spec.subtitles.single().streamIndex)
             assertEquals("subtitle-ticket", spec.subtitles.single().url.toHttpUrl().queryParameter("ticket"))
             server.takeRequest()
-            assertEquals("/playback/transcode-ticket/90", server.takeRequest().requestUrl!!.encodedPath)
-            val enrichment = List(3) { server.takeRequest().requestUrl!!.encodedPath }
-            assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"), enrichment.toSet())
-            assertTrue(enrichment.indexOf("/stream-ticket/90") < enrichment.indexOf("/subtitles/90"))
+            val enrichment = List(4) { server.takeRequest().requestUrl!!.encodedPath }
+            assertEquals(setOf("/playback/transcode-ticket/90", "/stream-ticket/90", "/subtitles/90", "/playback/progress"), enrichment.toSet())
         }
     }
 
@@ -997,9 +995,8 @@ class ShyniClientTest {
         assertEquals(9, decision.getInt("library_view_id"))
         assertEquals(601, decision.getInt("view_item_id"))
         assertFalse("A direct continue item must not pin an unrelated selected version", decision.has("part_id"))
-        assertEquals("/stream-ticket/90", server.takeRequest().requestUrl!!.encodedPath)
-        assertEquals(setOf("/subtitles/90", "/playback/progress"),
-            List(2) { server.takeRequest().requestUrl!!.encodedPath }.toSet())
+        assertEquals(setOf("/stream-ticket/90", "/subtitles/90", "/playback/progress"),
+            List(3) { server.takeRequest().requestUrl!!.encodedPath }.toSet())
         assertEquals("Continue playback needs no detail-navigation requests", 5, server.requestCount)
     }
 

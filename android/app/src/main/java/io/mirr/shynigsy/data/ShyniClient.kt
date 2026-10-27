@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.async
@@ -1464,48 +1465,57 @@ class ShyniClient(
         val mode = transcode?.stringOrNull("mode")
         val ticketPath = if (mode != null) "/playback/transcode-ticket/$selectedPart?$contextParameters&mode=${encode(mode)}"
             else "/stream-ticket/$selectedPart?$contextParameters"
-        val ticket = recovered?.first ?: stage("재생 티켓 발급") {
-            request(ticketPath, JSONObject(), spoiler = item.isSpoiler).objectValue()
-                .stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
-        }
-        val streamUrl = if (mode != null) {
-            val parameters = mutableListOf("ticket=${encode(ticket)}", "mode=${encode(mode)}")
-            transcode.intOrNull("max_height")?.let { parameters += "max_height=$it" }
-            if (!transcode.isNull("audio_stream_index")) parameters += "audio_stream_index=${transcode.optInt("audio_stream_index")}"
-            absoluteUrl("/transcode/$selectedPart?${parameters.joinToString("&")}")
-        } else absoluteUrl("/stream/$selectedPart?ticket=${encode(ticket)}")
-        // Both lookups depend on the authorized source, but not on each other.
-        // Keep them in the same scope so a failed preparation cancels its sibling HTTP call.
-        val (subs, progress) = coroutineScope {
-            val subtitles = async(Dispatchers.Default) {
-                val subtitleTicket = if (mode == null) ticket else {
-                    stage("자막 티켓 발급") {
-                        request("/stream-ticket/$selectedPart?$contextParameters", JSONObject(), spoiler = item.isSpoiler).objectValue()
-                            .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
-                    }
-                }
-                stage("자막 정보 조회") {
-                    rows(request("/subtitles/$selectedPart?$contextParameters", spoiler = item.isSpoiler), "subtitles")
-                        .mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
-                        .map { progressiveSubtitle(it, mode != null) }
+        // The decision authorizes these account/View-scoped reads independently of ticket issuance.
+        // Recovery has already validated its exact-file ticket before reaching this scope.
+        val (ticket, subs, progress) = withContext(Dispatchers.Default) { coroutineScope {
+            // Enqueue the mandatory media ticket first on this same dispatcher. Two slow metadata
+            // reads must not occupy both playback slots while their required ticket stays queued.
+            val mediaTicket = async(start = CoroutineStart.UNDISPATCHED) {
+                recovered?.first ?: stage("재생 티켓 발급") {
+                    request(ticketPath, JSONObject(), spoiler = item.isSpoiler).objectValue()
+                        .stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
                 }
             }
-            val playbackProgress = async(Dispatchers.Default) {
+            val originalSubtitleTicket = if (mode == null) mediaTicket else async(start = CoroutineStart.UNDISPATCHED) {
+                stage("자막 티켓 발급") {
+                    request("/stream-ticket/$selectedPart?$contextParameters", JSONObject(), spoiler = item.isSpoiler).objectValue()
+                        .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
+                }
+            }
+            val subtitleRows = async(start = CoroutineStart.UNDISPATCHED) {
+                stage("자막 정보 조회") {
+                    rows(request("/subtitles/$selectedPart?$contextParameters", spoiler = item.isSpoiler), "subtitles")
+                }
+            }
+            val playbackProgress = async(start = CoroutineStart.UNDISPATCHED) {
                 stage("이어보기 위치 조회") {
                     try {
                         progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler,
                             lane = ShyniRequestLane.PLAYBACK), item.id)
                     } catch (error: ApiException) {
-                        // Playback and its scoped ticket are already authorized. A broken
-                        // canonical progress identity must not discard that valid stream.
+                        // A selected decision (or recovered ticket) already authorizes this source.
+                        // A broken canonical progress identity must not discard its valid stream.
                         // Keep the card's resume/watch state when this optional lookup is unknown.
                         if (!error.isEpisodeIdentityFailure()) throw error
                         null
                     }
                 }
             }
-            subtitles.await() to playbackProgress.await()
-        }
+            val authorizedTicket = mediaTicket.await()
+            val subtitleTicket = originalSubtitleTicket.await()
+            val listedSubtitles = subtitleRows.await()
+            val subtitles = stage("자막 정보 조회") {
+                listedSubtitles.mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
+                    .map { progressiveSubtitle(it, mode != null) }
+            }
+            Triple(authorizedTicket, subtitles, playbackProgress.await())
+        } }
+        val streamUrl = if (mode != null) {
+            val parameters = mutableListOf("ticket=${encode(ticket)}", "mode=${encode(mode)}")
+            transcode.intOrNull("max_height")?.let { parameters += "max_height=$it" }
+            if (!transcode.isNull("audio_stream_index")) parameters += "audio_stream_index=${transcode.optInt("audio_stream_index")}"
+            absoluteUrl("/transcode/$selectedPart?${parameters.joinToString("&")}")
+        } else absoluteUrl("/stream/$selectedPart?ticket=${encode(ticket)}")
         stage("재생 권한 확인") { requireCurrentAuthorization() }
         val duration = selected?.optLong("duration_ms")?.takeIf { it > 0 }
             ?: selected?.optDouble("duration_sec", 0.0)?.times(1000)?.toLong()?.takeIf { it > 0 }

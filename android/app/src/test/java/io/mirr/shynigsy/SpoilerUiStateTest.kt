@@ -16,6 +16,7 @@ class SpoilerUiStateTest {
 
     @Test fun revocationRemovesEveryPrivateScreenAndPendingPlayback() {
         val state = AppState(loggedIn = true, spoilerUnlocked = true, spoilerPromptOpen = true, spoilerBusy = true,
+            spoilerLibrariesLoading = true,
             libraries = listOf(publicLibrary, privateLibrary), recentItems = listOf(publicItem, privateItem),
             continueItems = listOf(privateItem, publicItem), continueDetails = privateItem,
             library = privateLibrary, items = listOf(privateItem), total = 1, query = "private search",
@@ -25,6 +26,7 @@ class SpoilerUiStateTest {
         assertFalse(locked.spoilerUnlocked)
         assertFalse(locked.spoilerPromptOpen)
         assertFalse(locked.spoilerBusy)
+        assertFalse(locked.spoilerLibrariesLoading)
         assertFalse(locked.busy)
         assertEquals(listOf(publicLibrary), locked.libraries)
         assertEquals(listOf(publicItem), locked.recentItems)

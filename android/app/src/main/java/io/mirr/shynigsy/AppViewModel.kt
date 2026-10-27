@@ -58,6 +58,7 @@ data class AppState(
     val spoilerPinEnabled: Boolean = true,
     val spoilerUnlocked: Boolean = false,
     val spoilerBusy: Boolean = false,
+    val spoilerLibrariesLoading: Boolean = false,
     val spoilerPromptOpen: Boolean = false,
     val spoilerError: String? = null,
     val seriesCountRevision: Int = 0,
@@ -123,7 +124,8 @@ internal fun navigationQueryForPlayback(state: AppState, item: MediaItem): Strin
 /** Revocation removes private data while preserving an unrelated public browse session. */
 internal fun withoutSpoilerContent(state: AppState): AppState {
     val privateScreen = state.library?.isSpoiler == true || state.detailStack.any { it.item.isSpoiler }
-    return state.copy(spoilerUnlocked = false, spoilerBusy = false, spoilerPromptOpen = false, spoilerError = null,
+    return state.copy(spoilerUnlocked = false, spoilerBusy = false, spoilerLibrariesLoading = false,
+        spoilerPromptOpen = false, spoilerError = null,
         seriesCountRevision = state.seriesCountRevision + 1,
         libraries = state.libraries.filterNot { it.isSpoiler }, recentItems = state.recentItems.filterNot { it.isSpoiler },
         continueItems = state.continueItems.filterNot { it.isSpoiler },
@@ -447,6 +449,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun loadHome(active: ShyniClient, refreshUserName: Boolean = false,
         allowHomeInteraction: Boolean = true,
+        prioritizePrivateCatalog: Boolean = false,
         reconcile: (AppState) -> AppState = { it }) {
         val homeRevision = ++homeRefreshRevision
         val navigationRevision = revision
@@ -456,7 +459,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val previousContinue = mutableState.value.continueItems
         val previousRecent = mutableState.value.recentItems
         val previousOwnerMatches = continueOwner?.matches(active, homeAccountToken) == true
-        var ordinary: List<Library>? = null
+        val prioritizingPrivate = prioritizePrivateCatalog && active.spoilerUnlocked
+        // PIN entry already has a same-account public catalog. Reuse only those names so a
+        // fresh private catalog need not wait for an unrelated public refresh to be shown.
+        var ordinary: List<Library>? = if (prioritizingPrivate)
+            mutableState.value.libraries.filterNot { it.isSpoiler } else null
+        var publicLibrariesLoaded = false
         // Until its replacement arrives, known private Views still exclude public duplicates.
         var privateLibraries = mutableState.value.libraries.filter { it.isSpoiler && active.spoilerUnlocked }
         var publicContinue: HomeContinueLoad? = null
@@ -481,7 +489,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         catch (cancel: CancellationException) { throw cancel }
         catch (error: Exception) {
             if (error is ApiException && error.status == 401) throw error
-            if (canPublishHome() && active.spoilerUnlocked) mutableState.update {
+            if (canPublishHome() && active.spoilerUnlocked &&
+                grantRevision == SpoilerAccessRegistry.changes.value) mutableState.update {
                 it.copy(spoilerError = "비공개 목록을 불러오지 못했습니다. 새로고침해 주세요.")
             }
             fallback
@@ -493,7 +502,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         fun publishContinue() {
             val publicLoad = publicContinue ?: return
-            if (ordinary == null || !canPublishHome()) return
+            if (!publicLibrariesLoaded || ordinary == null || !canPublishHome()) return
             val unlocked = active.spoilerUnlocked
             val continueItems = resolveHomeContinueWatching(publicLoad,
                 privateContinue ?: HomeContinueLoad.Failure(transient = true), previousContinue,
@@ -516,7 +525,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         fun publishRecent() {
             val publicLoad = publicRecent ?: return
-            if (ordinary == null || !canPublishHome()) return
+            if (!publicLibrariesLoaded || ordinary == null || !canPublishHome()) return
             val retainedPrivate = if (previousOwnerMatches && grantRevision == SpoilerAccessRegistry.changes.value)
                 previousRecent.filter { it.isSpoiler } else emptyList()
             val rows = visibleContinueWatching(publicLoad.first, privateRecent ?: retainedPrivate,
@@ -533,12 +542,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             publishContinue()
             publishRecent()
         }
-        mutableState.update { it.copy(homeLoading = allowHomeInteraction, continueLoading = true, continueError = null, recentLoading = true) }
+        mutableState.update { it.copy(homeLoading = allowHomeInteraction, continueLoading = true,
+            continueError = null, recentLoading = true, spoilerLibrariesLoading = active.spoilerUnlocked) }
         try {
             coroutineScope {
+                // Enqueue the requested private names before public shelves occupy the catalog lane.
+                val priorityPrivate = if (prioritizingPrivate)
+                    startPriorityHomeCatalog { active.spoilerLibraries() } else null
                 val publicLibraries = async {
                     active.libraries().filterNot { it.isSpoiler }.also {
-                        if (canPublishHome()) { ordinary = it; publishLibraries() }
+                        if (canPublishHome()) {
+                            ordinary = it
+                            publicLibrariesLoaded = true
+                            publishLibraries()
+                        }
                     }
                 }
                 loadHomeSections(
@@ -595,8 +612,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                                 if (name != null && canPublishHome()) mutableState.update { it.copy(userName = name) }
                             }
-                            if (active.spoilerUnlocked) launch {
-                                privateLibraries = privateCatalog(emptyList()) { active.spoilerLibraries() }
+                            if (active.spoilerUnlocked) launch privateCatalogLoad@ {
+                                val loadedPrivateLibraries = privateCatalog(emptyList()) {
+                                    if (priorityPrivate != null) priorityPrivate.await().getOrThrow()
+                                    else active.spoilerLibraries()
+                                }
+                                if (!canPublishHome()) return@privateCatalogLoad
+                                mutableState.update { it.copy(spoilerLibrariesLoading = false) }
+                                // A late response from a replaced grant cannot populate the picker.
+                                if (grantRevision != SpoilerAccessRegistry.changes.value) return@privateCatalogLoad
+                                privateLibraries = loadedPrivateLibraries
                                 publishLibraries()
                                 if (privateLibraries.isEmpty()) {
                                     privateContinue = HomeContinueLoad.Success(emptyList())
@@ -646,7 +671,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             throw error
         } finally {
             if (active === client && homeRevision == homeRefreshRevision) mutableState.update {
-                it.copy(homeLoading = false, continueLoading = false, recentLoading = false)
+                it.copy(homeLoading = false, continueLoading = false, recentLoading = false,
+                    spoilerLibrariesLoading = false)
             }
         }
     }
@@ -679,7 +705,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 mutableState.update { it.copy(spoilerUnlocked = true, spoilerPromptOpen = false, spoilerBusy = false,
                     spoilerAvailable = status.available, spoilerPinEnabled = status.pinEnabled != false, busy = false) }
                 scheduleSpoilerExpiry(active)
-                loadHome(active)
+                loadHome(active, prioritizePrivateCatalog = true)
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) {

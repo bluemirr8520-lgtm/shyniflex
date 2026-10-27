@@ -72,12 +72,12 @@ class LibraryPickerStabilityTest {
         screen.runOnIdle {
             fixture.unlocked = true
             fixture.rows = publicRows + privateRows
-            fixture.spoilerBusy = true
+            fixture.catalogLoading = true
         }
         assertStableBounds(sheetBefore, SHEET)
         assertStableBounds(listBefore, LIST)
         assertStableBounds(anchorBefore, rowTag(anchor))
-        screen.runOnIdle { fixture.spoilerBusy = false; fixture.error = "합성 목록 갱신 안내" }
+        screen.runOnIdle { fixture.catalogLoading = false; fixture.error = "합성 목록 갱신 안내" }
         assertStableBounds(sheetBefore, SHEET)
         assertStableBounds(listBefore, LIST)
         assertStableBounds(anchorBefore, rowTag(anchor))
@@ -125,7 +125,8 @@ class LibraryPickerStabilityTest {
                             spoilerAvailable = true, spoilerUnlocked = fixture.unlocked,
                             spoilerBusy = fixture.spoilerBusy, spoilerError = fixture.error,
                             onUnlockSpoiler = {}, onLockSpoiler = {}, television = false,
-                            modifier = if (boundedLargeText) Modifier.heightIn(max = 260.dp) else Modifier)
+                            modifier = if (boundedLargeText) Modifier.heightIn(max = 260.dp) else Modifier,
+                            spoilerLibrariesLoading = fixture.catalogLoading)
                     }
                 }
             }
@@ -153,6 +154,7 @@ class LibraryPickerStabilityTest {
         var unlocked by mutableStateOf(unlocked)
         var open by mutableStateOf(true)
         var spoilerBusy by mutableStateOf(false)
+        var catalogLoading by mutableStateOf(false)
         var error by mutableStateOf<String?>(null)
         var dismissals = 0
         val selected = mutableListOf<Library>()
