@@ -29,10 +29,11 @@ class SpoilerClientTest {
         MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(text))
     private fun respondMetadata(path: String, text: String) =
         metadata.enqueueMetadata(path, MockResponse().setBody(text))
-    private suspend fun unlock() {
+    private suspend fun unlock(pin: String = "1234") {
         respond("""{"token":"spc_private-grant","expires_in":1800}""")
-        client.unlockSpoiler("1234")
-        server.takeRequest()
+        client.unlockSpoiler(pin)
+        val request = server.takeRequest()
+        assertEquals(pin, org.json.JSONObject(request.body.readUtf8()).getString("pin"))
     }
 
     @Test fun nativePinGrantIsMemoryOnlyAndBoundToServerAccountAndDevice() = runBlocking {
@@ -238,8 +239,11 @@ class SpoilerClientTest {
     }
 
     @Test fun foregroundReauthenticationRotatesGrantContextAndTicketsWithoutChangingDelivery() = runBlocking {
+        // A short numeric PIN can occur in an unrelated random UUID or loopback port.
+        // This permitted synthetic PIN keeps the whole-payload privacy assertion unambiguous.
+        val pin = "qa-pin-731905"
         for (mode in listOf(null, "audio", "remux", "video", "music")) {
-            unlock()
+            unlock(pin)
             val current = privateCurrent(mode)
             respondFreshPlayback(mode)
             // The player client shares this installation/account's memory-only PIN.
@@ -247,7 +251,7 @@ class SpoilerClientTest {
             val refreshed = player.reauthenticateSpoilerPlayback(current, 45_000, 5)
             val requests = List(if (mode == null) 4 else 5) { server.takeRequest(2, TimeUnit.SECONDS)!! }
             assertEquals("/spoiler/client/unlock", requests.first().path)
-            assertEquals("1234", org.json.JSONObject(requests.first().body.readUtf8()).getString("pin"))
+            assertEquals(pin, org.json.JSONObject(requests.first().body.readUtf8()).getString("pin"))
             assertNull(requests.first().getHeader("X-Shyni-Spoiler"))
             requests.drop(1).forEach {
                 assertEquals("spc_rotated-grant", it.getHeader("X-Shyni-Spoiler"))
@@ -279,7 +283,7 @@ class SpoilerClientTest {
             assertTrue(refreshed.subtitles.single().url.contains("fresh-context"))
             assertFalse(refreshed.toJson().contains("old-ticket"))
             assertFalse(refreshed.toJson().contains("old-context"))
-            assertFalse(refreshed.toJson().contains("1234"))
+            assertFalse(refreshed.toJson().contains(pin))
             assertFalse(refreshed.toJson().contains("spc_"))
             assertTrue(player.spoilerUnlocked)
             assertFalse(player.spoilerPlaybackReauthenticationFailed)
