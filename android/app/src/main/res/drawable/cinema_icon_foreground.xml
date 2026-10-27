@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <inset xmlns:android="http://schemas.android.com/apk/res/android"
-    android:insetLeft="12%" android:insetTop="12%"
-    android:insetRight="12%" android:insetBottom="12%">
+    android:insetLeft="20%" android:insetTop="20%"
+    android:insetRight="20%" android:insetBottom="20%">
     <bitmap android:src="@drawable/cloud_play_art" android:gravity="fill" android:filter="true" />
 </inset>
