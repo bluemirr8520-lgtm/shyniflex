@@ -379,7 +379,7 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.setControllerAutoShow(false)
         playerView.setControllerHideOnTouch(false)
         playerView.hideController()
-        playerView.findViewById<TextView>(R.id.player_title).text = spec.title
+        playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
         playerView.findViewById<Button>(R.id.player_back).setOnClickListener { leavePlayer() }
         playerView.findViewById<ImageButton>(R.id.player_settings).setOnClickListener { showSettings() }
         playerView.findViewById<ImageButton>(R.id.player_resize).setOnClickListener { cycleResizeMode() }
@@ -1698,7 +1698,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val sameSource = refreshed.itemId == previous.spec.itemId && refreshed.partId == previous.spec.partId &&
             refreshed.libraryId == previous.spec.libraryId && refreshed.viewItemId == previous.spec.viewItemId
         lastDuration = maxOf(0L, refreshed.durationMs, if (sameSource) previous.duration else 0L)
-        playerView.findViewById<TextView>(R.id.player_title).text = spec.title
+        playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
         externalSubtitleId = subtitle?.takeUnless { it.isEmbedded }?.id
         embeddedServerSubtitleId = subtitle?.takeIf { it.isEmbedded }?.id
         pendingAudioPreference = previous.audio; pendingTextPreference = nativeText
@@ -1728,7 +1728,7 @@ class NativePlayerActivity : AppCompatActivity() {
             } catch (_: kotlinx.coroutines.CancellationException) {
             } catch (_: Exception) {
                 spec = previous.spec; lastPosition = previous.position; lastDuration = previous.duration
-                playerView.findViewById<TextView>(R.id.player_title).text = spec.title
+                playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
                 clearExternalSubtitle()
                 externalSubtitleId = previous.subtitle?.takeUnless { it.isEmbedded }?.id
                 embeddedServerSubtitleId = previous.subtitle?.takeIf { it.isEmbedded }?.id

@@ -433,7 +433,16 @@ class ShyniClient(
                     val parsed = rows(request("/libraries/$libraryId/shows/$showId/episodes",
                         responseLimit = 16L * 1024 * 1024, spoiler = privateCatalog), "items", "episodes")
                         .asSequence().filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
-                        .take(10_000).map { parseMedia(it, libraryId, "episode") }.toList()
+                        .take(10_000).map { row ->
+                            parseMedia(row, libraryId, "episode").let { episode ->
+                                val sameShow = episodeShowBindingClear && episode.type == "episode" &&
+                                    (row.isNull("library_view_id") || row.exactPositiveInt("library_view_id") == libraryId) &&
+                                    (episode.showId == null || episode.showId == showId) &&
+                                    (episode.viewItemId == null || episode.viewItemId == current.viewItemId) &&
+                                    (episode.isSpoiler || privateCatalog) == current.isSpoiler
+                                episode.copy(showTitle = episode.showTitle ?: current.showTitle.takeIf { sameShow })
+                            }
+                        }.toList()
                     // Keep positive privacy and explicit show/View evidence for the
                     // stricter credits shortcut; generic file navigation stays unchanged.
                     episodeEntries = parsed.filter { it.showId == null || it.showId == showId }
@@ -908,7 +917,9 @@ class ShyniClient(
                 item
             }
             val children = rows(request("/libraries/${item.libraryId}/shows/${item.id}/seasons?platform=mobile", spoiler = item.isSpoiler))
-                .map { parseMedia(it, item.libraryId, "season").copy(showId = item.id, isSpoiler = item.isSpoiler) }
+                .map { parseMedia(it, item.libraryId, "season").let { season ->
+                    season.copy(showId = item.id, showTitle = season.showTitle ?: fresh.title, isSpoiler = item.isSpoiler)
+                } }
             MediaDetails(fresh, children, castMembers = cast)
         }
         "season" -> {
@@ -917,7 +928,9 @@ class ShyniClient(
             var offset = 0
             do {
                 val batch = rows(request("/libraries/${item.libraryId}/shows/$showId/seasons/${item.id}/episodes?limit=100&offset=$offset", spoiler = item.isSpoiler))
-                    .map { parseMedia(it, item.libraryId, "episode").copy(showId = showId, isSpoiler = item.isSpoiler) }
+                    .map { parseMedia(it, item.libraryId, "episode").let { episode ->
+                        episode.copy(showId = showId, showTitle = episode.showTitle ?: item.showTitle, isSpoiler = item.isSpoiler)
+                    } }
                 episodes.addAll(batch)
                 offset += batch.size
             } while (batch.size == 100)

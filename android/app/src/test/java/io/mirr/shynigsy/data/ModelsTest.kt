@@ -6,13 +6,21 @@ import org.junit.Test
 
 class ModelsTest {
     @Test fun intentRoundtripPreservesScopedPlaybackIdentityAndSubtitles() {
+        val source = MediaItem(10, 3, "회차 제목", "episode", viewItemId = 501, showId = 2,
+            showTitle = "  작품 제목  ")
         val spec = PlaybackSpec("작품", "https://server/stream/8?ticket=temporary", emptyMap(),
             10, 3, 8, 23000, 3600000,
             listOf(SubtitleTrack(6, "한국어", "https://server/subtitles/track/6.vtt?ticket=temporary")),
             "session", "context", 501, "direct_play", selectedAudioStreamIndex = 0,
             selectedAudioStreamOrdinal = 0, selectedAudioLanguage = "ko", requestedPartId = 8,
-            conversionHeight = 720, streamStartPositionMs = 23000)
-        assertEquals(spec, PlaybackSpec.fromJson(spec.toJson()))
+            conversionHeight = 720, streamStartPositionMs = 23000, sourceItem = source)
+        val restored = PlaybackSpec.fromJson(spec.toJson())
+        assertEquals(spec, restored)
+        assertEquals("작품 제목", restored.controllerTitle)
+        assertEquals("회차 제목", restored.sourceItem!!.title)
+        assertEquals("작품", restored.copy(sourceItem = source.copy(showTitle = "  ")).controllerTitle)
+        assertEquals("영화 제목", restored.copy(title = "영화 제목",
+            sourceItem = source.copy(type = "movie", title = "영화 제목", showTitle = "다른 시리즈")).controllerTitle)
     }
 
     @Test fun subtitleOriginalAndConversionFallbackSurviveIntentRoundtrip() {
@@ -61,6 +69,7 @@ class ModelsTest {
         assertEquals(0L, spec.streamStartPositionMs)
         assertNull(spec.sourceItem)
         assertEquals("", spec.navigationQuery)
+        assertEquals("작품", spec.controllerTitle)
     }
 
     @Test fun mediaItemRoundtripPreservesSpecialSeasonZeroAndResume() {

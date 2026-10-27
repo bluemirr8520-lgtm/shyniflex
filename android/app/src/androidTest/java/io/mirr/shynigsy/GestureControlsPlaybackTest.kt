@@ -29,6 +29,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.mirr.shynigsy.data.PlaybackSpec
+import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.PlaybackMarker
 import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.data.SubtitleTrack
@@ -361,7 +362,12 @@ class GestureControlsPlaybackTest {
         }
     }
 
-    @Test fun skipGesturesKeepControlsHiddenAndOnlySingleTapShowsThem() = withFixture(false) { scenario ->
+    @Test fun skipGesturesKeepControlsHiddenAndOnlySingleTapShowsThem() = withFixture(false,
+        sourceItem = MediaItem(1, 1, "제스처 회귀 검사", "episode", viewItemId = 1,
+            showTitle = "합성 작품 제목")) { scenario ->
+        fun assertTitleHidden() = scenario.onActivity { activity ->
+            assertFalse("The work title follows the hidden controller", activity.findViewById<View>(R.id.player_title).isShown)
+        }
         var view: PlayerView? = null
         var gesture: Media3GestureView? = null
         waitFor(scenario, "paused video ready with initially hidden controls") { activity ->
@@ -374,6 +380,7 @@ class GestureControlsPlaybackTest {
         }
         Thread.sleep(350)
         assertHidden(scenario, "Paused startup must not show the bottom icons")
+        assertTitleHidden()
         val overlay = requireNotNull(gesture)
         val nativeView = requireNotNull(view)
 
@@ -383,6 +390,7 @@ class GestureControlsPlaybackTest {
         }
         Thread.sleep(350)
         assertHidden(scenario, "Double-tap skip must not reveal controls")
+        assertTitleHidden()
         scenario.onActivity { assertFalse("A paused double-tap skip stays paused", nativeView.player!!.playWhenReady) }
 
         drag(overlay, .2f, .5f, .45f)
@@ -391,14 +399,21 @@ class GestureControlsPlaybackTest {
         }
         Thread.sleep(350)
         assertHidden(scenario, "Swipe skip must not reveal controls when playback remains paused")
+        assertTitleHidden()
 
         tap(overlay, .5f, .45f)
         waitFor(scenario, "single tap reveals controls and lock affordance") {
             nativeView.isControllerFullyVisible && it.findViewById<View>(R.id.player_lock).isShown
         }
         assertLocalNavigationVisibleAndDisabled(scenario)
+        scenario.onActivity { activity ->
+            val title = activity.findViewById<TextView>(R.id.player_title)
+            assertTrue("A single tap reveals the upper work title", title.isShown)
+            assertEquals("The header must show the work rather than its episode title", "합성 작품 제목", title.text.toString())
+        }
         drag(overlay, .6f, .25f, .45f) {
             assertFalse("A skip gesture hides controls while the finger is still down", nativeView.isControllerFullyVisible)
+            assertFalse("A skip gesture also hides the work title", nativeView.findViewById<View>(R.id.player_title).isShown)
             assertFalse("A skip gesture also hides the lock button while the finger is still down",
                 nativeView.rootView.findViewById<View>(R.id.player_lock).isShown)
             assertFalse("A skip gesture immediately hides subtitle selection",
@@ -409,12 +424,14 @@ class GestureControlsPlaybackTest {
         waitFor(scenario, "second swipe settles") { !overlay.isSeekGestureActive }
         Thread.sleep(350)
         assertHidden(scenario, "Completing the drag must not automatically restore the controls")
+        assertTitleHidden()
         scenario.onActivity { nativeView.player!!.play() }
         waitFor(scenario, "playback starts before checking skip restoration") { nativeView.player?.isPlaying == true }
         drag(overlay, .25f, .4f, .45f)
         waitFor(scenario, "playing drag restores playback") { !overlay.isSeekGestureActive && nativeView.player?.playWhenReady == true }
         Thread.sleep(350)
         assertHidden(scenario, "Restoring playback after a skip must keep controls hidden")
+        assertTitleHidden()
         scenario.onActivity { nativeView.player!!.pause() }
     }
 
@@ -596,6 +613,7 @@ class GestureControlsPlaybackTest {
     }
 
     private fun withFixture(subtitles: Boolean, markers: List<PlaybackMarker> = emptyList(), invalidMedia: Boolean = false,
+        sourceItem: MediaItem? = null,
         block: (ActivityScenario<NativePlayerActivity>) -> Unit) {
         val context = instrumentation.targetContext
         assertTrue("Instrumentation must target an isolated debug app",
@@ -625,7 +643,7 @@ class GestureControlsPlaybackTest {
                 durationMs = 6_000, selectedSubtitleId = if (subtitles) 7 else null,
                 subtitles = if (subtitles) listOf(SubtitleTrack(id = 7, label = "한국어", url = "$server/must-not-fetch",
                     mimeType = "application/x-subrip", source = "embedded", language = "kor", streamIndex = 2)) else emptyList(),
-                markers = markers)
+                markers = markers, sourceItem = sourceItem)
             val intent = Intent(context, NativePlayerActivity::class.java).putExtra("server", server).putExtra("spec", spec.toJson())
             ActivityScenario.launchActivityForResult<NativePlayerActivity>(intent).use { scenario ->
                 scenario.onActivity { it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }

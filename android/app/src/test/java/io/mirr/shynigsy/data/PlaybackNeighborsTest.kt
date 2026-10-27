@@ -106,7 +106,7 @@ class PlaybackNeighborsTest {
             {"id":24,"season_number":1,"episode_number":1},
             {"id":25,"season_number":1,"episode_number":2}]"""
         responses["/libraries/9/media_info/item/25"] = info(25, 95, "/fixture/series/episode-next.mp4")
-        val adjacent = client.playbackNeighbors(spec(episode()))
+        val adjacent = client.playbackNeighbors(spec(episode().copy(showTitle = "현재 작품명")))
         assertEquals(89, adjacent.previous!!.navigationPartId)
         assertEquals(91, adjacent.next!!.navigationPartId)
         assertEquals(25, adjacent.nextEpisode!!.id)
@@ -114,6 +114,11 @@ class PlaybackNeighborsTest {
         assertEquals(95, adjacent.nextEpisode!!.playbackPartId)
         assertEquals(5, adjacent.nextEpisode!!.showId)
         assertEquals(601, adjacent.nextEpisode!!.viewItemId)
+        assertEquals("현재 작품명", adjacent.nextEpisode!!.showTitle)
+        val restored = PlaybackSpec.fromJson(spec(adjacent.nextEpisode!!).toJson())
+        assertEquals("현재 작품명", restored.controllerTitle)
+        assertEquals(25, restored.itemId)
+        assertEquals(95, restored.sourceItem!!.navigationPartId)
         assertEquals(adjacent.next!!.folderKey, adjacent.nextEpisode!!.folderKey)
         assertFalse(adjacent.nextEpisode!!.toJson().contains("/fixture/series"))
         assertEquals(3, server.requestCount)
@@ -123,11 +128,14 @@ class PlaybackNeighborsTest {
         responses["/libraries/9/media_info/90"] = info(23, 90, "/fixture/series/current.mp4")
         responses["/libraries/9/shows/5/episodes"] = """[
             {"id":23,"season_number":1,"episode_number":1},
-            {"id":25,"season_number":1,"episode_number":2}]"""
+            {"id":25,"title":"다음 회차 제목","show_title":"명시된 작품명","season_number":1,"episode_number":2}]"""
         responses["/libraries/9/media_info/item/25"] = info(25, 95, "/fixture/series/next.mp4")
-        val adjacent = client.playbackNeighbors(spec(episode()))
+        val adjacent = client.playbackNeighbors(spec(episode().copy(showTitle = "현재 작품명")))
         assertEquals(adjacent.next, adjacent.nextEpisode)
         assertEquals(95, adjacent.nextEpisode!!.navigationPartId)
+        assertEquals("명시된 작품명", adjacent.nextEpisode!!.showTitle)
+        assertEquals("다음 회차 제목", adjacent.nextEpisode!!.title)
+        assertEquals("명시된 작품명", spec(adjacent.nextEpisode!!).controllerTitle)
         assertEquals(3, server.requestCount)
     }
 

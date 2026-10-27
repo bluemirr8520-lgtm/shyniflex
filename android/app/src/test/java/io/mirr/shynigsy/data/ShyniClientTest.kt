@@ -321,31 +321,39 @@ class ShyniClientTest {
 
     @Test fun showDetailsPreserveSpecialSeasonZeroAndShowIdentity() = runBlocking {
         respond("""{"id":5,"title":"Show","view_item_id":50}""")
-        respond("""[{"id":7,"index_":0,"title":"스페셜","view_item_id":70},{"id":8,"season_number":1,"title":"시즌 1","view_item_id":80}]""")
+        respond("""[{"id":7,"index_":0,"title":"스페셜","view_item_id":70},
+            {"id":8,"season_number":1,"title":"시즌 1","show_title":"서버가 지정한 작품명","view_item_id":80}]""")
         val details = client.details(MediaItem(5, 9, "Old title", "show", viewItemId = 50))
         assertEquals("Show", details.item.title)
         assertEquals(0, details.children[0].seasonNumber)
         assertEquals(5, details.children[0].showId)
+        assertEquals("Show", details.children[0].showTitle)
         assertEquals("season", details.children[1].type)
+        assertEquals("서버가 지정한 작품명", details.children[1].showTitle)
         assertEquals("/libraries/9/shows/5", server.takeRequest().path)
         assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
     }
 
     @Test fun seasonEpisodePaginationUsesServerOffset() = runBlocking {
         respond(JSONArray((1..100).map { JSONObject().put("id", it).put("title", "회차 $it").put("view_item_id", 1000 + it) }).toString())
-        respond("""[{"id":101,"title":"마지막","view_item_id":1101}]""")
+        respond("""[{"id":101,"title":"마지막","show_title":"서버 회차 작품명","view_item_id":1101}]""")
         respond("""{"items":[{"metadata_item_id":7,"completed":true,"position_ms":9900}]}""")
         respond("{}")
-        val details = client.details(MediaItem(7, 9, "시즌 1", "season", showId = 5))
+        val details = client.details(MediaItem(7, 9, "시즌 1", "season", showId = 5, showTitle = "부모 작품명"))
         assertEquals(101, details.children.size)
         assertEquals(5, details.children.last().showId)
         assertEquals("episode", details.children.last().type)
+        assertEquals("부모 작품명", details.children.first().showTitle)
+        assertEquals("부모 작품명", details.children[99].showTitle)
+        assertEquals("서버 회차 작품명", details.children.last().showTitle)
+        assertEquals("마지막", details.children.last().title)
         assertTrue(details.children[6].watched)
         assertFalse(details.children.last().watched)
         assertEquals("0", server.takeRequest().requestUrl!!.queryParameter("offset"))
         assertEquals("100", server.takeRequest().requestUrl!!.queryParameter("offset"))
         assertEquals((1..100).joinToString(","), server.takeRequest().requestUrl!!.queryParameter("item_ids"))
         assertEquals("101", server.takeRequest().requestUrl!!.queryParameter("item_ids"))
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun playbackCarriesViewContextAndUsesOnlyScopedTicketInPlayer() = runBlocking {

@@ -189,6 +189,11 @@ data class PlaybackSpec(
     /** This exact context was negotiated for AAC output; it is never a server permission. */
     val aacConversionContext: Boolean = false,
 ) {
+    /** Show the work name in playback controls while keeping the episode's own metadata intact. */
+    val controllerTitle: String
+        get() = sourceItem?.takeIf { it.type == "episode" }?.showTitle?.trim()
+            ?.takeIf { it.isNotEmpty() } ?: title
+
     /** Automatic audio/remux conversion uses the same offset/reopen transport as video conversion. */
     val isServerConversion: Boolean
         get() {
