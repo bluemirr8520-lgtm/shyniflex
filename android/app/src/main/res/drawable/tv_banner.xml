@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:width="320dp" android:height="180dp" android:drawable="@color/cinema_icon_background" />
-    <item android:width="180dp" android:height="180dp" android:gravity="center">
-        <bitmap android:src="@drawable/cloud_play_art" android:gravity="fill" android:filter="true" />
+    <item android:width="320dp" android:height="180dp" android:gravity="fill" android:drawable="@color/cinema_icon_background" />
+    <item android:width="320dp" android:height="180dp" android:gravity="fill">
+        <inset android:insetLeft="21.875%" android:insetRight="21.875%">
+            <bitmap android:src="@drawable/cloud_play_art" android:gravity="fill" android:filter="true" />
+        </inset>
     </item>
 </layer-list>
