@@ -1198,7 +1198,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         continueDetailsJob = null
         continueDetailsRevision++
         launchRequest {
-            val resolved = active.playback(item, partId)
+            val resolved = active.playback(item, partId, deferSubtitles = true)
             val playback = resolved.copy(sourceItem = resolved.sourceItem ?: item, navigationQuery = navigationQuery)
             mutableState.update { it.copy(playback = if (startOver) playback.copy(resumeMs = 0) else playback) }
         }

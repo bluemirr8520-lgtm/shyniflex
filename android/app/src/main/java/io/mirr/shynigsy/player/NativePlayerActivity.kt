@@ -101,6 +101,11 @@ class NativePlayerActivity : AppCompatActivity() {
     private lateinit var subtitleOverlay: PlexSubtitleOverlayView
     private var subtitleTimeline: SubtitleTimeline? = null
     private var subtitleJob: Job? = null
+    private var subtitleListJob: Job? = null
+    private var subtitleListFailed = false
+    private var subtitleManuallySelected = false
+    private var deferredSubtitlePreference: SubtitleTrack? = null
+    private var playbackFirstFrameReported = false
     private var subtitleDialog: AlertDialog? = null
     private var tvSubtitlePositionDialog: TvSubtitlePositionDialog? = null
     private var subtitleSelectionRevision = 0
@@ -155,7 +160,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var watchedMs = 0L
     private var watchingSince: Long? = null
     private var lastSyncAt = 0L
-    private var syncErrorShown = false
+    private var syncErrorShown: String? = null
     private var pendingSeek: Long? = null
     private var subtitleDragOrigin: PlexSubtitleAppearance? = null
     private var subtitleDragBounds: SubtitleDragBounds? = null
@@ -264,6 +269,7 @@ class NativePlayerActivity : AppCompatActivity() {
             .takeIf { it in resizeModes } ?: AspectRatioFrameLayout.RESIZE_MODE_FIT
         resizeScale = settings.getFloat("resize_scale", 1f).takeIf { it in setOf(1f, 1.1f, 1.25f, 1.5f) } ?: 1f
         subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", true) ?: true
+        subtitleManuallySelected = savedInstanceState?.getBoolean("subtitleManuallySelected", false) ?: false
         externalSubtitleId = if (savedInstanceState != null) savedInstanceState.getInt("externalSubtitle", -1).takeIf { it >= 0 }
             else preferredSubtitle(spec)?.id
         embeddedServerSubtitleId = savedInstanceState?.getInt("embeddedSubtitle", -1)?.takeIf { it >= 0 }
@@ -293,6 +299,12 @@ class NativePlayerActivity : AppCompatActivity() {
                         if (update.thresholdAttempt) watchedQueued.remove(key)
                         continue
                     }
+                    var positionFailed = false
+                    var completionFailed = false
+                    fun logProgressFailure(stage: PlaybackProgressFailureStage, error: Exception) {
+                        val failure = playbackProgressFailure(stage, error)
+                        Log.w("ShyniFlixProgress", "stage=${failure.stage.name} status=${failure.httpStatus ?: "none"} type=${failure.exceptionType}")
+                    }
                     val delivery = progressScope.async(start = CoroutineStart.LAZY) {
                         deliverPlaybackProgress(update.acknowledgement, onSaved = {
                             if (playbackAuthentication.isCurrent(update.authenticationEpoch) &&
@@ -309,7 +321,9 @@ class NativePlayerActivity : AppCompatActivity() {
                                     PlaybackCompletionSignals.notifyChanged()
                             } catch (cancel: kotlinx.coroutines.CancellationException) {
                                 throw cancel
-                            } catch (_: Exception) {
+                            } catch (error: Exception) {
+                                positionFailed = true
+                                logProgressFailure(PlaybackProgressFailureStage.POSITION, error)
                                 committed = false
                             }
                             if (update.completionEligible) {
@@ -322,7 +336,9 @@ class NativePlayerActivity : AppCompatActivity() {
                                         PlaybackCompletionSignals.notifyChanged()
                                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                                     throw cancel
-                                } catch (_: Exception) {
+                                } catch (error: Exception) {
+                                    completionFailed = true
+                                    logProgressFailure(PlaybackProgressFailureStage.COMPLETION, error)
                                     if (playbackAuthentication.isCurrent(update.authenticationEpoch)) watchedConfirmed.remove(key)
                                     committed = false
                                 }
@@ -344,12 +360,15 @@ class NativePlayerActivity : AppCompatActivity() {
                         if (update.thresholdAttempt) watchedQueued.remove(key)
                     }
                     if (!playbackAuthentication.isCurrent(update.authenticationEpoch)) continue
-                    if (saved) syncErrorShown = false
-                    else if (!syncErrorShown) {
-                        syncErrorShown = true
-                        runOnUiThread {
-                            if (!isDestroyed && !exiting && playbackAuthentication.isCurrent(update.authenticationEpoch))
-                                toast("시청 상태를 서버에 저장하지 못했습니다.")
+                    if (saved) syncErrorShown = null
+                    else {
+                        val message = playbackProgressFailureMessage(positionFailed, completionFailed)
+                        if (syncErrorShown != message) {
+                            syncErrorShown = message
+                            runOnUiThread {
+                                if (!isDestroyed && !exiting && playbackAuthentication.isCurrent(update.authenticationEpoch))
+                                    toast(message)
+                            }
                         }
                     }
                 }
@@ -787,6 +806,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun preparePlayback(autoStart: Boolean) {
         prepared = false
         releasePlayer()
+        playbackFirstFrameReported = false
         playerView.visibility = View.VISIBLE
         errorPanel.getChildAt(1).apply { visibility = View.VISIBLE; isEnabled = true }
         completionGate().seek(lastPosition)
@@ -843,6 +863,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     resolvePendingEmbeddedSubtitle()
                     restorePendingTextPreference()
                     if (created.duration != C.TIME_UNSET && created.duration > 0) preserveFullDuration(created.duration)
+                    if (playbackFirstFrameReported && !subtitleListFailed) loadDeferredSubtitles(created)
                     refreshPlaybackMetadata(created)
                 } else if (state == Player.STATE_ENDED && !exiting && !refreshing) {
                     handler.post {
@@ -857,6 +878,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (!isPlaying) capturePosition()
                 settleWatchTime(visible && isPlaying)
                 if (prepared && !isPlaying && !gestures.isSeekGestureActive && !refreshing && !exiting) enqueueProgress("paused")
+                if (isPlaying && playbackFirstFrameReported && !subtitleListFailed) loadDeferredSubtitles(created)
                 refreshSegmentActions()
             }
             override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) {
@@ -881,11 +903,15 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
             }
             override fun onRenderedFirstFrame() {
-                if (player !== created || conversionRestore == null) return
-                conversionRestore = null
-                conversionLoading = false
-                handler.removeCallbacks(conversionTimeout)
-                updatePlaybackButtons()
+                if (player !== created) return
+                playbackFirstFrameReported = true
+                if (conversionRestore != null) {
+                    conversionRestore = null
+                    conversionLoading = false
+                    handler.removeCallbacks(conversionTimeout)
+                    updatePlaybackButtons()
+                }
+                if (!subtitleListFailed) loadDeferredSubtitles(created)
             }
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                 if (player !== created) return
@@ -941,7 +967,7 @@ class NativePlayerActivity : AppCompatActivity() {
         }
     }
 
-    private data class TrackChoice(val label: String, val selected: Boolean, val apply: () -> Unit)
+    private data class TrackChoice(val label: String, val selected: Boolean, val changesSelection: Boolean = true, val apply: () -> Unit)
 
     private fun applyControlHighlight(view: View) {
         view.background = getDrawable(R.drawable.tv_player_button)
@@ -1139,6 +1165,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val active = player ?: return
         if (type == C.TRACK_TYPE_TEXT && (exiting || refreshing || navigationLoading || conversionLoading ||
                 playerGestureActive || gestures.locked || closeLockedSpoilerPlayback())) return
+        if (type == C.TRACK_TYPE_TEXT && spec.subtitlesPending && !subtitleListFailed) loadDeferredSubtitles(active)
         val choices = mutableListOf<TrackChoice>()
         val nativeText = if (type == C.TRACK_TYPE_TEXT) active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }.flatMap { group ->
             (0 until group.length).filter { group.isTrackSupported(it) }.map { group to it }
@@ -1155,6 +1182,7 @@ class NativePlayerActivity : AppCompatActivity() {
             .mapNotNull { (group, index) -> group.getTrackFormat(index).id }.toSet()
         if (type == C.TRACK_TYPE_TEXT) {
             choices += TrackChoice("자막 끄기", !subtitlesEnabled) {
+                subtitleManuallySelected = true
                 subtitlesEnabled = false; clearExternalSubtitle()
                 active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setTrackTypeDisabled(type, true).build()
                 playerView.subtitleView?.visibility = View.GONE
@@ -1165,7 +1193,14 @@ class NativePlayerActivity : AppCompatActivity() {
                     (selectedId == null && aliases[track.id]?.let { it in selectedNativeIds } == true))
                 choices += TrackChoice(subtitleMenuLabel(track.label, track.language, track.format ?: track.mimeType,
                     if (track.isEmbedded) "서버 내장" else "서버 외부", track.forced == true, track.sdh == true), selected) {
+                    subtitleManuallySelected = true
                     selectServerSubtitle(track)
+                }
+            }
+            if (spec.subtitlesPending) {
+                choices += TrackChoice(if (subtitleListFailed) "서버 자막 다시 불러오기" else "서버 자막 불러오는 중", false, changesSelection = false) {
+                    if (subtitleListFailed) loadDeferredSubtitles(active)
+                    else toast("서버 자막을 불러오고 있습니다.")
                 }
             }
         }
@@ -1186,6 +1221,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 choices += TrackChoice(label, group.isTrackSelected(index) && (type != C.TRACK_TYPE_TEXT ||
                     (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null))) {
                     if (type == C.TRACK_TYPE_TEXT) {
+                        subtitleManuallySelected = true
                         subtitlesEnabled = true; externalSubtitleId = null; clearExternalSubtitle()
                         playerView.subtitleView?.setCues(emptyList())
                         playerView.subtitleView?.visibility = View.VISIBLE
@@ -1202,7 +1238,7 @@ class NativePlayerActivity : AppCompatActivity() {
             if (player === active && !exiting && (type != C.TRACK_TYPE_TEXT ||
                     (!gestures.locked && !playerGestureActive && !refreshing && !conversionLoading &&
                         !navigationLoading && !closeLockedSpoilerPlayback()))) {
-                if (type == C.TRACK_TYPE_TEXT) pendingTextPreference = null
+                if (type == C.TRACK_TYPE_TEXT && choices[index].changesSelection) pendingTextPreference = null
                 choices[index].apply()
             }
             dialog.dismiss()
@@ -1500,6 +1536,40 @@ class NativePlayerActivity : AppCompatActivity() {
         }
     }
 
+    /** Subtitle discovery is optional and must never delay the first video frame. */
+    private fun loadDeferredSubtitles(readyPlayer: MpvPlayer) {
+        if (!::spec.isInitialized || !spec.subtitlesPending || subtitleListJob?.isActive == true ||
+            player !== readyPlayer || !prepared || exiting || refreshing || conversionLoading || navigationLoading ||
+            isDestroyed || closeLockedSpoilerPlayback()) return
+        val current = spec
+        val selectionRevision = subtitleSelectionRevision
+        fun isCurrent(): Boolean = player === readyPlayer && !exiting && !isDestroyed && !refreshing &&
+            !conversionLoading && !navigationLoading && sameDeferredSubtitleSource(current, spec)
+        subtitleListFailed = false
+        subtitleListJob = scope.launch {
+            try {
+                val tracks = client.playbackSubtitles(current)
+                currentCoroutineContext().ensureActive()
+                if (!isCurrent() || closeLockedSpoilerPlayback()) return@launch
+                spec = spec.copy(subtitles = tracks, subtitlesPending = false)
+                val savedId = embeddedServerSubtitleId ?: externalSubtitleId
+                val preferred = deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
+                    subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null,
+                    subtitleSelectionRevision == selectionRevision)
+                deferredSubtitlePreference = null
+                preferred?.let(::selectServerSubtitle)
+                if (subtitleDialog?.isShowing == true) toast("서버 자막을 불러왔습니다. 자막 선택을 다시 열어 주세요.")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (isCurrent() && !closeLockedSpoilerPlayback()) {
+                    subtitleListFailed = true
+                    toast("서버 자막을 불러오지 못했습니다. 자막 선택에서 다시 시도해 주세요.")
+                }
+            }
+        }
+    }
+
     private fun cancelPlaybackMetadata() {
         playbackMetadataGate.cancel()
         playbackMetadataJob?.cancel()
@@ -1552,7 +1622,7 @@ class NativePlayerActivity : AppCompatActivity() {
         neighborsJob = scope.launch {
             var replaced = false
             try {
-                var next = client.playback(target).copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
+                var next = client.playback(target, deferSubtitles = true).copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
                 previous.spec.conversionHeight?.let { height -> next = client.convertPlayback(next, height, 0) }
                 if (exiting || isDestroyed || closeLockedSpoilerPlayback()) return@launch
                 replaced = true
@@ -1687,6 +1757,8 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun applyConversionPlayback(refreshed: PlaybackSpec, previous: ConversionRestore) {
         clearExternalSubtitle(); externalSubtitleId = null
+        subtitleManuallySelected = refreshed.subtitlesPending && previous.text != null
+        deferredSubtitlePreference = if (refreshed.subtitlesPending) previous.subtitle else null
         val nativeText = previous.text.takeUnless { refreshed.isServerConversion }
         val preferredText = previous.subtitle ?: previous.text?.let { preference ->
             matchingPlaybackTrack(preference, refreshed.subtitles.map { PlaybackTrackPreference(it.language, it.title ?: it.label) })
@@ -2190,6 +2262,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun releasePlayer() {
         dismissTvSubtitlePosition()
         cancelPlaybackMetadata()
+        subtitleListJob?.cancel(); subtitleListJob = null
+        subtitleListFailed = false
         spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null
         subtitleDialog?.dismiss(); subtitleDialog = null
         playerGestureActive = false
@@ -2291,6 +2365,7 @@ class NativePlayerActivity : AppCompatActivity() {
             outState.putStringArrayList("watchedReached", ArrayList(watchedReached + completionGates.filterValues { it.eligible }.keys))
             outState.putBoolean("playing", conversionResumeWhenVisible ?: if (visible) gestures.playWhenReadyBeforeSeek ?: player?.playWhenReady ?: resumeWhenVisible else resumeWhenVisible)
             outState.putBoolean("subtitles", subtitlesEnabled); outState.putInt("externalSubtitle", externalSubtitleId ?: -1)
+            outState.putBoolean("subtitleManuallySelected", subtitleManuallySelected)
             outState.putInt("embeddedSubtitle", embeddedServerSubtitleId ?: -1)
             outState.putLong("subtitleOffset", subtitleOffsetMs)
         }

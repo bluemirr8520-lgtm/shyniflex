@@ -1408,7 +1408,7 @@ class ShyniClient(
         catalog.map { it.copy(watched = watched, resumeMs = 0) }
     }
 
-    suspend fun playback(item: MediaItem, partId: Int? = null): PlaybackSpec {
+    suspend fun playback(item: MediaItem, partId: Int? = null, deferSubtitles: Boolean = false): PlaybackSpec {
         // Capture authorization before the first dispatcher hop or network suspension.
         val accountToken = token
         val privateIdentity = if (item.isSpoiler) spoilerKey() else null
@@ -1489,13 +1489,13 @@ class ShyniClient(
                         .stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
                 }
             }
-            val originalSubtitleTicket = if (mode == null) mediaTicket else async(start = CoroutineStart.UNDISPATCHED) {
+            val originalSubtitleTicket = if (deferSubtitles) null else if (mode == null) mediaTicket else async(start = CoroutineStart.UNDISPATCHED) {
                 stage("자막 티켓 발급") {
                     request("/stream-ticket/$selectedPart?$contextParameters", JSONObject(), spoiler = item.isSpoiler).objectValue()
                         .stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
                 }
             }
-            val subtitleRows = async(start = CoroutineStart.UNDISPATCHED) {
+            val subtitleRows = if (deferSubtitles) null else async(start = CoroutineStart.UNDISPATCHED) {
                 stage("자막 정보 조회") {
                     rows(request("/subtitles/$selectedPart?$contextParameters", spoiler = item.isSpoiler), "subtitles")
                 }
@@ -1515,11 +1515,13 @@ class ShyniClient(
                 }
             }
             val authorizedTicket = mediaTicket.await()
-            val subtitleTicket = originalSubtitleTicket.await()
-            val listedSubtitles = subtitleRows.await()
-            val subtitles = stage("자막 정보 조회") {
-                listedSubtitles.mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
-                    .map { progressiveSubtitle(it, mode != null) }
+            val subtitles = if (deferSubtitles) emptyList() else {
+                val subtitleTicket = originalSubtitleTicket!!.await()
+                val listedSubtitles = subtitleRows!!.await()
+                stage("자막 정보 조회") {
+                    listedSubtitles.mapNotNull { subtitleTrack(it, subtitleTicket, contextParameters) }
+                        .map { progressiveSubtitle(it, mode != null) }
+                }
             }
             Triple(authorizedTicket, subtitles, playbackProgress.await())
         } }
@@ -1554,7 +1556,46 @@ class ShyniClient(
                     viewId == item.libraryId && viewItemId == item.viewItemId -> item.playbackPartId
                     else -> null
                 }),
-            markers = PlaybackMarker.parse(JSONArray(item.markers.map { it.asJson() }), duration))
+            markers = PlaybackMarker.parse(JSONArray(item.markers.map { it.asJson() }), duration),
+            subtitlesPending = deferSubtitles)
+    }
+
+    /** Load subtitles for the exact source already authorized by playback(). */
+    suspend fun playbackSubtitles(current: PlaybackSpec): List<SubtitleTrack> {
+        val authorize = playbackTransportAuthorization(current) // capture before the dispatcher hop
+        return withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive(); authorize()
+            val item = current.sourceItem ?: throw ApiException("자막의 재생 정보를 확인할 수 없습니다.")
+            if (!current.subtitlesPending || current.itemId <= 0 || current.partId <= 0 || current.libraryId <= 0 ||
+                (current.viewItemId == null && current.progressToken.isNullOrBlank()) || current.sessionId.isNullOrBlank() ||
+                item.id != current.itemId || item.libraryId != current.libraryId || item.viewItemId != current.viewItemId) {
+                throw ApiException("자막의 재생 정보가 일치하지 않습니다.")
+            }
+            val url = runCatching { resolve(current.url) }.getOrNull()
+                ?: throw ApiException("자막의 재생 주소가 올바르지 않습니다.")
+            val converted = current.isServerConversion
+            val expectedPath = if (converted) "/transcode/${current.partId}" else "/stream/${current.partId}"
+            if (!sameOrigin(url) || url.encodedPath != expectedPath || url.queryParameter("ticket").isNullOrBlank()) {
+                throw ApiException("자막의 재생 주소가 일치하지 않습니다.")
+            }
+            val context = contextQuery(current.progressToken, current.libraryId, current.viewItemId)
+            val ticket = if (!converted) url.queryParameter("ticket")!! else {
+                val response = request("/stream-ticket/${current.partId}?$context", JSONObject(), spoiler = item.isSpoiler).objectValue()
+                currentCoroutineContext().ensureActive(); authorize()
+                if ((response.has("library_view_id") && response.exactPositiveInt("library_view_id") != current.libraryId) ||
+                    (response.has("view_item_id") && response.exactPositiveInt("view_item_id") != current.viewItemId) ||
+                    (response.has("part_id") && response.exactPositiveInt("part_id") != current.partId)) {
+                    throw ApiException("자막의 재생 권한 정보가 일치하지 않습니다.", 403)
+                }
+                response.stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
+            }
+            currentCoroutineContext().ensureActive(); authorize()
+            val subtitles = rows(request("/subtitles/${current.partId}?$context", spoiler = item.isSpoiler), "subtitles")
+                .mapNotNull { subtitleTrack(it, ticket, context) }
+                .map { progressiveSubtitle(it, converted) }
+            currentCoroutineContext().ensureActive(); authorize()
+            subtitles
+        }
     }
 
     /** Explicit data-saving conversion of the current file, without selecting another source. */
@@ -1729,7 +1770,7 @@ class ShyniClient(
         } else absoluteUrl("/stream/${current.partId}?ticket=${encode(originalTicket)}")
         return source.copy(
             url = streamUrl, headers = emptyMap(), libraryId = viewId, viewItemId = viewItemId,
-            resumeMs = position, subtitles = subtitles,
+            resumeMs = position, subtitles = subtitles, subtitlesPending = false,
             sessionId = if (preserveSessionId || source !== current) source.sessionId else UUID.randomUUID().toString(),
             decision = when (mode) { "video" -> "video_transcode"; "audio", "music" -> "audio_transcode"; "remux" -> "direct_stream"; else -> "direct_play" },
             selectedAudioStreamIndex = selectedAudio,
