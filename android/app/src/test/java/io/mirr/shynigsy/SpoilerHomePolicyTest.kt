@@ -2,6 +2,7 @@ package io.mirr.shynigsy
 
 import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaItem
+import io.mirr.shynigsy.data.PlaybackSpec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -52,5 +53,63 @@ class SpoilerHomePolicyTest {
         assertEquals(2, rows.size)
         val locked = visibleContinueWatching(rows, listOf(privateItem), libraries, spoilerUnlocked = false)
         assertEquals(listOf(publicItem), locked)
+    }
+
+    @Test fun rotatedGrantCannotRepublishOldPrivateNamesRowsOrPublicShadows() {
+        val overlap = privateLibrary.copy(isSpoiler = false)
+        val oldPrivate = privateItem.copy(isSpoiler = true)
+        val staleLibraries = homeLibrariesForGrant(listOf(publicLibrary, overlap), listOf(privateLibrary),
+            setOf(privateLibrary.id), grantCurrent = false)
+        assertEquals(listOf(publicLibrary), staleLibraries)
+        assertEquals(listOf(publicItem), visibleContinueWatching(listOf(publicItem, privateItem), listOf(oldPrivate),
+            staleLibraries, spoilerUnlocked = false))
+        val freshLibraries = homeLibrariesForGrant(listOf(publicLibrary, overlap), listOf(privateLibrary),
+            setOf(privateLibrary.id), grantCurrent = true)
+        assertEquals(libraries, freshLibraries)
+        assertEquals(listOf(publicItem, oldPrivate), visibleContinueWatching(listOf(publicItem), listOf(privateItem),
+            freshLibraries, spoilerUnlocked = true))
+    }
+
+    @Test fun grantRotationClearsOnlyOldPrivateHomeContentWithoutInterruptingPlayback() {
+        val oldPrivate = privateItem.copy(isSpoiler = true)
+        val playback = PlaybackSpec("video", "https://test.invalid/video", itemId = 20, libraryId = 2, partId = 1,
+            sourceItem = oldPrivate)
+        val state = AppState(spoilerUnlocked = true, libraries = libraries, recentItems = listOf(publicItem, oldPrivate),
+            continueItems = listOf(oldPrivate, publicItem), continueDetails = oldPrivate, playback = playback)
+        val cleared = withoutStalePrivateHomeContent(state)
+        assertEquals(listOf(publicLibrary), cleared.libraries)
+        assertEquals(listOf(publicItem), cleared.recentItems)
+        assertEquals(listOf(publicItem), cleared.continueItems)
+        assertEquals(null, cleared.continueDetails)
+        assertTrue(cleared.spoilerUnlocked)
+        assertEquals(playback, cleared.playback)
+    }
+
+    @Test fun newGrantClearsBeforeSnapshotButLateCollectorKeepsFreshHomeRows() {
+        val client = Any()
+        val scope = PrivateHomeGrantScope()
+        val old = privateItem.copy(isSpoiler = true, title = "old")
+        val fresh = privateItem.copy(isSpoiler = true, title = "fresh")
+        assertTrue(scope.advance(client, "account", 10))
+        var state = AppState(spoilerUnlocked = true, libraries = libraries, recentItems = listOf(publicItem, old))
+        // Grant B may start loading before its registry collector gets CPU time.
+        if (scope.advance(client, "account", 11)) state = withoutStalePrivateHomeContent(state)
+        assertEquals(listOf(publicItem), state.recentItems)
+        state = state.copy(libraries = libraries, recentItems = listOf(publicItem, fresh))
+        // The delayed B notification must not erase B's newly published data.
+        if (scope.advance(client, "account", 11)) state = withoutStalePrivateHomeContent(state)
+        assertEquals(listOf(publicItem, fresh), state.recentItems)
+        assertEquals(libraries, state.libraries)
+    }
+
+    @Test fun homeGrantScopeIsBoundToAccountClientAndResetOnLock() {
+        val client = Any()
+        val scope = PrivateHomeGrantScope()
+        assertTrue(scope.advance(client, "one", 1))
+        assertFalse(scope.advance(client, "one", 1))
+        assertTrue(scope.advance(client, "two", 1))
+        assertTrue(scope.advance(Any(), "two", 1))
+        scope.reset()
+        assertTrue(scope.advance(client, "one", 1))
     }
 }

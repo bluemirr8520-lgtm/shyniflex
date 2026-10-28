@@ -6,14 +6,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,10 +31,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+
+/** Shared by the drawer and its body so late data cannot interrupt remote navigation. */
+internal class TvHomeFocusSession(val drawerOpen: State<Boolean>) {
+    val interacted = mutableStateOf(false)
+}
+
+internal val LocalTvHomeFocusSession = staticCompositionLocalOf<TvHomeFocusSession?> { null }
 
 /** TV navigation overlays a retained full-width screen and appears only at its left focus boundary. */
 @Composable
@@ -49,6 +62,7 @@ internal fun TvSidebarDrawer(
     val fallbackFocus = remember { FocusRequester() }
     val focus = LocalFocusManager.current
     val currentScreenKey = rememberUpdatedState(screenKey)
+    val homeFocusSession = remember(screenKey) { TvHomeFocusSession(open) }
     val memory = remember { TvDrawerFocusMemory() }
     val reveal = remember {
         {
@@ -124,14 +138,23 @@ internal fun TvSidebarDrawer(
             }
         }
     }
-    Box(modifier.fillMaxSize().testTag("tv-sidebar-shell").onPreviewKeyEvent { event ->
+    Box(modifier.fillMaxSize().testTag("tv-sidebar-shell")
+        .pointerInput(homeFocusSession) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                homeFocusSession.interacted.value = true
+            }
+        }.onPreviewKeyEvent { event ->
         val key = event.nativeKeyEvent
+        if (key.action == KeyEvent.ACTION_DOWN) homeFocusSession.interacted.value = true
         if (memory.ownedPresses[key.keyCode] == key.downTime) {
             if (key.action == KeyEvent.ACTION_UP || key.isCanceled) memory.ownedPresses.remove(key.keyCode)
             true
         } else false
     }) {
-        RetainedTvDrawerBody(bodyModifier, fallbackModifier, content)
+        CompositionLocalProvider(LocalTvHomeFocusSession provides homeFocusSession) {
+            RetainedTvDrawerBody(bodyModifier, fallbackModifier, content)
+        }
         if (open.value) {
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .38f))
                 .testTag("tv-sidebar-drawer-scrim")

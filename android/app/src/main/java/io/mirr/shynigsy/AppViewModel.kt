@@ -147,6 +147,14 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         homeLoading = false, continueLoading = false, continueError = null, recentLoading = false)
 }
 
+/** A rotated grant must revalidate Home names and rows without interrupting playback. */
+internal fun withoutStalePrivateHomeContent(state: AppState): AppState = state.copy(
+    libraries = state.libraries.filterNot { it.isSpoiler },
+    recentItems = state.recentItems.filterNot { it.isSpoiler },
+    continueItems = state.continueItems.filterNot { it.isSpoiler },
+    continueDetails = state.continueDetails?.takeUnless { it.isSpoiler },
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val settings = application.getSharedPreferences("gsy_settings", Application.MODE_PRIVATE)
     private val sessionStore = SessionStore(application)
@@ -174,6 +182,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var selectedContinueIdentity: ContinueIdentity? = null
     private val continueDetailsCache = linkedMapOf<ContinueIdentity, MediaItem>()
     private val collectionWatch = linkedMapOf<ContinueIdentity, Pair<MediaItem, Boolean>>()
+    private var privateViewOwner: HomeContinueOwner? = null
+    private val knownPrivateViewIds = mutableSetOf<Int>()
+    private var observedHomeGrantRevision = SpoilerAccessRegistry.changes.value
+    private val privateHomeScope = PrivateHomeGrantScope()
+
+    private fun rememberPrivateViews(active: ShyniClient, libraries: List<Library>) {
+        if (privateViewOwner?.matches(active, active.token) != true) {
+            knownPrivateViewIds.clear()
+            privateViewOwner = HomeContinueOwner(active, active.token)
+        }
+        knownPrivateViewIds.addAll(libraries.filter { it.isSpoiler }.map { it.id })
+    }
+
+    /** Fence old private Home data before a new account/grant can capture or publish it. */
+    private fun enterPrivateHomeScope(active: ShyniClient, grantRevision: Long) {
+        val sameAccount = privateHomeScope.belongsTo(active, active.token)
+        if (!privateHomeScope.advance(active, active.token, grantRevision)) return
+        if (sameAccount) rememberPrivateViews(active, mutableState.value.libraries)
+        collectionWatch.entries.removeAll { it.value.first.isSpoiler }
+        mutableState.update(::withoutStalePrivateHomeContent)
+    }
     private var relatedWorksJob: Job? = null
     private var actorWorksJob: Job? = null
     private var relatedWorksRevision = 0
@@ -204,11 +233,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             SpoilerAccessRegistry.changes.collect {
+                // A collector may run after a newer Home fetch has already published.
+                val grantRevision = SpoilerAccessRegistry.changes.value
+                val grantChanged = grantRevision != observedHomeGrantRevision
+                observedHomeGrantRevision = grantRevision
                 cancelDetailDiscoveryJobs()
                 mutableState.update { state -> state.copy(detailDiscovery = state.detailDiscovery
                     .mapValues { it.value.withoutPrivateWorks() }) }
                 val active = client
                 val snapshot = mutableState.value
+                if (grantChanged && active != null && active.spoilerUnlocked) {
+                    enterPrivateHomeScope(active, grantRevision)
+                }
                 if (active != null && !active.spoilerUnlocked &&
                     (snapshot.spoilerUnlocked || snapshot.spoilerPromptOpen || snapshot.spoilerBusy ||
                         snapshot.libraries.any { it.isSpoiler } || snapshot.recentItems.any { it.isSpoiler } ||
@@ -456,9 +492,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val accessRevision = spoilerRevision
         val grantRevision = SpoilerAccessRegistry.changes.value
         val homeAccountToken = active.token
+        // The collector can be scheduled after this fetch. Do not snapshot old
+        // private rows under a new grant while waiting for it.
+        enterPrivateHomeScope(active, grantRevision)
         val previousContinue = mutableState.value.continueItems
         val previousRecent = mutableState.value.recentItems
         val previousOwnerMatches = continueOwner?.matches(active, homeAccountToken) == true
+        val knownPrivateIds = if (privateViewOwner?.matches(active, homeAccountToken) == true)
+            knownPrivateViewIds.toSet() else emptySet()
         val prioritizingPrivate = prioritizePrivateCatalog && active.spoilerUnlocked
         // PIN entry already has a same-account public catalog. Reuse only those names so a
         // fresh private catalog need not wait for an unrelated public refresh to be shown.
@@ -496,9 +537,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             fallback
         }
         fun homeLibraries(): List<Library> {
-            val privateCatalogs = if (active.spoilerUnlocked) privateLibraries else emptyList()
-            val privateIds = privateCatalogs.map { it.id }.toSet()
-            return (ordinary.orEmpty().filterNot { it.id in privateIds } + privateCatalogs).distinctBy { it.id }
+            return homeLibrariesForGrant(ordinary.orEmpty(), privateLibraries, knownPrivateIds,
+                active.spoilerUnlocked && accessRevision == spoilerRevision &&
+                    grantRevision == SpoilerAccessRegistry.changes.value)
         }
         fun publishContinue() {
             val publicLoad = publicContinue ?: return
@@ -526,10 +567,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fun publishRecent() {
             val publicLoad = publicRecent ?: return
             if (!publicLibrariesLoaded || ordinary == null || !canPublishHome()) return
-            val retainedPrivate = if (previousOwnerMatches && grantRevision == SpoilerAccessRegistry.changes.value)
+            val privateGrantCurrent = active.spoilerUnlocked && accessRevision == spoilerRevision &&
+                grantRevision == SpoilerAccessRegistry.changes.value
+            val retainedPrivate = if (previousOwnerMatches && privateGrantCurrent)
                 previousRecent.filter { it.isSpoiler } else emptyList()
-            val rows = visibleContinueWatching(publicLoad.first, privateRecent ?: retainedPrivate,
-                homeLibraries(), active.spoilerUnlocked).map(::collectionWatchState)
+            val rows = visibleContinueWatching(publicLoad.first,
+                if (privateGrantCurrent) privateRecent ?: retainedPrivate else emptyList(),
+                homeLibraries(), privateGrantCurrent).map(::collectionWatchState)
             mutableState.update { state -> reconcile(state.copy(recentItems = rows,
                 recentLoading = !publicRecentComplete || !privateRecentComplete,
                 error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
@@ -569,21 +613,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     loadRecent = {
                         val libraries = publicLibraries.await()
                         publicRecent = try {
-                            active.recentlyAdded(libraries) { rows ->
+                            active.recentlyAdded(libraries, onArtworkReady = { update ->
                                 withContext(Dispatchers.Main.immediate) {
                                     if (canPublishHome()) {
-                                        publicRecent = rows to null
+                                        publicRecent = mergeHomeRecent(update.items, previousRecent, libraries,
+                                            update.retainViewIds, previousOwnerMatches) to null
                                         publishRecent()
                                     }
                                 }
-                            } to null
+                            }) to null
                         }
                         catch (cancel: CancellationException) { throw cancel }
                         catch (error: Exception) {
                             if (error is ApiException && error.status == 401) throw error
                             // Already completed shelves belong to this request;
                             // a slow/failed sibling must not erase them.
-                            publicRecent?.first.orEmpty() to "최근 추가된 작품을 불러오지 못했습니다."
+                            (if (error is ApiException && error.status == 403) emptyList() else publicRecent?.first.orEmpty()) to
+                                "최근 추가된 작품을 불러오지 못했습니다."
                         }
                         publicRecentComplete = true
                         publishRecent()
@@ -622,6 +668,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 // A late response from a replaced grant cannot populate the picker.
                                 if (grantRevision != SpoilerAccessRegistry.changes.value) return@privateCatalogLoad
                                 privateLibraries = loadedPrivateLibraries
+                                rememberPrivateViews(active, privateLibraries)
                                 publishLibraries()
                                 if (privateLibraries.isEmpty()) {
                                     privateContinue = HomeContinueLoad.Success(emptyList())
@@ -638,15 +685,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     loadRecent = {
                                         privateCatalog(Unit) {
                                             privateRecent = try {
-                                                active.recentlyAdded(privateLibraries) { rows ->
+                                                active.recentlyAdded(privateLibraries, onArtworkReady = { update ->
                                                     withContext(Dispatchers.Main.immediate) {
                                                         if (canPublishHome() && active.spoilerUnlocked &&
                                                             grantRevision == SpoilerAccessRegistry.changes.value) {
-                                                            privateRecent = rows
+                                                            privateRecent = mergeHomeRecent(update.items, previousRecent, privateLibraries,
+                                                                update.retainViewIds, previousOwnerMatches &&
+                                                                    grantRevision == SpoilerAccessRegistry.changes.value)
                                                             publishRecent()
                                                         }
                                                     }
-                                                }
+                                                })
                                             } catch (error: ApiException) {
                                                 // An explicit private denial is not a transient
                                                 // slow shelf; do not retain its earlier rows.
@@ -745,6 +794,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         spoilerExpiryJob?.cancel(); spoilerExpiryJob = null
         requestJob?.cancel(); revision++
         collectionWatch.entries.removeAll { it.value.first.isSpoiler }
+        privateHomeScope.reset()
         clearContinueSelection()
         mutableState.update(::withoutSpoilerContent)
     }

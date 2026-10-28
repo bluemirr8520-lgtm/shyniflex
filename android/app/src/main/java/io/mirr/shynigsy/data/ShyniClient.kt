@@ -40,6 +40,9 @@ import kotlin.coroutines.resumeWithException
 /** Keep an unexpected successful response separate from an authoritative empty history. */
 class ContinueWatchingResponseException : IOException("이어보기 응답 형식이 올바르지 않습니다. 잠시 후 새로고침해 주세요.")
 
+/** View IDs whose prior same-account rows may remain while a Home shelf reloads. */
+data class RecentArtworkUpdate(val items: List<MediaItem>, val retainViewIds: Set<Int>)
+
 /** Shyni beta4 public Library View API. Section IDs never substitute for View IDs. */
 class ShyniClient(
     val server: String,
@@ -665,8 +668,9 @@ class ShyniClient(
             privateCatalog || row.booleanOrNull("spoiler_enabled") == true)
     }
 
-    /** Publish complete, progress-enriched shelves in picker order without waiting for every View. */
+    /** Publish shelves in picker order without waiting for every View. */
     suspend fun recentlyAdded(libraries: List<Library>,
+        onArtworkReady: (suspend (RecentArtworkUpdate) -> Unit)? = null,
         onPartial: suspend (List<MediaItem>) -> Unit = {},
     ): List<MediaItem> {
         // Capture before the dispatcher hop, including a private grant's generation.
@@ -689,8 +693,21 @@ class ShyniClient(
             val stages = Semaphore(minOf(2, client.dispatcher.maxRequests, client.dispatcher.maxRequestsPerHost))
             val publication = Mutex()
             val completed = arrayOfNulls<List<MediaItem>>(selected.size)
+            val visible = arrayOfNulls<List<MediaItem>>(selected.size)
+            val failures = arrayOfNulls<Exception>(selected.size)
+            val catalogReceived = BooleanArray(selected.size)
+            fun snapshot(): RecentArtworkUpdate {
+                val retainViews = selected.indices.filter { index ->
+                    if (catalogReceived[index]) false
+                    else failures[index]?.let { error ->
+                        (error is ApiException && ((error.status == 0 && error.cause is IOException) ||
+                            error.status in setOf(408, 425, 429) || error.status in 500..599)) || error is IOException
+                    } ?: true
+                }.map { selected[it].id }.toSet()
+                return RecentArtworkUpdate(visible.filterNotNull().flatten(), retainViews)
+            }
             val recent = coroutineScope {
-                selected.mapIndexed { index, library -> async { stages.withPermit {
+                selected.mapIndexed { index, library -> async { try { stages.withPermit {
                     requireCurrent()
                     val tv = library.type == "tv"
                     val path = if (tv) "/libraries/${library.id}/shows?sort=latest_episode&sort_dir=desc"
@@ -712,6 +729,17 @@ class ShyniClient(
                             parseMedia(row, library.id, if (tv) "show" else "movie").copy(isSpoiler = library.isSpoiler) to addedAt
                         }.toList().sortedByDescending { it.second ?: Long.MIN_VALUE }
                         .distinctBy { (item, _) -> item.id to item.type }.map { it.first }
+                    if (onArtworkReady != null) publication.withLock {
+                        requireCurrent()
+                        // A catalog has no authoritative watch-history join. Publish
+                        // artwork with unknown history; playback rechecks progress.
+                        visible[index] = rows.map { item ->
+                            if (item.playable) item.copy(watchState = null, watched = false, resumeMs = 0) else item
+                        }
+                        catalogReceived[index] = true
+                        onArtworkReady(snapshot())
+                        requireCurrent()
+                    }
                     // This is still one progress request per playable View, not a
                     // second final pass. Holding the stage permit keeps it ahead
                     // of a backlog of later catalogs on the shared catalog lane.
@@ -720,13 +748,32 @@ class ShyniClient(
                     publication.withLock {
                         requireCurrent()
                         completed[index] = enriched
+                        if (onArtworkReady != null) {
+                            visible[index] = enriched
+                            onArtworkReady(snapshot())
+                            requireCurrent()
+                        }
                         onPartial(completed.filterNotNull().flatten())
                         requireCurrent()
                     }
                     enriched
+                } } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (error: Exception) {
+                    // Authentication/authorization failures must cancel siblings.
+                    // Other failures in Home should leave independent shelves loading.
+                    if (onArtworkReady == null || (error is ApiException && error.status in setOf(401, 403))) throw error
+                    publication.withLock {
+                        requireCurrent()
+                        failures[index] = error
+                        onArtworkReady(snapshot())
+                        requireCurrent()
+                    }
+                    emptyList()
                 } } }.awaitAll().flatten()
             }
             requireCurrent()
+            failures.firstOrNull { it != null }?.let { throw it }
             recent
         }
     }

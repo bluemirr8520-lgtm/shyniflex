@@ -31,6 +31,18 @@ class ExplicitWatchStateTest {
         }
     }
 
+    @Test fun lateHomeArtworkAndProgressSnapshotsPreserveTheConfirmedChoice() {
+        val otherView = movie.copy(viewItemId = 502, watched = true, watchState = MediaWatchState.WATCHED)
+        val artwork = movie.copy(watched = false, resumeMs = 0, watchState = null)
+        val staleProgress = movie.copy(watched = false, resumeMs = 60_000, watchState = MediaWatchState.IN_PROGRESS)
+        for (snapshot in listOf(artwork, staleProgress)) {
+            val reconciled = applyExplicitWatchState(AppState(recentItems = listOf(snapshot, otherView)), movie, listOf(movie), true)
+            assertEquals(MediaWatchState.WATCHED, reconciled.recentItems.first().watchState)
+            assertEquals(0L, reconciled.recentItems.first().resumeMs)
+            assertEquals(otherView, reconciled.recentItems.last())
+        }
+    }
+
     @Test fun collectionTargetAndOnlyConfirmedChangedEpisodesAreUpdated() {
         val show = movie.copy(id = 5, type = "show")
         val episode = movie.copy(type = "episode", showId = show.id, seasonNumber = 1, episodeNumber = 1,

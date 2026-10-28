@@ -44,6 +44,168 @@ class RecentlyAddedStreamingTest {
     private fun request() = server.takeRequest(5, TimeUnit.SECONDS)
         ?: error("Synthetic request did not arrive")
 
+    @Test fun artworkAppearsWithUnknownHistoryBeforeProgressAndThenUpdatesInViewOrder() = runBlocking {
+        val progressEntered = CountDownLatch(2)
+        val releaseProgress = CountDownLatch(1)
+        val first = CompletableDeferred<List<MediaItem>>()
+        val snapshots = Collections.synchronizedList(mutableListOf<List<MediaItem>>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val url = request.requestUrl!!
+                if (url.encodedPath == "/playback/progress") {
+                    val id = url.queryParameter("library_view_id")!!.toInt()
+                    progressEntered.countDown()
+                    check(releaseProgress.await(10, TimeUnit.SECONDS))
+                    return response(progress(id))
+                }
+                return response(catalog(url.pathSegments[1].toInt()))
+            }
+        }
+        val pending = async(Dispatchers.Default) {
+            client.recentlyAdded(listOf(library(8), library(9)), onArtworkReady = { update ->
+                snapshots.add(update.items.toList()); first.complete(update.items.toList())
+            })
+        }
+        try {
+            await(progressEntered)
+            val initial = withTimeout(10_000) { first.await() }
+            assertTrue(initial.isNotEmpty())
+            assertTrue(initial.all { it.watchState == null && !it.watched && it.resumeMs == 0L })
+            assertFalse(pending.isCompleted)
+            assertEquals(listOf(81, 91), snapshots.last().map { it.id })
+            assertTrue(snapshots.last().all { it.watchState == null })
+            releaseProgress.countDown()
+            val result = withTimeout(10_000) { pending.await() }
+            assertEquals(listOf(81, 91), result.map { it.id })
+            assertTrue(result.all { it.watched && it.watchState == MediaWatchState.WATCHED })
+            assertEquals(result, snapshots.last())
+        } finally { releaseProgress.countDown() }
+    }
+
+    @Test fun artworkSurvivesAProgressFailureButLateResultsCannotCrossAccounts() = runBlocking {
+        for (changeAccount in listOf(false, true)) {
+            client = ShyniClient(server.url("/").toString(), "fixture-account", deviceId = "fixture-device")
+            val progressEntered = CountDownLatch(1)
+            val releaseProgress = CountDownLatch(1)
+            val snapshots = Collections.synchronizedList(mutableListOf<List<MediaItem>>())
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.requestUrl!!.encodedPath == "/playback/progress") {
+                        progressEntered.countDown(); check(releaseProgress.await(10, TimeUnit.SECONDS))
+                        if (changeAccount) response(progress(8)) else response("{}", 503)
+                    } else response(catalog(8))
+            }
+            val pending = async(Dispatchers.Default) {
+                runCatching { client.recentlyAdded(listOf(library(8)), onArtworkReady = { snapshots.add(it.items.toList()) }) }.exceptionOrNull()
+            }
+            try {
+                await(progressEntered)
+                assertEquals(1, snapshots.size)
+                assertNull(snapshots.single().single().watchState)
+                if (changeAccount) client.token = "fixture-other-account"
+                releaseProgress.countDown()
+                val failure = withTimeout(10_000) { pending.await() }
+                assertTrue(failure is ApiException)
+                assertEquals(if (changeAccount) 401 else 503, (failure as ApiException).status)
+                assertEquals(if (changeAccount) 1 else 2, snapshots.size)
+            } finally { releaseProgress.countDown() }
+        }
+    }
+
+    @Test fun failedViewsAreRetainedButSuccessfulEmptyCatalogsAreNot() = runBlocking {
+        val slowEntered = CountDownLatch(1)
+        val releaseSlow = CountDownLatch(1)
+        val snapshots = Collections.synchronizedList(mutableListOf<RecentArtworkUpdate>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl!!.encodedPath) {
+                "/libraries/8/movies" -> response("[]")
+                "/libraries/9/movies" -> response("""{"detail":"fixture unavailable"}""", 503)
+                "/libraries/10/movies" -> { slowEntered.countDown(); check(releaseSlow.await(10, TimeUnit.SECONDS)); response("[]") }
+                else -> response("{}", 404)
+            }
+        }
+        val pending = async(Dispatchers.Default) {
+            runCatching { client.recentlyAdded((8..10).map { library(it) }, onArtworkReady = { snapshots.add(it) }) }.exceptionOrNull()
+        }
+        try {
+            await(slowEntered)
+            assertFalse(pending.isCompleted)
+            releaseSlow.countDown()
+            val failure = withTimeout(10_000) { pending.await() }
+            assertEquals(503, (failure as ApiException).status)
+            val final = snapshots.last()
+            assertTrue(final.items.isEmpty())
+            assertEquals(setOf(9), final.retainViewIds)
+        } finally { releaseSlow.countDown() }
+    }
+
+    @Test fun privateArtworkCannotBeUpdatedAfterItsGrantIsLockedOrReplaced() = runBlocking {
+        for (replaceGrant in listOf(false, true)) {
+            SpoilerAccessRegistry.clearAll()
+            client = ShyniClient(server.url("/").toString(), "fixture-account", deviceId = "fixture-device")
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val unlocks = AtomicInteger()
+            val snapshots = Collections.synchronizedList(mutableListOf<List<MediaItem>>())
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl!!.encodedPath) {
+                    "/spoiler/client/unlock" -> response("""{"token":"${if (unlocks.incrementAndGet() == 1) "spc_initial" else "spc_replacement"}","expires_in":1800}""")
+                    "/playback/progress" -> { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)); response(progress(8)) }
+                    else -> response(catalog(8))
+                }
+            }
+            client.unlockSpoiler("1234")
+            val pending = async(Dispatchers.Default) {
+                runCatching { client.recentlyAdded(listOf(library(8, true)), onArtworkReady = { snapshots.add(it.items.toList()) }) }.exceptionOrNull()
+            }
+            try {
+                await(entered)
+                assertEquals(1, snapshots.size)
+                assertTrue(snapshots.single().single().isSpoiler)
+                assertNull(snapshots.single().single().watchState)
+                if (replaceGrant) client.unlockSpoiler("5678") else SpoilerAccessRegistry.clearAll()
+                release.countDown()
+                val failure = withTimeout(10_000) { pending.await() }
+                assertTrue(failure is ApiException)
+                assertEquals(403, (failure as ApiException).status)
+                assertEquals(1, snapshots.size)
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun aFailedHomeShelfDoesNotCancelAnotherShelfsProgressOrArtwork() = runBlocking {
+        val failureSent = CountDownLatch(1)
+        val slowEntered = CountDownLatch(1)
+        val releaseSlow = CountDownLatch(1)
+        val snapshots = Collections.synchronizedList(mutableListOf<List<MediaItem>>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val url = request.requestUrl!!
+                if (url.encodedPath != "/playback/progress") return response(catalog(url.pathSegments[1].toInt()))
+                return if (url.queryParameter("library_view_id") == "8") {
+                    failureSent.countDown(); response("""{"detail":"fixture failure"}""", 400)
+                } else {
+                    slowEntered.countDown(); check(releaseSlow.await(10, TimeUnit.SECONDS)); response(progress(9))
+                }
+            }
+        }
+        val pending = async(Dispatchers.Default) {
+            runCatching { client.recentlyAdded(listOf(library(8), library(9)), onArtworkReady = { snapshots.add(it.items.toList()) }) }.exceptionOrNull()
+        }
+        try {
+            await(failureSent); await(slowEntered)
+            assertFalse(pending.isCompleted)
+            assertEquals(listOf(81, 91), snapshots.last().map { it.id })
+            releaseSlow.countDown()
+            val failure = withTimeout(10_000) { pending.await() }
+            assertEquals(400, (failure as ApiException).status)
+            val visible = snapshots.last()
+            assertEquals(listOf(81, 91), visible.map { it.id })
+            assertNull(visible.first().watchState)
+            assertEquals(MediaWatchState.WATCHED, visible.last().watchState)
+        } finally { releaseSlow.countDown() }
+    }
+
     @Test fun hydratedPartialArrivesBeforeTheSlowCatalogAndFinalOrderIsTheLibraryOrder() = runBlocking {
         for (slowId in listOf(8, 9)) {
             val fastId = if (slowId == 8) 9 else 8

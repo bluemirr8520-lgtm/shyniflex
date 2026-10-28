@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
@@ -232,7 +233,7 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit,
     onAppearance: () -> Unit = {}, onSearch: () -> Unit = {}) {
@@ -258,7 +259,6 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     var interactionRevision by remember { mutableIntStateOf(0) }
     val continueInteraction = remember { MutableInteractionSource() }
     val hoveringContinue by continueInteraction.collectIsHoveredAsState()
-    val hasMedia = continuing.isNotEmpty() || recent.isNotEmpty()
     val heroItem = continuing.firstOrNull { tvMediaKey(it) == heroKey } ?: continuing.firstOrNull()
     val hero = state.continueDetails?.takeIf { heroItem != null && tvMediaKey(it) == tvMediaKey(heroItem) } ?: heroItem
     LaunchedEffect(continueKeys) {
@@ -270,20 +270,31 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
         interactionRevision = interactionRevision,
         onAdvance = { heroKey = it })
     val shelfFocus = remember { FocusRequester() }
-    // Run once as content arrives, never steal focus on background refreshes.
-    var focusRequested by remember { mutableStateOf(false) }
-    LaunchedEffect(hasMedia) {
-        if (modelIsTelevision && hasMedia && !focusRequested) {
-            withFrameNanos { }
-            shelfFocus.requestFocus()
-            focusRequested = true
-        }
-    }
     val restoreShelf = selectedShelf.takeIf { key ->
         if (key == "continue") continuing.isNotEmpty()
-        else recentByLibrary.keys.any { "recent-$it" == key }
-    } ?: if (continuing.isNotEmpty()) "continue" else recent.firstOrNull()?.let { "recent-${it.libraryId}" }
-    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag("tv-home")) {
+        else libraries.any { "recent-${it.id}" == key && recentByLibrary[it.id].orEmpty().isNotEmpty() }
+    } ?: if (continuing.isNotEmpty()) "continue" else libraries.firstOrNull { recentByLibrary[it.id].orEmpty().isNotEmpty() }
+        ?.let { "recent-${it.id}" }
+    val fallbackFocusSession = remember { TvHomeFocusSession(mutableStateOf(false)) }
+    val focusSession = LocalTvHomeFocusSession.current ?: fallbackFocusSession
+    var focusRequested by remember { mutableStateOf(false) }
+    var shelfAttached by remember(restoreShelf) { mutableStateOf(false) }
+    LaunchedEffect(restoreShelf, shelfAttached, focusSession.interacted.value, focusSession.drawerOpen.value) {
+        if (shouldFocusInitialHomeShelf(modelIsTelevision, shelfAttached, focusRequested,
+                focusSession.interacted.value, focusSession.drawerOpen.value)) {
+            withFrameNanos { }
+            // A key press or drawer opening while awaiting a frame wins over the late response.
+            if (shouldFocusInitialHomeShelf(modelIsTelevision, shelfAttached, focusRequested,
+                    focusSession.interacted.value, focusSession.drawerOpen.value)) {
+                if (runCatching { shelfFocus.requestFocus(FocusDirection.Enter) }.getOrDefault(false)) focusRequested = true
+            }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag("tv-home")
+        .onPreviewKeyEvent { event ->
+            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) focusSession.interacted.value = true
+            false
+        }) {
         val compact = maxWidth < 600.dp
         val homeCardWidth = if (compact) ((maxWidth - 60.dp) / 2.4f).coerceIn(112.dp, 156.dp)
             else (maxWidth * .145f).coerceIn(120.dp, 144.dp)
@@ -335,7 +346,8 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                             } else CinemaHomeWelcome(compact, onSearch, Modifier.fillMaxSize())
                         }
                         if (continuing.isNotEmpty()) TvShelf("계속 시청", continuing, model, onWatchOptions,
-                            modifier = if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus) else Modifier,
+                            modifier = if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus)
+                                .onGloballyPositioned { shelfAttached = true } else Modifier,
                             titleColor = Color(0xFFF4E8D1),
                             cinematic = true, cardWidth = homeCardWidth,
                             restoreKey = selectedKey, onSelect = {
@@ -362,7 +374,8 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                 val media = recentByLibrary[library.id].orEmpty()
                 if (media.isNotEmpty()) item(key = "recent-${library.id}") {
                     TvShelf("최근 추가된 작품 · ${library.title}", media, model, onWatchOptions,
-                        modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus) else Modifier,
+                        modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus)
+                            .onGloballyPositioned { shelfAttached = true } else Modifier,
                         restoreKey = selectedKey,
                         cinematic = true, cardWidth = homeCardWidth,
                         onSelect = { selectedKey = tvMediaKey(it); selectedShelf = "recent-${library.id}" }, onClick = model::openItem)

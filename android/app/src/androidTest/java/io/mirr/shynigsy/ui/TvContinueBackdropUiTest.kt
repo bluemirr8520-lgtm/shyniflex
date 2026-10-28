@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
@@ -12,12 +13,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -63,6 +68,53 @@ class TvContinueBackdropUiTest {
     private val hidden = first.copy(id = 201, libraryId = 8, viewItemId = 801,
         title = "합성 비공개 이어보기", isSpoiler = true)
     private val recent = first.copy(id = 301, viewItemId = 703, title = "순환하면 안 되는 최근 추가")
+
+    @Test fun initialHomeShelfTakesFocusOnlyWhenContentArrivesWithoutRemoteInput() {
+        withFixture(AppState(loggedIn = true, continueLoading = true)) { fixture ->
+            renderFocusedHome(fixture)
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(continueItems = listOf(first)) }
+            screen.waitUntil(3_000) { screen.onAllNodesWithTag(cardTag(first)).fetchSemanticsNodes().isNotEmpty() }
+            screen.onNodeWithTag(cardTag(first)).assertIsFocused()
+        }
+    }
+
+    @Test fun lateShelfNeverStealsFocusAfterRemoteNavigation() {
+        withFixture(AppState(loggedIn = true, continueLoading = true)) { fixture ->
+            renderFocusedHome(fixture)
+            screen.onNodeWithTag("cinema-home-appearance").performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+                .performKeyInput { pressKey(Key.DirectionRight) }
+            screen.onNodeWithTag("cinema-home-search").assertIsFocused()
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(continueItems = listOf(first)) }
+            screen.waitUntil(3_000) { screen.onAllNodesWithTag(cardTag(first)).fetchSemanticsNodes().isNotEmpty() }
+            screen.onNodeWithTag("cinema-home-search").assertIsFocused()
+        }
+    }
+
+    @Test fun lateShelfNeverStealsFocusFromOpenDrawerOrAfterClosingIt() {
+        withFixture(AppState(loggedIn = true, continueLoading = true)) { fixture ->
+            renderFocusedHome(fixture)
+            screen.onNodeWithTag("cinema-home-appearance").performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+                .performKeyInput { pressKey(Key.DirectionLeft) }
+            screen.waitUntil(3_000) { screen.onAllNodesWithTag("fixture-sidebar-action").fetchSemanticsNodes().isNotEmpty() }
+            screen.onNodeWithTag("fixture-sidebar-action").assertIsFocused()
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(continueItems = listOf(first)) }
+            screen.waitUntil(3_000) { screen.onAllNodesWithTag(cardTag(first)).fetchSemanticsNodes().isNotEmpty() }
+            screen.onNodeWithTag("fixture-sidebar-action").assertIsFocused().performKeyInput { pressKey(Key.DirectionRight) }
+            screen.waitForIdle()
+            screen.onNodeWithTag("cinema-home-appearance").assertIsFocused()
+        }
+    }
+
+    @Test fun missingLibraryDoesNotRequestAnUnattachedShelf() {
+        withFixture(AppState(loggedIn = true, continueLoading = true)) { fixture ->
+            renderFocusedHome(fixture)
+            screen.onNodeWithTag("cinema-home-search").performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(recentItems = listOf(recent)) }
+            screen.waitForIdle()
+            screen.onNodeWithTag("cinema-home-search").assertIsFocused()
+            screen.onNodeWithTag(cardTag(recent)).assertDoesNotExist()
+        }
+    }
 
     @Test fun actualTvHomeLoopsOnlyContinueWorksWithoutMovingFocusOrFetchingMetadata() {
         withFixture(AppState(loggedIn = true, continueItems = listOf(first, second),
@@ -190,6 +242,28 @@ class TvContinueBackdropUiTest {
                 }
             }
         }
+        screen.waitForIdle()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun renderFocusedHome(fixture: Fixture) {
+        val base = InstrumentationRegistry.getInstrumentation().targetContext
+        val configuration = Configuration(base.resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or Configuration.UI_MODE_TYPE_TELEVISION
+        }
+        val tvContext = base.createConfigurationContext(configuration)
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
+        screen.setContent {
+            inputMode = LocalInputModeManager.current
+            CompositionLocalProvider(LocalContext provides tvContext) {
+                MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
+                    TvSidebarDrawer(screenKey = "home", sidebar = { close ->
+                        TvAction("라이브러리", Modifier.testTag("fixture-sidebar-action"), onClick = close)
+                    }) { TvHome(fixture.state.value, fixture.model, {}) }
+                }
+            }
+        }
+        screen.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
         screen.waitForIdle()
     }
 
