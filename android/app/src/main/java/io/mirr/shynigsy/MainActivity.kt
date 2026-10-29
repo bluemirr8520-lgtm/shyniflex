@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import io.mirr.shynigsy.updates.UpdateViewModel
 import io.mirr.shynigsy.updates.UpdateDialog
 import io.mirr.shynigsy.data.parseTvLoginLink
+import io.mirr.shynigsy.data.MediaItem
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppViewModel
@@ -45,8 +46,11 @@ class MainActivity : ComponentActivity() {
         else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.")
     }
     private var lastCompletionRevision = 0L
-    private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        model.refresh()
+    private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val completedEpisode = if (result.resultCode == RESULT_OK)
+            result.data?.getStringExtra("completedEpisode")?.let { runCatching { MediaItem.fromJson(it) }.getOrNull() }
+        else null
+        if (completedEpisode != null) model.showCompletedEpisodeList(completedEpisode) else model.refresh()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,6 +72,11 @@ class MainActivity : ComponentActivity() {
         model = ViewModelProvider(this)[AppViewModel::class.java]
         updates = ViewModelProvider(this)[UpdateViewModel::class.java]
         consumeTvLoginIntent(intent)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PlaybackCompletionSignals.confirmations.collect { model.acceptPlaybackConfirmations(it) }
+            }
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaybackCompletionSignals.changes.combine(model.state) { revision, state -> revision to state }

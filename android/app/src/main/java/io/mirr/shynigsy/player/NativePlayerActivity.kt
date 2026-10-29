@@ -1,5 +1,6 @@
 package io.mirr.shynigsy.player
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -188,7 +189,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private data class ProgressUpdate(val spec: PlaybackSpec, val position: Long, val duration: Long,
         val state: String, val watched: Long, val acknowledgement: CompletableDeferred<Boolean>? = null,
         val thresholdAttempt: Boolean = false, val completionEligible: Boolean = false,
-        val authenticationEpoch: Long = 0)
+        val authenticationEpoch: Long = 0, val accountScope: String? = null,
+        val privateGrantRevision: Long? = null, val choiceRevision: Long = 0)
 
     private data class ConversionRestore(val spec: PlaybackSpec, val position: Long, val playing: Boolean,
         val subtitle: SubtitleTrack?, val audio: PlaybackTrackPreference?, val text: PlaybackTrackPreference?,
@@ -241,7 +243,9 @@ class NativePlayerActivity : AppCompatActivity() {
         if (savedInstanceState?.getBoolean("endingAfterCompletion") == true ||
             savedInstanceState?.getBoolean("endingToHome") == true) {
             endingAfterCompletion = true; exiting = true; completed = true
-            returnToCaller()
+            val source = savedInstanceState.getString("spec")?.let { runCatching { PlaybackSpec.fromJson(it) }.getOrNull() }
+                ?.sourceItem?.takeIf { it.type == "episode" }
+            returnToCaller(source?.toJson())
             return
         }
         val server = intent.getStringExtra("server").orEmpty()
@@ -332,8 +336,13 @@ class NativePlayerActivity : AppCompatActivity() {
                                         ensureProgressAuthentication(update)
                                         client.markPlaybackWatched(update.spec.copy(durationMs = update.duration))
                                     }
-                                    if (playbackAuthentication.isCurrent(update.authenticationEpoch) && watchedConfirmed.add(key))
+                                    if (playbackAuthentication.isCurrent(update.authenticationEpoch) && watchedConfirmed.add(key)) {
+                                        val item = update.spec.sourceItem?.takeIf { it.id == update.spec.itemId &&
+                                            it.libraryId == update.spec.libraryId && it.viewItemId == update.spec.viewItemId }
+                                        PlaybackCompletionSignals.confirm(update.accountScope, item,
+                                            update.privateGrantRevision, update.choiceRevision)
                                         PlaybackCompletionSignals.notifyChanged()
+                                    }
                                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                                     throw cancel
                                 } catch (error: Exception) {
@@ -2211,8 +2220,14 @@ class NativePlayerActivity : AppCompatActivity() {
         if (reached) watchedReached.add(key)
         val firstThreshold = reached && key !in watchedConfirmed && watchedQueued.add(key)
         val accepted = updates.submit(update.copy(thresholdAttempt = firstThreshold, completionEligible = reached,
-            authenticationEpoch = epoch),
-            important = firstThreshold || update.acknowledgement != null || update.state in setOf("stopped", "completed"))
+            authenticationEpoch = epoch, accountScope = PlaybackCompletionSignals.scope(client.server, client.token),
+            privateGrantRevision = if (update.spec.sourceItem?.isSpoiler == true) SpoilerAccessRegistry.changes.value else null,
+            choiceRevision = PlaybackCompletionSignals.choiceRevision()),
+            important = firstThreshold || update.acknowledgement != null || update.state in setOf("stopped", "completed"),
+            supersedes = if (firstThreshold || update.state == "completed") { older ->
+                update.spec.sessionId != null && older.authenticationEpoch == epoch && older.spec.sessionId == update.spec.sessionId &&
+                    watchedKey(older.spec) == key
+            } else null)
         if (!accepted && firstThreshold) watchedQueued.remove(key)
         return accepted
     }
@@ -2241,11 +2256,12 @@ class NativePlayerActivity : AppCompatActivity() {
         // The independent writer drains this critical snapshot after Activity exit.
         // A finished frame must never wait on the server before returning to the caller.
         submitProgress(ProgressUpdate(spec, lastPosition, lastDuration, "completed", watchedMs))
-        returnToCaller()
+        returnToCaller(spec.sourceItem?.takeIf { it.type == "episode" && it.id == spec.itemId &&
+            it.libraryId == spec.libraryId && it.viewItemId == spec.viewItemId }?.toJson())
     }
 
-    private fun returnToCaller() {
-        setResult(RESULT_OK)
+    private fun returnToCaller(completedEpisode: String? = null) {
+        setResult(RESULT_OK, Intent().apply { if (completedEpisode != null) putExtra("completedEpisode", completedEpisode) })
         finish()
     }
 

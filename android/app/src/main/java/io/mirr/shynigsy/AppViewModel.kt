@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.mirr.shynigsy.data.*
+import io.mirr.shynigsy.player.PlaybackCompletionSignals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -161,6 +162,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val deviceId = settings.getString("device_id", null) ?: UUID.randomUUID().toString().also {
         settings.edit().putString("device_id", it).apply()
     }
+    private val deviceName by lazy { deviceDisplayName(android.os.Build.MANUFACTURER, android.os.Build.MODEL, application.isTelevision()) }
     private val savedSession = sessionStore.loadLast()
     private val initialState = AppState(server = initialServerAddress(settings.getString("server", null), savedSession?.server))
     private val mutableState = MutableStateFlow(initialState)
@@ -180,8 +182,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var continueDetailsJob: Job? = null
     private var continueDetailsRevision = 0
     private var selectedContinueIdentity: ContinueIdentity? = null
+    private var playbackOwner: HomeContinueOwner? = null
+    private var playbackGrantRevision: Long? = null
     private val continueDetailsCache = linkedMapOf<ContinueIdentity, MediaItem>()
     private val collectionWatch = linkedMapOf<ContinueIdentity, Pair<MediaItem, Boolean>>()
+    private var lastPlaybackConfirmation = 0L
+    private val confirmedPlaybackWatches = linkedMapOf<Long, PlaybackCompletionSignals.ConfirmedWatch>()
+
+    internal fun applyConfirmedPlaybackWatch(state: AppState): AppState {
+        val active = client ?: return state
+        if (!state.loggedIn) return state
+        val scope = PlaybackCompletionSignals.scope(active.server, active.token)
+        return applyConfirmedPlaybackWatches(state, confirmedPlaybackWatches.values) { event ->
+            isCurrentPlaybackConfirmation(event, scope,
+                    PlaybackCompletionSignals.isChoiceCurrent(event.scope, event.item, event.choiceRevision),
+                    SpoilerAccessRegistry.changes.value, state.spoilerUnlocked && active.spoilerUnlocked)
+        }
+    }
+
+    fun acceptPlaybackConfirmations(events: List<PlaybackCompletionSignals.ConfirmedWatch>) {
+        val active = client ?: return
+        for (event in events) {
+            if (event.sequence <= lastPlaybackConfirmation) continue
+            lastPlaybackConfirmation = event.sequence
+            if (!mutableState.value.loggedIn || !isCurrentPlaybackConfirmation(event,
+                    PlaybackCompletionSignals.scope(active.server, active.token),
+                    PlaybackCompletionSignals.isChoiceCurrent(event.scope, event.item, event.choiceRevision),
+                    SpoilerAccessRegistry.changes.value, mutableState.value.spoilerUnlocked && active.spoilerUnlocked)) continue
+            confirmedPlaybackWatches[event.sequence] = event
+            while (confirmedPlaybackWatches.size > 32) confirmedPlaybackWatches.remove(confirmedPlaybackWatches.keys.first())
+            mutableState.update(::applyConfirmedPlaybackWatch)
+        }
+    }
     private var privateViewOwner: HomeContinueOwner? = null
     private val knownPrivateViewIds = mutableSetOf<Int>()
     private var observedHomeGrantRevision = SpoilerAccessRegistry.changes.value
@@ -330,7 +362,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val active = ShyniClient(address, deviceId = deviceId)
             client = active
             mutableState.update { it.copy(server = address, totpChallenge = null) }
-            acceptLogin(active, active.login(user, password))
+            acceptLogin(active, active.login(user, password, deviceName))
         }
     }
 
@@ -362,7 +394,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.value.totpChallenge == null && sameTvLoginServer(address, mutableState.value.server)
         tvQrLoginJob = viewModelScope.launch {
             try {
-                val result = awaitTvPairing(active, "shyniflex Android TV",
+                val result = awaitTvPairing(active, deviceName,
                     qrUrlForNonce = { tvLoginQrUrl(address, it) },
                     onState = { status -> if (current()) mutableState.update { it.copy(tvQrLogin = status) } })
                 currentCoroutineContext().ensureActive()
@@ -1175,6 +1207,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if ((!item.playable && item.type !in setOf("show", "tv", "season")) ||
             (snapshot.busy && !snapshot.homeLoading)) return
         if (item.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
+        val watchScope = PlaybackCompletionSignals.scope(active.server, active.token)
+        PlaybackCompletionSignals.invalidateForManualChoice(watchScope, item)
         cancelDetailDiscoveryJobs()
         launchRequest {
             val changed = try {
@@ -1250,11 +1284,83 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         launchRequest {
             val resolved = active.playback(item, partId, deferSubtitles = true)
             val playback = resolved.copy(sourceItem = resolved.sourceItem ?: item, navigationQuery = navigationQuery)
+            playbackOwner = HomeContinueOwner(active, active.token)
+            playbackGrantRevision = SpoilerAccessRegistry.changes.value
             mutableState.update { it.copy(playback = if (startOver) playback.copy(resumeMs = 0) else playback) }
         }
     }
 
     fun consumePlayback() { mutableState.update { it.copy(playback = null) } }
+
+    /** Natural episode completion returns to its verified series rather than its episode detail. */
+    fun showCompletedEpisodeList(episode: MediaItem) {
+        val active = client ?: return
+        if (playbackOwner?.matches(active, active.token) != true || !mutableState.value.loggedIn) return
+        if (episode.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
+        val reuse = mayReuseCompletedSeries(episode, playbackGrantRevision, SpoilerAccessRegistry.changes.value)
+        if (!reuse) {
+            // The player can rotate a private grant while it is open. Discard old
+            // private screens and revalidate the series under the current grant.
+            mutableState.update { state ->
+                val privateLibrary = state.library?.isSpoiler == true
+                state.copy(detailStack = state.detailStack.filterNot { it.item.isSpoiler },
+                    library = state.library?.takeUnless { it.isSpoiler },
+                    items = if (privateLibrary) emptyList() else state.items,
+                    total = if (privateLibrary) 0 else state.total)
+            }
+        }
+        val stack = mutableState.value.detailStack
+        val index = if (reuse) completedEpisodeSeriesIndex(stack, episode) else null
+        if (index != null) {
+            val series = stack[index]
+            val season = episode.seasonNumber?.let { number -> series.seasons.firstOrNull { it.seasonNumber == number } }
+            val restored = if (season != null && season.id != series.selectedSeasonId)
+                series.copy(children = emptyList(), selectedSeasonId = season.id) else series
+            cancelDetailDiscoveryJobs()
+            requestJob?.cancel(); revision++
+            mutableState.update { it.copy(detailStack = stack.take(index) + restored,
+                versions = emptyList(), selectedPartId = null, busy = false, error = null) }
+            refresh()
+            return
+        }
+        if (episode.type != "episode" || episode.id <= 0 || episode.libraryId <= 0 ||
+            episode.viewItemId?.let { it > 0 } != true) {
+            mutableState.update { it.copy(error = "완료한 회차의 시리즈 정보를 확인할 수 없습니다.") }
+            return
+        }
+        val accountToken = active.token
+        val grant = SpoilerAccessRegistry.changes.value
+        launchRequest {
+            val navigationRevision = revision
+            val restored = withTimeoutOrNull(8_000) {
+                val series = episode.showId?.takeIf { it > 0 }?.let { showId ->
+                    MediaItem(showId, episode.libraryId, episode.showTitle?.takeIf { it.isNotBlank() } ?: "시리즈",
+                        "show", viewItemId = episode.viewItemId, isSpoiler = episode.isSpoiler)
+                } ?: active.episodeSeries(episode) ?: throw ApiException("완료한 회차의 시리즈 정보를 확인할 수 없습니다.")
+                val detail = active.details(series)
+                val seasons = detail.children.filter { it.type == "season" }
+                val selected = if (episode.seasonNumber != null) seasons.firstOrNull { it.seasonNumber == episode.seasonNumber }
+                    else initialEpisodeSeason(seasons)
+                val children = selected?.let { active.details(it).children }.orEmpty()
+                val value = detail.copy(children = children, seasons = seasons, selectedSeasonId = selected?.id)
+                if (!verifiedEpisodeInSeries(value, episode.copy(showId = series.id)))
+                    throw ApiException("완료한 회차의 시리즈 목록을 확인할 수 없습니다.")
+                value
+            } ?: throw ApiException("회차 목록을 불러오는 시간이 초과됐습니다. 다시 열어 주세요.")
+            currentCoroutineContext().ensureActive()
+            if (active !== client || active.token != accountToken || navigationRevision != revision || !mutableState.value.loggedIn ||
+                (episode.isSpoiler && (!active.spoilerUnlocked || grant != SpoilerAccessRegistry.changes.value))) return@launchRequest
+            mutableState.update { state ->
+                val last = state.detailStack.lastOrNull()?.item
+                val base = if (last?.type == "episode" && last.libraryId == episode.libraryId &&
+                    last.viewItemId == episode.viewItemId && last.showId == episode.showId &&
+                    last.isSpoiler == episode.isSpoiler) state.detailStack.dropLast(1) else state.detailStack
+                applyConfirmedPlaybackWatch(state.copy(detailStack = base + collectionWatchState(restored),
+                    versions = emptyList(), selectedPartId = null, busy = false, error = null))
+            }
+            loadDetailDiscovery(active, restored)
+        }
+    }
 
     fun openSearch() {
         cancelDetailDiscoveryJobs(clear = true)
@@ -1349,7 +1455,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             delay(250)
             if (active !== client || navigationRevision != revision) return@launch
             refreshJob = null
-            refreshCurrent()
+            refreshCurrent(reconcile = ::applyConfirmedPlaybackWatch)
         }
     }
 

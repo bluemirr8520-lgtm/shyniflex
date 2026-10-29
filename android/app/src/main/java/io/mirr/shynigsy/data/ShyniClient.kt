@@ -580,12 +580,17 @@ class ShyniClient(
         if (approved.opt("status") != "approved") throw ApiException("TV 로그인 승인을 확인하지 못했습니다.")
     }
 
-    suspend fun login(username: String, password: String): LoginOutcome = loginResult(
+    suspend fun login(username: String, password: String, deviceName: String = "shyniflex Android"): LoginOutcome {
+        require(deviceName.isNotBlank() && deviceName.length <= 200 && deviceName.none { it.code < 32 || it.code == 127 }) {
+            "기기 이름이 올바르지 않습니다."
+        }
+        return loginResult(
         request("/auth/login", JSONObject().apply {
             put("username", username.trim()); put("password", password)
-            put("app_name", "shyniflex"); put("device_name", "shyniflex Android")
+            put("app_name", "shyniflex"); put("device_name", deviceName)
         }, authenticated = false).objectValue(),
-    )
+        )
+    }
 
     suspend fun completeTotp(challenge: String, code: String): LoginOutcome = loginResult(
         request("/auth/login/totp", JSONObject().apply {
@@ -937,6 +942,36 @@ class ShyniClient(
         } else enriched
         // Search exposes only the server's available <=200 results; no guessed total.
         return sortedCatalog(matching, sort, contentType, query.isNotEmpty())
+    }
+
+    /** Resolve a missing show ID only when this account's View identifies exactly one show. */
+    suspend fun episodeSeries(episode: MediaItem): MediaItem? {
+        if (episode.type != "episode" || episode.id <= 0 || episode.libraryId <= 0 ||
+            episode.viewItemId?.let { it > 0 } != true) return null
+        val accountToken = token
+        val identity = if (episode.isSpoiler) spoilerKey() else null
+        val grant = if (episode.isSpoiler) spoilerGrant() else null
+        suspend fun requireCurrent() {
+            currentCoroutineContext().ensureActive()
+            if (token != accountToken) throw ApiException("로그인 정보가 변경되었습니다.", 401)
+            if (episode.isSpoiler && (identity == null || identity != spoilerKey() || grant == null ||
+                    !SpoilerAccessRegistry.isCurrent(identity, grant))) throw ApiException("스포일러 표시가 잠겼습니다.", 403)
+        }
+        return withContext(Dispatchers.Default) {
+            requireCurrent()
+            val value = request("/libraries/${episode.libraryId}/shows?sort=title",
+                responseLimit = 16L * 1024 * 1024, spoiler = episode.isSpoiler)
+            requireCurrent()
+            val candidates = rows(value, "items", "results").asSequence().take(10_000)
+                .filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null &&
+                    it.exactPositiveInt("view_item_id") == episode.viewItemId &&
+                    (episode.isSpoiler || !it.optBoolean("spoiler_enabled")) }
+                .map { parseMedia(it, episode.libraryId, "show") }
+                .filter { it.type in setOf("show", "tv") && it.id > 0 && it.viewItemId == episode.viewItemId }
+                .distinctBy { it.id }.map { it.copy(isSpoiler = episode.isSpoiler) }.toList()
+            requireCurrent()
+            candidates.singleOrNull()
+        }
     }
 
     suspend fun details(item: MediaItem): MediaDetails = withContext(Dispatchers.Default) { when (item.type) {

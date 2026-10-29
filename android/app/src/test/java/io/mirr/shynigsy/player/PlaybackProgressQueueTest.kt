@@ -41,6 +41,19 @@ class PlaybackProgressQueueTest {
         assertNull(queue.next())
     }
 
+    @Test fun completionSupersedesOnlyMatchingRoutineSnapshots() = runBlocking {
+        data class Snapshot(val source: String, val position: Int)
+        val queue = PlaybackProgressQueue<Snapshot>()
+        queue.submit(Snapshot("first", 10))
+        queue.submit(Snapshot("other", 20), important = true)
+        queue.submit(Snapshot("first", 30))
+        queue.submit(Snapshot("first", 95), important = true, supersedes = { it.source == "first" })
+        queue.close()
+        assertEquals(Snapshot("other", 20), queue.next())
+        assertEquals(Snapshot("first", 95), queue.next())
+        assertNull(queue.next())
+    }
+
     @Test fun suspendedReaderWakesForCompletionAndClose() = runBlocking {
         val queue = PlaybackProgressQueue<Int>()
         val first = async(start = CoroutineStart.UNDISPATCHED) { queue.next() }

@@ -11,8 +11,17 @@ internal class PlaybackProgressQueue<T : Any> {
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
 
-    fun submit(value: T, important: Boolean = false): Boolean = synchronized(lock) {
+    fun submit(value: T, important: Boolean = false, supersedes: ((T) -> Boolean)? = null): Boolean = synchronized(lock) {
         if (closed) return false
+        // A newer critical snapshot can replace only matching routine snapshots.
+        // Never drop previously accepted threshold or exit writes.
+        if (important && supersedes != null) {
+            val iterator = pending.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (!entry.important && supersedes(entry.value)) iterator.remove()
+            }
+        }
         // Preserve order around important snapshots, including a final EOF write.
         if (!important && pending.peekLast()?.important == false) pending.removeLast()
         pending.addLast(Entry(value, important))

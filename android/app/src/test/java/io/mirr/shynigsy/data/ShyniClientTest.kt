@@ -39,12 +39,14 @@ class ShyniClientTest {
 
     @Test fun loginUsesTokenContractWithoutExistingBearer() = runBlocking {
         respond("""{"token":"new-token","username":"tester"}""")
-        assertEquals(LoginOutcome.Success("new-token", "tester"), client.login(" tester ", " secret "))
+        assertEquals(LoginOutcome.Success("new-token", "tester"), client.login(" tester ", " secret ", "Samsung SM-S918N (shyniflex)"))
         val request = server.takeRequest()
         val json = JSONObject(request.body.readUtf8())
         assertEquals("/auth/login", request.path)
         assertEquals("tester", json.getString("username"))
         assertEquals(" secret ", json.getString("password"))
+        assertEquals("Samsung SM-S918N (shyniflex)", json.getString("device_name"))
+        assertEquals("shyniflex", json.getString("app_name"))
         assertNull(request.getHeader("Authorization"))
         assertEquals("device-123", request.getHeader("X-Device-Id"))
         assertEquals("new-token", client.token)
