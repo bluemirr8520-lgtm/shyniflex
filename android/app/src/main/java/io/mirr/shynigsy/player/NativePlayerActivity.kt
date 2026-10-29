@@ -1523,7 +1523,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 loadMarkers = {
                     if (isCurrent() && !closeLockedSpoilerPlayback() && current.partId > 0 &&
                         (current.url.startsWith("https://", true) || current.url.startsWith("http://", true))) {
-                        val markers = client.playbackMarkers(current)
+                        // Keep the server's source timestamps intact until the
+                        // player's actual full duration is known.
+                        val markers = client.playbackMarkers(current, durationMs = 0)
                         currentCoroutineContext().ensureActive()
                         if (isCurrent() && !closeLockedSpoilerPlayback()) {
                             spec = spec.copy(markers = markers)
@@ -1540,7 +1542,12 @@ class NativePlayerActivity : AppCompatActivity() {
                             updateNavigationButtons()
                         }
                     }
-                }
+                },
+                // A brief server failure at startup must not suppress credits for the
+                // entire video. Never infer a missing marker; retry only transient errors.
+                markerRetryDelaysMs = listOf(2_000, 10_000, 30_000, 60_000),
+                markerAttemptTimeoutMs = 3_000,
+                markerRetryTimeoutMs = 20_000,
             )
         }
     }

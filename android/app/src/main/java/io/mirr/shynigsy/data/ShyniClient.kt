@@ -363,22 +363,25 @@ class ShyniClient(
     }
 
     private suspend fun mediaInfo(key: String, path: String, privateCatalog: Boolean,
-        lane: ShyniRequestLane? = null): JSONObject {
+        lane: ShyniRequestLane? = null, fresh: Boolean = false, validate: () -> Unit = {}): JSONObject {
+        validate()
         if (privateCatalog && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
         val scoped = "$key:$privateCatalog:${if (privateCatalog) SpoilerAccessRegistry.changes.value else 0}"
-        mediaInfoCache[scoped]?.takeIf { System.currentTimeMillis() - it.at < 120_000 }?.let { return it.data }
+        if (!fresh) mediaInfoCache[scoped]?.takeIf { System.currentTimeMillis() - it.at < 120_000 }?.let { return it.data }
         val data = request(path, responseLimit = 2L * 1024 * 1024, spoiler = privateCatalog, lane = lane).objectValue()
+        currentCoroutineContext().ensureActive(); validate()
         if (privateCatalog && !spoilerUnlocked) throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
         if (mediaInfoCache.size >= 64) mediaInfoCache.clear()
         mediaInfoCache[scoped] = CachedMediaInfo(System.currentTimeMillis(), data)
         return data
     }
 
-    private suspend fun partMediaInfo(spec: PlaybackSpec, lane: ShyniRequestLane? = null): JSONObject {
+    private suspend fun partMediaInfo(spec: PlaybackSpec, lane: ShyniRequestLane? = null, fresh: Boolean = false,
+        validate: () -> Unit = {}): JSONObject {
         val context = contextQuery(spec.progressToken, spec.libraryId,
             spec.viewItemId ?: spec.sourceItem?.takeIf { it.libraryId == spec.libraryId }?.viewItemId)
         return mediaInfo("${spec.libraryId}:part:${spec.partId}",
-            "/libraries/${spec.libraryId}/media_info/${spec.partId}?$context", spec.sourceItem?.isSpoiler == true, lane)
+            "/libraries/${spec.libraryId}/media_info/${spec.partId}?$context", spec.sourceItem?.isSpoiler == true, lane, fresh, validate)
     }
 
     /** Icons only target files whose actual immediate filesystem parent matches the current file. */
@@ -535,11 +538,19 @@ class ShyniClient(
     }
 
     /** Optional, read-only marker refresh for the actual selected physical file. */
-    suspend fun playbackMarkers(spec: PlaybackSpec): List<PlaybackMarker> = withContext(Dispatchers.Default) {
-        val info = partMediaInfo(spec)
-        // An omitted optional field is unknown; an explicit [] clears the old markers.
-        val markers = if (info.isNull("markers")) JSONArray(spec.markers.map { it.asJson() }) else info.opt("markers")
-        PlaybackMarker.parse(markers, spec.durationMs)
+    suspend fun playbackMarkers(spec: PlaybackSpec, durationMs: Long = spec.durationMs): List<PlaybackMarker> {
+        val authorization = playbackTransportAuthorization(spec)
+        return withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive(); authorization()
+            // A prior media-info lookup may have cached an empty marker list. A new
+            // playback fetches the current markers; its result remains cached for
+            // the related neighbor and completion lookups.
+            val info = partMediaInfo(spec, fresh = true, validate = authorization)
+            currentCoroutineContext().ensureActive(); authorization()
+            // An omitted optional field is unknown; an explicit [] clears the old markers.
+            val markers = if (info.isNull("markers")) JSONArray(spec.markers.map { it.asJson() }) else info.opt("markers")
+            PlaybackMarker.parse(markers, durationMs)
+        }
     }
 
     override suspend fun createTvPairingSession(): TvPairingSession = parseTvPairingSession(
