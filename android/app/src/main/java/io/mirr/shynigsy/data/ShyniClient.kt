@@ -1672,12 +1672,22 @@ class ShyniClient(
     }
 
     /** Load subtitles for the exact source already authorized by playback(). */
-    suspend fun playbackSubtitles(current: PlaybackSpec): List<SubtitleTrack> {
+    suspend fun playbackSubtitles(current: PlaybackSpec): List<SubtitleTrack> =
+        inspectPlaybackSubtitles(current, requirePending = true).tracks
+
+    /**
+     * Inspect the raw server list as well as its playable rows. A filtered list
+     * cannot prove that no unsupported or malformed subtitle was discarded.
+     */
+    internal suspend fun playbackSubtitlesForEngine(current: PlaybackSpec): PlaybackSubtitleInspection =
+        inspectPlaybackSubtitles(current, requirePending = false)
+
+    private suspend fun inspectPlaybackSubtitles(current: PlaybackSpec, requirePending: Boolean): PlaybackSubtitleInspection {
         val authorize = playbackTransportAuthorization(current) // capture before the dispatcher hop
         return withContext(Dispatchers.Default) {
             currentCoroutineContext().ensureActive(); authorize()
             val item = current.sourceItem ?: throw ApiException("자막의 재생 정보를 확인할 수 없습니다.")
-            if (!current.subtitlesPending || current.itemId <= 0 || current.partId <= 0 || current.libraryId <= 0 ||
+            if ((requirePending && !current.subtitlesPending) || current.itemId <= 0 || current.partId <= 0 || current.libraryId <= 0 ||
                 (current.viewItemId == null && current.progressToken.isNullOrBlank()) || current.sessionId.isNullOrBlank() ||
                 item.id != current.itemId || item.libraryId != current.libraryId || item.viewItemId != current.viewItemId) {
                 throw ApiException("자막의 재생 정보가 일치하지 않습니다.")
@@ -1701,11 +1711,12 @@ class ShyniClient(
                 response.stringOrNull("ticket") ?: throw ApiException("자막 재생 티켓을 받지 못했습니다.")
             }
             currentCoroutineContext().ensureActive(); authorize()
-            val subtitles = rows(request("/subtitles/${current.partId}?$context", spoiler = item.isSpoiler), "subtitles")
+            val raw = request("/subtitles/${current.partId}?$context", spoiler = item.isSpoiler)
+            val subtitles = rows(raw, "subtitles")
                 .mapNotNull { subtitleTrack(it, ticket, context) }
                 .map { progressiveSubtitle(it, converted) }
             currentCoroutineContext().ensureActive(); authorize()
-            subtitles
+            PlaybackSubtitleInspection(subtitles, !converted && areRawSubtitlesSafeForExo(raw, subtitles))
         }
     }
 

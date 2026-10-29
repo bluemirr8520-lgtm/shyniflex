@@ -23,7 +23,7 @@ internal data class MpvNativeTrack(
 
 internal data class MpvExoTrackEvidence(
     val videoProfile: String?, val audioProfile: String?, val width: Int?, val height: Int?,
-    val frameRate: Double?, val audioChannels: Int?,
+    val frameRate: Double?, val audioChannels: Int?, val subtitleStreamIndex: Int? = null,
 )
 
 internal data class MpvExoProbe(
@@ -38,17 +38,20 @@ internal object MpvTrackSnapshot {
         if (value == null || value.length > 1_048_576) return null
         return try {
             val rows = JSONArray(value)
-            if (rows.length() != 2) return null
+            if (rows.length() !in 2..3) return null
             var video: JSONObject? = null
             var audio: JSONObject? = null
+            var subtitle: JSONObject? = null
             for (index in 0 until rows.length()) {
                 val row = rows.optJSONObject(index) ?: return null
-                if (row.integer("id")?.let { it > 0 } != true || row.opt("external") == true || row.opt("selected") != true) return null
+                if (row.integer("id")?.let { it > 0 } != true || row.opt("external") == true) return null
                 val type = row.opt("type") as? String ?: return null
                 val codec = (row.opt("codec") as? String)?.lowercase(java.util.Locale.ROOT) ?: return null
                 when {
-                    type == "video" && codec in setOf("h264", "avc") && video == null -> video = row
-                    type == "audio" && codec == "aac" && audio == null -> audio = row
+                    type == "video" && codec in setOf("h264", "avc") && video == null && row.opt("selected") == true -> video = row
+                    type == "audio" && codec == "aac" && audio == null && row.opt("selected") == true -> audio = row
+                    type == "sub" && codec in setOf("mov_text", "tx3g") && subtitle == null &&
+                        row.integer("ff-index")?.let { it >= 0 } == true -> subtitle = row
                     else -> return null
                 }
             }
@@ -57,7 +60,7 @@ internal object MpvTrackSnapshot {
             val fps = (v.opt("demux-fps") as? Number)?.toDouble()?.takeIf { it.isFinite() && it > 0 }
             MpvExoTrackEvidence(v.opt("codec-profile") as? String, a.opt("codec-profile") as? String,
                 v.integer("demux-w"), v.integer("demux-h"), fps,
-                a.integer("audio-channels") ?: a.integer("demux-channel-count"))
+                a.integer("audio-channels") ?: a.integer("demux-channel-count"), subtitle?.integer("ff-index"))
         } catch (_: Exception) { null }
     }
 

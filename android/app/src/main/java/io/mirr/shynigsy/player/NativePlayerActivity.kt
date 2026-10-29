@@ -147,6 +147,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var mpvProbeJob: Job? = null
     private var finishMpvProbe: (() -> Unit)? = null
     private var exoRestoreSubtitlePending = false
+    private data class EngineCandidate(val info: PlaybackCodecInfo, val subtitles: List<SubtitleTrack>)
     private var speed = 1f
     private var conversionLoading = false
     private var conversionJob: Job? = null
@@ -874,8 +875,8 @@ class NativePlayerActivity : AppCompatActivity() {
         val generation = engineGeneration
         val key = "${current.sessionId}:${current.partId}"
         if (current.sessionId.isNullOrBlank() || forceMpvSession == key || current.sourceItem?.isSpoiler != false ||
-            current.isServerConversion || current.preferSoftwareDecode || current.selectedSubtitleId != null ||
-            current.subtitles.isNotEmpty() || resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT || resizeScale != 1f) {
+            current.isServerConversion || current.preferSoftwareDecode ||
+            pendingTextPreference != null || resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT || resizeScale != 1f) {
             startPreparedPlayer(null, false)
             return
         }
@@ -883,10 +884,15 @@ class NativePlayerActivity : AppCompatActivity() {
             val candidate = try {
                 kotlinx.coroutines.coroutineScope {
                     val information = async { client.playbackCodecInfo(current) }
-                    val subtitles = async { if (current.subtitlesPending) client.playbackSubtitles(current) else current.subtitles }
+                    // Inspect every raw row, including formats omitted from the regular menu.
+                    val subtitles = async { client.playbackSubtitlesForEngine(current) }
                     val info = information.await()
-                    val list = subtitles.await()
-                    info?.takeIf { isPotentialExoCandidate(current, it, list.isEmpty(), true) }
+                    val inspected = subtitles.await()
+                    val list = inspected.tracks
+                    val savedId = embeddedServerSubtitleId ?: externalSubtitleId
+                    if (!inspected.safeForExo || (savedId != null && list.none { it.id == savedId })) null
+                    else info?.takeIf { isPotentialExoCandidate(current, it, list, true) }
+                        ?.let { EngineCandidate(it, list) }
                 }
             } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
               catch (_: Exception) { null }
@@ -894,7 +900,21 @@ class NativePlayerActivity : AppCompatActivity() {
                 closeLockedSpoilerPlayback()) return@launch
             handler.removeCallbacks(engineSelectionTimeout)
             engineSelectionJob = null
-            startPreparedPlayer(candidate.takeIf { visible }, false)
+            // Apply the checked list only for this exact playback, preserving a
+            // restored/manual choice and the same default selection as MPV.
+            val adopted = candidate.takeIf { visible }
+            if (adopted != null) {
+                spec = spec.copy(subtitles = adopted.subtitles, subtitlesPending = false)
+                val savedId = embeddedServerSubtitleId ?: externalSubtitleId
+                val preferred = deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
+                    subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null, true)
+                deferredSubtitlePreference = null
+                if (preferred != null) {
+                    if (preferred.isEmbedded) { embeddedServerSubtitleId = preferred.id; externalSubtitleId = null }
+                    else { externalSubtitleId = preferred.id; embeddedServerSubtitleId = null }
+                }
+            }
+            startPreparedPlayer(adopted?.info, false)
         }
         // A main-thread timer can start MPV even if an IO child does not cooperate
         // with cancellation. Late results are fenced by generation and identity.
@@ -958,7 +978,7 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 if (player !== created) return
-                if (created is ExoPlayer && exoValidated && !exoTracksSafe(tracks)) {
+                if (created is ExoPlayer && exoValidated && !exoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))) {
                     fallbackFromExo(created)
                     return
                 }
@@ -993,7 +1013,7 @@ class NativePlayerActivity : AppCompatActivity() {
                         return
                     }
                     if (created is ExoPlayer && !exoValidated) {
-                        if (!exoTracksSafe(created.currentTracks)) { fallbackFromExo(created); return }
+                        if (!exoTracksSafe(created.currentTracks, spec.subtitles.any(::exoEmbeddedSubtitle))) { fallbackFromExo(created); return }
                         exoValidated = true
                         created.playWhenReady = resumeWhenVisible && visible
                     }
@@ -1118,7 +1138,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val current = spec
         val account = client.token
         mpvProbeJob = scope.launch {
-            val supported = withContext(Dispatchers.Default) { isSafeExoProbe(candidate, evidence, ::hasAvcHardwareDecoder) }
+            val supported = withContext(Dispatchers.Default) { isSafeExoProbe(candidate, evidence, ::hasAvcHardwareDecoder, current.subtitles) }
             if (!mayCommitMpvProbe(mpvProbePending, player === created, revision == engineGeneration,
                     spec == current, client.token == account, visible, exiting || isDestroyed) ||
                 closeLockedSpoilerPlayback()) return@launch
@@ -1371,7 +1391,10 @@ class NativePlayerActivity : AppCompatActivity() {
         // and an exact FFmpeg stream-index mapping establish a duplicate track.
         val aliases = if (type == C.TRACK_TYPE_TEXT && !spec.isServerConversion) spec.subtitles
             .filter { it.isEmbedded }.mapNotNull { track ->
-                track.streamIndex?.takeIf { it >= 0 }?.let(active::subtitleTrackIdForStreamIndex)
+                (track.streamIndex?.takeIf { it >= 0 }?.let(active::subtitleTrackIdForStreamIndex)
+                    ?: if (active is ExoPlayer && exoEmbeddedSubtitle(track) && nativeText.size == 1 &&
+                        nativeText.single().first.getTrackFormat(nativeText.single().second).let { exoMovTextMime(it.sampleMimeType, it.codecs) })
+                        nativeText.single().first.getTrackFormat(nativeText.single().second).id else null)
                     ?.takeIf { it in nativeIds }?.let { track.id to it }
             }.toMap() else emptyMap()
         val selectedNativeIds = nativeText.filter { (group, index) -> group.isTrackSelected(index) }
@@ -2150,7 +2173,9 @@ class NativePlayerActivity : AppCompatActivity() {
         val nativeId = track.streamIndex?.let(active::subtitleTrackIdForStreamIndex)
         val matched = nativeId?.let { id -> pairs.indexOfFirst { (group, index) ->
             group.getTrackFormat(index).id == id
-        }.takeIf { it >= 0 } } ?: embeddedSubtitleIndex(track, options)
+        }.takeIf { it >= 0 } } ?: if (active is ExoPlayer && exoEmbeddedSubtitle(track) && pairs.size == 1 &&
+            options.single().supported && options.single().originalMimeType == MimeTypes.APPLICATION_TX3G) 0
+        else embeddedSubtitleIndex(track, options)
         if (matched != null) {
             pendingEmbeddedSubtitle = null
             val (group, index) = pairs[matched]

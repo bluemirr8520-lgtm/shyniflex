@@ -15,6 +15,17 @@ class MpvTrackSnapshotTest {
         assertNull(MpvTrackSnapshot.exoEvidence(null))
     }
 
+    @Test fun probeAcceptsOnlyOneIndexedInternalMovTextTrack() {
+        val video = """{"id":1,"type":"video","codec":"h264","selected":true}"""
+        val audio = """{"id":2,"type":"audio","codec":"aac","selected":true}"""
+        val subtitle = """{"id":3,"type":"sub","codec":"mov_text","ff-index":4,"selected":false}"""
+        assertEquals(4, MpvTrackSnapshot.exoEvidence("[$video,$audio,$subtitle]")?.subtitleStreamIndex)
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,${subtitle.replace("mov_text", "ass")}]") )
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,${subtitle.replace("\"ff-index\":4", "\"ff-index\":4.5")}]") )
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,${subtitle.replace("\"selected\":false", "\"external\":true")}]") )
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,$subtitle,$subtitle]"))
+    }
+
     @Test fun snapshotKeepsNativeIdsGlobalStreamIndicesAndIndependentSelectionFlags() {
         val tracks = MpvTrackSnapshot.parse("""[
             {"id":3,"type":"audio","codec":"eac3","lang":"ko","title":"Surround",

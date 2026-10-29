@@ -35,6 +35,14 @@ class DeferredSubtitleSelectionTest {
         assertNull(choose(savedId = 999, manual = true))
     }
 
+    @Test fun prefetchedSelectionRetainsServerChoiceAndUserDisable() {
+        val prefetched = spec.copy(subtitlesPending = false, selectedSubtitleId = english.id)
+        assertEquals(english, deferredSubtitleSelection(prefetched, null, null, true, false, false, true))
+        assertNull(deferredSubtitleSelection(prefetched, null, null, false, false, false, true))
+        assertEquals(korean, deferredSubtitleSelection(prefetched, korean.id, null, true, true, false, true))
+        assertNull(deferredSubtitleSelection(prefetched, null, null, true, true, false, true))
+    }
+
     @Test fun oldResultsCannotCrossPlaybackOrAuthorizationChanges() {
         val pending = spec.copy(subtitlesPending = true, sessionId = "session", progressToken = "grant")
         assertTrue(sameDeferredSubtitleSource(pending, pending))
