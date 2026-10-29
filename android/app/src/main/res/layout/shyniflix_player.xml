@@ -3,4 +3,6 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/media_player_view" android:layout_width="match_parent" android:layout_height="match_parent"
     app:controller_layout_id="@layout/shyniflix_controls" app:surface_type="surface_view"
-    app:show_buffering="when_playing" app:use_controller="true" app:show_subtitle_button="false" />
+    app:show_buffering="when_playing" app:use_controller="true" app:show_subtitle_button="false"
+    app:play_icon="@drawable/ic_player_play" app:pause_icon="@drawable/ic_player_pause"
+    app:rewind_icon="@drawable/ic_player_rewind" app:fastforward_icon="@drawable/ic_player_fast_forward" />
