@@ -437,6 +437,17 @@ class MpvPlayer(
         return nativeTracks.firstOrNull { it.type == "sub" && it.streamIndex == streamIndex }?.id?.toString()
     }
 
+    /** A strict native list and decoded color properties are required before trying Exo. */
+    internal fun exoProbeEvidence(): MpvExoProbe? {
+        if (!alive || !loaded) return null
+        val tracks = MpvTrackSnapshot.exoEvidence(MPVLib.getPropertyString("track-list")) ?: return null
+        return MpvExoProbe(tracks, MPVLib.getPropertyString("video-dec-params/pixelformat"),
+            MPVLib.getPropertyString("video-dec-params/hw-pixelformat"),
+            MPVLib.getPropertyString("video-dec-params/primaries"), MPVLib.getPropertyString("video-dec-params/gamma"),
+            MPVLib.getPropertyInt("video-dec-params/w"), MPVLib.getPropertyInt("video-dec-params/h"),
+            MPVLib.getPropertyDouble("container-fps"))
+    }
+
     private fun refreshTracks(snapshot: String? = null) {
         if (!alive || !loaded) return
         // One snapshot replaces hundreds of synchronous core round trips for a

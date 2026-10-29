@@ -21,7 +21,46 @@ internal data class MpvNativeTrack(
     val height: Int?,
 )
 
+internal data class MpvExoTrackEvidence(
+    val videoProfile: String?, val audioProfile: String?, val width: Int?, val height: Int?,
+    val frameRate: Double?, val audioChannels: Int?,
+)
+
+internal data class MpvExoProbe(
+    val tracks: MpvExoTrackEvidence, val pixelFormat: String?, val hardwarePixelFormat: String?,
+    val primaries: String?, val gamma: String?, val decodedWidth: Int?, val decodedHeight: Int?,
+    val frameRate: Double?,
+)
+
 internal object MpvTrackSnapshot {
+    /** Exo may ignore unsupported MP4 subtitle tracks; independently inspect the full mpv list. */
+    fun exoEvidence(value: String?): MpvExoTrackEvidence? {
+        if (value == null || value.length > 1_048_576) return null
+        return try {
+            val rows = JSONArray(value)
+            if (rows.length() != 2) return null
+            var video: JSONObject? = null
+            var audio: JSONObject? = null
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: return null
+                if (row.integer("id")?.let { it > 0 } != true || row.opt("external") == true || row.opt("selected") != true) return null
+                val type = row.opt("type") as? String ?: return null
+                val codec = (row.opt("codec") as? String)?.lowercase(java.util.Locale.ROOT) ?: return null
+                when {
+                    type == "video" && codec in setOf("h264", "avc") && video == null -> video = row
+                    type == "audio" && codec == "aac" && audio == null -> audio = row
+                    else -> return null
+                }
+            }
+            val v = video ?: return null
+            val a = audio ?: return null
+            val fps = (v.opt("demux-fps") as? Number)?.toDouble()?.takeIf { it.isFinite() && it > 0 }
+            MpvExoTrackEvidence(v.opt("codec-profile") as? String, a.opt("codec-profile") as? String,
+                v.integer("demux-w"), v.integer("demux-h"), fps,
+                a.integer("audio-channels") ?: a.integer("demux-channel-count"))
+        } catch (_: Exception) { null }
+    }
+
     /** MPV exposes this node array as a JSON STRING in the pinned JNI wrapper. */
     fun parse(value: String): List<MpvNativeTrack>? {
         if (value.length > 1_048_576) return null

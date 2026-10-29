@@ -83,7 +83,7 @@ Dependencies are declared with their versions in
 licenses and notices remain applicable:
 
 - [AndroidX / Jetpack Compose](https://android.googlesource.com/platform/frameworks/support/)
-- [AndroidX Media3](https://github.com/androidx/media), used for controls and the Player interface
+- [AndroidX Media3](https://github.com/androidx/media), used for playback controls, the Player interface, ExoPlayer and its data-source, extractor, container, decoder, and database components
 - [Kotlin](https://github.com/JetBrains/kotlin) and [kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines)
 - [OkHttp / MockWebServer](https://github.com/square/okhttp)
 - [Coil](https://github.com/coil-kt/coil)

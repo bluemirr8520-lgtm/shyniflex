@@ -553,6 +553,24 @@ class ShyniClient(
         }
     }
 
+    /** Optional codec evidence for the authorized selected part; missing data is unknown. */
+    internal suspend fun playbackCodecInfo(spec: PlaybackSpec): PlaybackCodecInfo? {
+        val authorization = playbackTransportAuthorization(spec)
+        val source = spec.sourceItem ?: return null
+        if (spec.partId <= 0 || spec.itemId <= 0 || spec.libraryId <= 0 ||
+            token.isNullOrBlank() || spec.viewItemId?.let { it > 0 } != true || spec.isServerConversion ||
+            !source.playable || source.id != spec.itemId || source.libraryId != spec.libraryId ||
+            source.viewItemId != spec.viewItemId) return null
+        val uri = runCatching { resolve(spec.url) }.getOrNull() ?: return null
+        if (!sameOrigin(uri) || uri.encodedPath != "/stream/${spec.partId}" || uri.queryParameter("ticket").isNullOrBlank()) return null
+        return withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive(); authorization()
+            val info = partMediaInfo(spec, fresh = true, validate = authorization)
+            currentCoroutineContext().ensureActive(); authorization()
+            parsePlaybackCodecInfo(info, spec).also { currentCoroutineContext().ensureActive(); authorization() }
+        }
+    }
+
     override suspend fun createTvPairingSession(): TvPairingSession = parseTvPairingSession(
         request("/auth/tv-login/pairing/sessions", JSONObject(), authenticated = false,
             responseLimit = 32_768, singleAttempt = true).objectValue(),

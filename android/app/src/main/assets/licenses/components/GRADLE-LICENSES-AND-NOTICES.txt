@@ -134,6 +134,20 @@ androidx.localbroadcastmanager:localbroadcastmanager:1.0.0 - The Apache Software
 https://dl.google.com/dl/android/maven2/androidx/localbroadcastmanager/localbroadcastmanager/1.0.0/localbroadcastmanager-1.0.0.pom
 androidx.media3:media3-common:1.10.1 - The Apache Software License, Version 2.0
 https://dl.google.com/dl/android/maven2/androidx/media3/media3-common/1.10.1/media3-common-1.10.1.pom
+androidx.media3:media3-container:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-container/1.10.1/media3-container-1.10.1.pom
+androidx.media3:media3-database:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-database/1.10.1/media3-database-1.10.1.pom
+androidx.media3:media3-datasource:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-datasource/1.10.1/media3-datasource-1.10.1.pom
+androidx.media3:media3-datasource-okhttp:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-datasource-okhttp/1.10.1/media3-datasource-okhttp-1.10.1.pom
+androidx.media3:media3-decoder:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-decoder/1.10.1/media3-decoder-1.10.1.pom
+androidx.media3:media3-exoplayer:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-exoplayer/1.10.1/media3-exoplayer-1.10.1.pom
+androidx.media3:media3-extractor:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-extractor/1.10.1/media3-extractor-1.10.1.pom
 androidx.media3:media3-ui:1.10.1 - The Apache Software License, Version 2.0
 https://dl.google.com/dl/android/maven2/androidx/media3/media3-ui/1.10.1/media3-ui-1.10.1.pom
 androidx.navigationevent:navigationevent-android:1.0.2 - The Apache Software License, Version 2.0

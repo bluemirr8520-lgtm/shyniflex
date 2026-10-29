@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MpvTrackSnapshotTest {
+    @Test fun exoProbeRequiresExactlyTwoKnownNativeTracksAndNeverDropsSubtitles() {
+        val video = """{"id":1,"type":"video","codec":"h264","selected":true}"""
+        val audio = """{"id":2,"type":"audio","codec":"aac","selected":true}"""
+        val subtitle = """{"id":3,"type":"sub","codec":"ass"}"""
+        assertNotNull(MpvTrackSnapshot.exoEvidence("[$video,$audio]"))
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,$subtitle]"))
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,{\"unknown\":true}]"))
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,{\"id\":2,\"type\":\"sub\"}]"))
+        assertNull(MpvTrackSnapshot.exoEvidence(null))
+    }
+
     @Test fun snapshotKeepsNativeIdsGlobalStreamIndicesAndIndependentSelectionFlags() {
         val tracks = MpvTrackSnapshot.parse("""[
             {"id":3,"type":"audio","codec":"eac3","lang":"ko","title":"Surround",
