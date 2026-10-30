@@ -44,6 +44,7 @@ import io.mirr.shynigsy.player.mpv.MpvPlayer
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.AspectRatioFrameLayout
 import io.mirr.shynigsy.R
+import io.mirr.shynigsy.deviceDisplayName
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.PlaybackSpec
 import io.mirr.shynigsy.data.PlaybackCodecInfo
@@ -178,6 +179,27 @@ class NativePlayerActivity : AppCompatActivity() {
     private var spoilerRecovery: ConversionRestore? = null
     private var spoilerPreparing = false
     private val playbackAuthentication = PlaybackAuthenticationEpoch()
+    private val presenceLifecycle: PlaybackPresenceLifecycle by lazy {
+        PlaybackPresenceLifecycle(open = { source, onForceStop ->
+            val label = deviceDisplayName(android.os.Build.MANUFACTURER, android.os.Build.MODEL, television)
+                .removeSuffix(if (television) " (shyniflex TV)" else " (shyniflex)")
+            client.createPlaybackPresence(source, label, if (television) "tv" else "mobile", onForceStop)?.let { connection ->
+                object : PlaybackPresenceConnection {
+                    override fun update(positionMs: Long, durationMs: Long, state: String) =
+                        connection.update(positionMs, durationMs, state)
+                    override fun close(endSession: Boolean) = connection.close(endSession)
+                }
+            }
+        }, onForceStop = { source, revision, _ ->
+            handler.post {
+                if (!isDestroyed && !exiting && ::spec.isInitialized &&
+                    samePlaybackPresenceSource(source, spec) && presenceLifecycle.isCurrent(source, revision)) {
+                    toast("서버에서 재생을 중지했습니다.")
+                    leavePlayer()
+                }
+            }
+        })
+    }
     @Volatile private var progressDeliveryJob: Job? = null
     private var exiting = false
     private var refreshing = false
@@ -1564,6 +1586,7 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         if (!exiting) {
             exiting = true
+            presenceLifecycle.close(endSession = false)
             cancelSpoilerPlaybackReauthentication()
             settleWatchTime(false)
             neighborsJob?.cancel(); conversionJob?.cancel()
@@ -1627,6 +1650,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (flushBudget > 0) withTimeoutOrNull(flushBudget) { acknowledgement.await() }
                 if (!activityStarted || exiting || player !== active || spoilerRecovery !== previous) return@launch
                 val epoch = playbackAuthentication.beginRotation()
+                presenceLifecycle.close(endSession = false)
                 rotation = epoch
                 progressDeliveryJob?.cancel()
                 neighborsJob?.cancel()
@@ -1700,6 +1724,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun showSpoilerReauthenticationFailure() {
+        presenceLifecycle.close(endSession = false)
         capturePosition(); settleWatchTime(false)
         prepared = false; refreshing = false; spoilerPreparing = false; conversionResumeWhenVisible = null
         if (playbackAuthentication.captureProgress() != null) {
@@ -2457,6 +2482,11 @@ class NativePlayerActivity : AppCompatActivity() {
                     watchedKey(older.spec) == key
             } else null)
         if (!accepted && firstThreshold) watchedQueued.remove(key)
+        // Presence is optional and must never block progress recording or playback.
+        if (accepted && ::spec.isInitialized && samePlaybackPresenceSource(update.spec, spec) &&
+            (!exiting || update.state in setOf("stopped", "completed"))) {
+            presenceLifecycle.update(update.spec, update.position, update.duration, update.state)
+        }
         return accepted
     }
 
@@ -2636,6 +2666,7 @@ class NativePlayerActivity : AppCompatActivity() {
         resizeNotice?.cancel()
         handler.removeCallbacksAndMessages(null); scope.cancel()
         if (::spec.isInitialized) { settleWatchTime(false); if (!isChangingConfigurations) enqueueProgress(if (completed) "completed" else "stopped") }
+        presenceLifecycle.close(endSession = !isChangingConfigurations)
         releasePlayer(); updates.close(); super.onDestroy()
     }
 

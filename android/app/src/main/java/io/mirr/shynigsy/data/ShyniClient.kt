@@ -1957,6 +1957,33 @@ class ShyniClient(
         request("/playback/progress", body, spoiler = spec.sourceItem?.isSpoiler == true)
     }
 
+    /** Optional same-origin dashboard metadata channel; HTTP progress is unaffected. */
+    fun createPlaybackPresence(spec: PlaybackSpec, deviceName: String, platform: String,
+        onForceStop: (String?) -> Unit = {}): PlaybackPresence? {
+        if (origin.scheme != "https" || spec.partId <= 0 || spec.libraryId <= 0 || spec.itemId <= 0 ||
+            spec.sessionId.isNullOrBlank() ||
+            (spec.progressToken.isNullOrBlank() && spec.viewItemId?.let { it > 0 } != true) ||
+            deviceId.isBlank() || deviceId.length > 200 || deviceId.any { it.code !in 33..126 } ||
+            deviceName.isBlank() || deviceName.length > 200 || deviceName.any { it.code < 32 || it.code == 127 } ||
+            platform !in setOf("mobile", "tv")) return null
+        // The current Shyni WS supports Bearer only, not cookie-only authentication.
+        val account = token?.takeIf { it.isNotBlank() && !it.startsWith("cookie:") &&
+            it.all { character -> character.code in 33..126 } } ?: return null
+        val privateItem = spec.sourceItem?.isSpoiler == true
+        val identity = if (privateItem) spoilerKey() else null
+        val grant = if (privateItem) spoilerGrant() ?: return null else null
+        if (grant != null && (grant.token.isBlank() || grant.token.any { it.code !in 33..126 })) return null
+        val url = resolve("/ws/playback")
+        if (!sameOrigin(url)) return null
+        val builder = Request.Builder().url(url).header("Authorization", "Bearer $account")
+            .header("X-Device-Id", deviceId)
+        if (grant != null) builder.header("X-Shyni-Spoiler", grant.token)
+        return PlaybackPresence(client, builder.build(), spec, deviceId, deviceName, platform, {
+            token == account && (!privateItem || (identity != null && grant != null &&
+                SpoilerAccessRegistry.isCurrent(identity, grant)))
+        }, onForceStop = onForceStop)
+    }
+
     internal fun progressBody(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String, watchedMs: Long?,
         completionEligible: Boolean? = null): JSONObject =
         JSONObject().apply {
