@@ -55,6 +55,7 @@ data class AppState(
     val tvQrLogin: TvQrLoginState = TvQrLoginState(),
     val tvLoginApproval: TvLoginApprovalState? = null,
     val playback: PlaybackSpec? = null,
+    val completedEpisodePending: MediaItem? = null,
     val spoilerAvailable: Boolean = false,
     val spoilerPinEnabled: Boolean = true,
     val spoilerUnlocked: Boolean = false,
@@ -144,6 +145,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         selectedPartId = if (privateScreen) null else state.selectedPartId,
         query = if (privateScreen) "" else state.query,
         playback = state.playback?.takeUnless { it.sourceItem?.isSpoiler == true }, busy = false,
+        completedEpisodePending = null,
         error = if (privateScreen) null else state.error,
         homeLoading = false, continueLoading = false, continueError = null, recentLoading = false)
 }
@@ -302,10 +304,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun launchRequest(block: suspend () -> Unit) {
+    private fun launchRequest(keepCompletedEpisodePending: Boolean = false, block: suspend () -> Unit) {
         requestJob?.cancel()
         val current = ++revision
-        mutableState.update { it.copy(busy = true, error = null, homeLoading = false) }
+        mutableState.update { it.copy(busy = true, error = null, homeLoading = false,
+            completedEpisodePending = if (keepCompletedEpisodePending) it.completedEpisodePending else null) }
         requestJob = viewModelScope.launch {
             try {
                 block()
@@ -784,7 +787,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 check(status.unlocked && active.spoilerUnlocked)
                 requestJob?.cancel(); revision++
                 mutableState.update { it.copy(spoilerUnlocked = true, spoilerPromptOpen = false, spoilerBusy = false,
-                    spoilerAvailable = status.available, spoilerPinEnabled = status.pinEnabled != false, busy = false) }
+                    spoilerAvailable = status.available, spoilerPinEnabled = status.pinEnabled != false, busy = false,
+                    completedEpisodePending = null) }
                 scheduleSpoilerExpiry(active)
                 loadHome(active, prioritizePrivateCatalog = true)
             } catch (cancel: CancellationException) {
@@ -1297,6 +1301,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         if (playbackOwner?.matches(active, active.token) != true || !mutableState.value.loggedIn) return
         if (episode.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
+        mutableState.update { it.copy(completedEpisodePending = episode, error = null) }
         val reuse = mayReuseCompletedSeries(episode, playbackGrantRevision, SpoilerAccessRegistry.changes.value)
         if (!reuse) {
             // The player can rotate a private grant while it is open. Discard old
@@ -1319,47 +1324,59 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             cancelDetailDiscoveryJobs()
             requestJob?.cancel(); revision++
             mutableState.update { it.copy(detailStack = stack.take(index) + restored,
-                versions = emptyList(), selectedPartId = null, busy = false, error = null) }
+                versions = emptyList(), selectedPartId = null, busy = false, error = null, completedEpisodePending = null) }
             refresh()
             return
         }
         if (episode.type != "episode" || episode.id <= 0 || episode.libraryId <= 0 ||
             episode.viewItemId?.let { it > 0 } != true) {
-            mutableState.update { it.copy(error = "완료한 회차의 시리즈 정보를 확인할 수 없습니다.") }
+            requestJob?.cancel(); revision++
+            mutableState.update { it.copy(busy = false, homeLoading = false,
+                error = "완료한 회차의 시리즈 정보를 확인할 수 없습니다.") }
             return
         }
         val accountToken = active.token
         val grant = SpoilerAccessRegistry.changes.value
-        launchRequest {
+        launchRequest(keepCompletedEpisodePending = true) {
             val navigationRevision = revision
-            val restored = withTimeoutOrNull(8_000) {
+            val restored = withTimeoutOrNull(20_000) {
                 val series = episode.showId?.takeIf { it > 0 }?.let { showId ->
                     MediaItem(showId, episode.libraryId, episode.showTitle?.takeIf { it.isNotBlank() } ?: "시리즈",
                         "show", viewItemId = episode.viewItemId, isSpoiler = episode.isSpoiler)
                 } ?: active.episodeSeries(episode) ?: throw ApiException("완료한 회차의 시리즈 정보를 확인할 수 없습니다.")
                 val detail = active.details(series)
-                val seasons = detail.children.filter { it.type == "season" }
-                val selected = if (episode.seasonNumber != null) seasons.firstOrNull { it.seasonNumber == episode.seasonNumber }
-                    else initialEpisodeSeason(seasons)
-                val children = selected?.let { active.details(it).children }.orEmpty()
-                val value = detail.copy(children = children, seasons = seasons, selectedSeasonId = selected?.id)
-                if (!verifiedEpisodeInSeries(value, episode.copy(showId = series.id)))
-                    throw ApiException("완료한 회차의 시리즈 목록을 확인할 수 없습니다.")
-                value
+                findCompletedEpisodeSeries(detail, episode.copy(showId = series.id)) { season ->
+                    active.details(season).children
+                } ?: throw ApiException("완료한 회차의 시리즈 목록을 확인할 수 없습니다.")
             } ?: throw ApiException("회차 목록을 불러오는 시간이 초과됐습니다. 다시 열어 주세요.")
             currentCoroutineContext().ensureActive()
             if (active !== client || active.token != accountToken || navigationRevision != revision || !mutableState.value.loggedIn ||
-                (episode.isSpoiler && (!active.spoilerUnlocked || grant != SpoilerAccessRegistry.changes.value))) return@launchRequest
+                (episode.isSpoiler && (!active.spoilerUnlocked || grant != SpoilerAccessRegistry.changes.value))) {
+                if (navigationRevision == revision) mutableState.update { it.copy(completedEpisodePending = null) }
+                return@launchRequest
+            }
             mutableState.update { state ->
                 val last = state.detailStack.lastOrNull()?.item
                 val base = if (last?.type == "episode" && last.libraryId == episode.libraryId &&
                     last.viewItemId == episode.viewItemId && last.showId == episode.showId &&
                     last.isSpoiler == episode.isSpoiler) state.detailStack.dropLast(1) else state.detailStack
                 applyConfirmedPlaybackWatch(state.copy(detailStack = base + collectionWatchState(restored),
-                    versions = emptyList(), selectedPartId = null, busy = false, error = null))
+                    versions = emptyList(), selectedPartId = null, busy = false, error = null, completedEpisodePending = null))
             }
             loadDetailDiscovery(active, restored)
         }
+    }
+
+    fun retryCompletedEpisodeList() {
+        val episode = mutableState.value.completedEpisodePending ?: return
+        if (!mutableState.value.busy) showCompletedEpisodeList(episode)
+    }
+
+    fun cancelCompletedEpisodeList() {
+        if (mutableState.value.completedEpisodePending == null) return
+        requestJob?.cancel(); revision++
+        mutableState.update { it.copy(completedEpisodePending = null, busy = false, error = null) }
+        refresh()
     }
 
     fun openSearch() {
@@ -1368,7 +1385,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         clearContinueSelection(clearCache = false)
         mutableState.update { it.copy(searchOpen = true, library = null, items = emptyList(), total = 0, query = "",
             detailStack = emptyList(), versions = emptyList(), selectedPartId = null, busy = false, error = null,
-            homeLoading = false) }
+            homeLoading = false, completedEpisodePending = null) }
     }
 
     fun searchAll(query: String) {
@@ -1419,10 +1436,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestJob?.cancel(); revision++
         mutableState.update { it.copy(detailStack = emptyList(), library = null, items = emptyList(),
             total = 0, query = "", searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0,
-            busy = false, error = null, versions = emptyList(), selectedPartId = null) }
+            busy = false, error = null, versions = emptyList(), selectedPartId = null, completedEpisodePending = null) }
     }
 
     fun back() {
+        if (mutableState.value.completedEpisodePending != null) { cancelCompletedEpisodeList(); return }
         cancelDetailDiscoveryJobs()
         requestJob?.cancel(); revision++
         mutableState.update {
@@ -1446,6 +1464,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refresh() {
+        if (mutableState.value.completedEpisodePending != null) return
         val active = client ?: return
         val navigationRevision = revision
         refreshJob?.cancel()
@@ -1453,7 +1472,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // Activity results and committed playback updates can describe the same change.
             // Coalesce that burst without letting it refresh a later navigation/session.
             delay(250)
-            if (active !== client || navigationRevision != revision) return@launch
+            if (active !== client || navigationRevision != revision || mutableState.value.completedEpisodePending != null) return@launch
             refreshJob = null
             refreshCurrent(reconcile = ::applyConfirmedPlaybackWatch)
         }

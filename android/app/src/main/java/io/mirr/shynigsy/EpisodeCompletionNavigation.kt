@@ -40,3 +40,19 @@ internal fun verifiedEpisodeInSeries(detail: MediaDetails, episode: MediaItem): 
             (child.showId == null || child.showId == episode.showId)
     }
 }
+
+/** Find the exact completed episode even when a home card lacks its season number. */
+internal suspend fun findCompletedEpisodeSeries(
+    detail: MediaDetails,
+    episode: MediaItem,
+    loadSeason: suspend (MediaItem) -> List<MediaItem>,
+): MediaDetails? {
+    val seasons = detail.children.filter { it.type == "season" }
+    val preferred = episode.seasonNumber?.let { number -> seasons.firstOrNull { it.seasonNumber == number } }
+    val ordered = if (preferred == null) seasons else listOf(preferred) + seasons.filterNot { it.id == preferred.id }
+    for (season in ordered) {
+        val result = detail.copy(children = loadSeason(season), seasons = seasons, selectedSeasonId = season.id)
+        if (verifiedEpisodeInSeries(result, episode)) return result
+    }
+    return null
+}

@@ -165,6 +165,7 @@ fun ShyniApp(
     var watchOptions by remember { mutableStateOf<MediaItem?>(null) }
     val onWatchOptions: (MediaItem) -> Unit = { if (canChangeWatchState(it)) watchOptions = it }
     val detail = state.detailStack.lastOrNull()
+    val completedEpisodePending = state.completedEpisodePending?.takeIf { !it.isSpoiler || state.spoilerUnlocked }
     LaunchedEffect(state.loggedIn) {
         if (!state.loggedIn) {
             libraryPickerOpen = false
@@ -196,14 +197,14 @@ fun ShyniApp(
             viewModel.consumePlayback()
         }
     }
-    BackHandler(enabled = state.loggedIn && (detail != null || state.library != null || state.searchOpen)) {
-        viewModel.back()
+    BackHandler(enabled = state.loggedIn && (completedEpisodePending != null || detail != null || state.library != null || state.searchOpen)) {
+        if (completedEpisodePending != null) viewModel.cancelCompletedEpisodeList() else viewModel.back()
     }
     MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = CompactTypography, shapes = CompactShapes) {
         Scaffold(
             containerColor = AppBackground,
             topBar = {
-                if (state.loggedIn) {
+                if (state.loggedIn && completedEpisodePending == null) {
                     // The home hero owns its transparent cinema header on phones.
                     if (tv || detail != null || state.library != null || state.searchOpen) {
                     Column(Modifier.statusBarsPadding()) {
@@ -217,7 +218,7 @@ fun ShyniApp(
                     )
                     }
                     }
-                } else
+                } else if (!state.loggedIn)
                 AppHeader(
                     loggedIn = state.loggedIn,
                     title = detail?.item?.title ?: state.library?.title,
@@ -229,7 +230,7 @@ fun ShyniApp(
                 )
             },
             bottomBar = {
-                if (state.loggedIn && !tv) {
+                if (state.loggedIn && !tv && completedEpisodePending == null) {
                     CinemaHomeBottomNavigation(
                         homeSelected = !mobileMoreOpen && !libraryPickerOpen && detail == null && state.library == null && !state.searchOpen,
                         searchSelected = !mobileMoreOpen && !libraryPickerOpen && detail == null && state.searchOpen,
@@ -262,6 +263,12 @@ fun ShyniApp(
                         onCancelTvQr = viewModel::cancelTvQrLogin,
                     )
                     }
+                    completedEpisodePending != null -> CompletedEpisodeLoadingScreen(
+                        loading = state.busy,
+                        error = state.error,
+                        onRetry = viewModel::retryCompletedEpisodeList,
+                        onCancel = viewModel::cancelCompletedEpisodeList,
+                    )
                     state.loggedIn -> {
                         val screenKey = detail?.item?.let { "detail:${it.libraryId}:${it.type}:${it.id}:${it.viewItemId}" }
                             ?: if (state.searchOpen) "search" else state.library?.let { "library:${it.id}" } ?: "home"
@@ -362,6 +369,40 @@ fun ShyniApp(
                 watchOptions = null
                 viewModel.setWatched(item, watched)
             })
+        }
+    }
+}
+
+/** Keep the home screen out of the way while the completed series is being restored. */
+@Composable
+private fun CompletedEpisodeLoadingScreen(
+    loading: Boolean,
+    error: String?,
+    onRetry: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val tv = LocalContext.current.isTelevision()
+    val retryFocus = remember { FocusRequester() }
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(tv, loading) {
+        if (tv) runCatching { (if (loading) cancelFocus else retryFocus).requestFocus() }
+    }
+    Box(Modifier.fillMaxSize().testTag("completedEpisodeLoading"), contentAlignment = Alignment.Center) {
+        Column(Modifier.padding(24.dp).widthIn(max = 460.dp),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (loading) CircularProgressIndicator()
+            Text(if (loading) "시리즈 회차 목록을 불러오는 중" else "회차 목록을 불러오지 못했습니다",
+                style = MaterialTheme.typography.titleMedium)
+            if (!loading) Text(error ?: "연결을 확인하고 다시 시도해 주세요.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (!loading) Button(onClick = onRetry, modifier = Modifier.focusRequester(retryFocus).tvOnlyFocus()) {
+                    Text("다시 시도")
+                }
+                TextButton(onClick = onCancel, modifier = Modifier.focusRequester(cancelFocus).tvOnlyFocus()) {
+                    Text("닫기")
+                }
+            }
         }
     }
 }

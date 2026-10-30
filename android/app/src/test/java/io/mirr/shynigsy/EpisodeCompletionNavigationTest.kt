@@ -2,6 +2,7 @@ package io.mirr.shynigsy
 
 import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -46,5 +47,34 @@ class EpisodeCompletionNavigationTest {
         assertFalse(mayReuseCompletedSeries(privateEpisode, 3, 4))
         assertFalse(mayReuseCompletedSeries(privateEpisode, null, 4))
         assertTrue(mayReuseCompletedSeries(episode, null, 4))
+    }
+
+    @Test fun homeEpisodeWithoutSeasonFindsTheExactEpisodeInALaterSeason() = runBlocking {
+        val first = MediaItem(1, 8, "Season 1", "season", viewItemId = 51, showId = 19, seasonNumber = 1)
+        val second = first.copy(id = 2, title = "Season 2", seasonNumber = 2)
+        val visits = mutableListOf<Int>()
+        val result = findCompletedEpisodeSeries(MediaDetails(show, listOf(first, second)), episode.copy(seasonNumber = null)) {
+            visits += it.id
+            if (it.id == 2) listOf(episode) else listOf(episode.copy(id = 99))
+        }
+        assertEquals(listOf(1, 2), visits)
+        assertEquals(2, result?.selectedSeasonId)
+        assertEquals(listOf(episode), result?.children)
+    }
+
+    @Test fun staleSeasonHintFallsBackWithoutAcceptingOtherViewOrEpisode() = runBlocking {
+        val first = MediaItem(1, 8, "Season 1", "season", viewItemId = 51, showId = 19, seasonNumber = 1)
+        val second = first.copy(id = 2, title = "Season 2", seasonNumber = 2)
+        val visits = mutableListOf<Int>()
+        val result = findCompletedEpisodeSeries(MediaDetails(show, listOf(first, second)), episode.copy(seasonNumber = 1)) {
+            visits += it.id
+            if (it.id == 1) listOf(episode.copy(viewItemId = 99)) else listOf(episode)
+        }
+        assertEquals(listOf(1, 2), visits)
+        assertEquals(2, result?.selectedSeasonId)
+        val absent = findCompletedEpisodeSeries(MediaDetails(show, listOf(first, second)), episode) {
+            listOf(episode.copy(viewItemId = 99))
+        }
+        assertNull(absent)
     }
 }
