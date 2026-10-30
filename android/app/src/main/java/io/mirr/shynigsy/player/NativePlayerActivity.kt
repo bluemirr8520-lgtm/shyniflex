@@ -626,23 +626,7 @@ class NativePlayerActivity : AppCompatActivity() {
             active.playerError != null || (::errorPanel.isInitialized && errorPanel.visibility == View.VISIBLE)) null
         else currentSkipMarker(spec.markers, positionMs ?: active.currentPosition, lastDuration)
 
-    private fun creditsNextEpisodeTarget(): io.mirr.shynigsy.data.MediaItem? {
-        val source = spec.sourceItem?.takeIf { it.type == "episode" } ?: return null
-        val target = playbackNeighbors?.nextEpisode ?: return null
-        val season = source.seasonNumber ?: return null
-        val episode = source.episodeNumber ?: return null
-        val targetSeason = target.seasonNumber ?: return null
-        val targetEpisode = target.episodeNumber ?: return null
-        return target.takeIf {
-            it.type == "episode" && it.id != source.id && it.libraryId == source.libraryId &&
-                it.isSpoiler == source.isSpoiler && it.showId != null &&
-                (source.showId == null || it.showId == source.showId) &&
-                season >= 0 && episode >= 0 && targetSeason >= 0 && targetEpisode >= 0 &&
-                (targetSeason > season || targetSeason == season && targetEpisode > episode) &&
-                !it.folderKey.isNullOrBlank() && (it.navigationPartId ?: 0) > 0 &&
-                it.playbackPartId == it.navigationPartId && it.navigationPartId != spec.partId
-        }
-    }
+    private fun creditsNextEpisodeTarget() = verifiedCreditsNextEpisode(spec, playbackNeighbors)
 
     private fun updateSegmentSkipButton(positionMs: Long? = null) {
         if (!::segmentActions.isInitialized) return

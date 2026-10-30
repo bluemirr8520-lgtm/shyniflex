@@ -405,12 +405,12 @@ class ShyniClient(
         val previousPart = sameItemParts.getOrNull(partIndex - 1)?.let { navigationItem(current, it) }
         val nextPart = sameItemParts.getOrNull(partIndex + 1)?.let { navigationItem(current, it) }
         val canFindNextEpisode = current.type == "episode" && current.id == spec.itemId &&
-            current.viewItemId != null && current.viewItemId == spec.viewItemId &&
-            current.seasonNumber?.let { it >= 0 } == true && current.episodeNumber?.let { it >= 0 } == true
+            active.metadataId == current.id && current.viewItemId != null && current.viewItemId == spec.viewItemId
         if (previousPart != null && nextPart != null && !canFindNextEpisode)
             return@withContext PlaybackNeighbors(previousPart, nextPart)
         var episodeEntries = emptyList<MediaItem>()
         var episodeShowBindingClear = false
+        var invalidCurrentEpisode = false
         val entries = when (current.type) {
             "movie" -> {
                 val query = spec.navigationQuery.trim()
@@ -446,18 +446,21 @@ class ShyniClient(
                                     (episode.showId == null || episode.showId == showId) &&
                                     (episode.viewItemId == null || episode.viewItemId == current.viewItemId) &&
                                     (episode.isSpoiler || privateCatalog) == current.isSpoiler
-                                episode.copy(showTitle = episode.showTitle ?: current.showTitle.takeIf { sameShow })
+                                if (episode.id == current.id && !sameShow) invalidCurrentEpisode = true
+                                row to episode.copy(showTitle = episode.showTitle ?: current.showTitle.takeIf { sameShow })
                             }
                         }.toList()
                     // Keep positive privacy and explicit show/View evidence for the
                     // stricter credits shortcut; generic file navigation stays unchanged.
-                    episodeEntries = parsed.filter { it.showId == null || it.showId == showId }
-                        .map { it.copy(showId = showId, isSpoiler = it.isSpoiler || privateCatalog,
-                            viewItemId = it.viewItemId ?: current.viewItemId) }
+                    episodeEntries = parsed.filter { (row, item) ->
+                        (row.isNull("library_view_id") || row.exactPositiveInt("library_view_id") == libraryId) &&
+                            (item.showId == null || item.showId == showId)
+                    }.map { (_, item) -> item.copy(showId = showId, isSpoiler = item.isSpoiler || privateCatalog,
+                            viewItemId = item.viewItemId ?: current.viewItemId) }
                         .filter { it.type == "episode" && it.id > 0 && it.viewItemId == current.viewItemId &&
                             it.isSpoiler == privateCatalog }
-                    parsed.map { it.copy(showId = showId, isSpoiler = privateCatalog,
-                        viewItemId = it.viewItemId ?: current.viewItemId) }
+                    parsed.map { (_, item) -> item.copy(showId = showId, isSpoiler = privateCatalog,
+                        viewItemId = item.viewItemId ?: current.viewItemId) }
                         .filter { it.type == "episode" && it.viewItemId != null }
                         .sortedWith(compareBy<MediaItem> { it.seasonNumber ?: Int.MAX_VALUE }
                             .thenBy { it.episodeNumber ?: Int.MAX_VALUE }.thenBy { it.id })
@@ -494,12 +497,15 @@ class ShyniClient(
             }
             return null
         }
-        suspend fun verifiedNextEpisode(): MediaItem? {
-            if (!canFindNextEpisode || !episodeShowBindingClear) return null
-            val season = current.seasonNumber ?: return null
-            val episode = current.episodeNumber ?: return null
-            val anchors = episodeEntries.filter { it.id == current.id || it.id == active.metadataId }
-            if (anchors.isEmpty() || anchors.any { it.seasonNumber != season || it.episodeNumber != episode }) return null
+        suspend fun verifiedNextEpisode(): Pair<MediaItem, MediaItem>? {
+            if (!canFindNextEpisode || !episodeShowBindingClear || invalidCurrentEpisode) return null
+            // The current View's exact episode may fill in numbers omitted by a
+            // continue-watching card; never replace a conflicting number or guess.
+            val anchor = episodeEntries.filter { it.id == current.id }.singleOrNull() ?: return null
+            val season = anchor.seasonNumber?.takeIf { it >= 0 } ?: return null
+            val episode = anchor.episodeNumber?.takeIf { it >= 0 } ?: return null
+            if ((current.seasonNumber != null && current.seasonNumber != season) ||
+                (current.episodeNumber != null && current.episodeNumber != episode)) return null
             val candidates = episodeEntries.filter {
                 it.id != current.id && it.id != active.metadataId &&
                     it.seasonNumber?.let { value -> value >= 0 } == true &&
@@ -521,7 +527,7 @@ class ShyniClient(
                 val matching = physicalParts(info).filter { it.metadataId == candidate.id && it.folderKey == folder &&
                     it.partId != spec.partId }
                     .sortedWith(compareBy<PhysicalPart> { it.partIndex ?: Int.MAX_VALUE }.thenBy { it.fileName }.thenBy { it.partId })
-                matching.firstOrNull()?.let { return navigationItem(candidate, it) }
+                matching.firstOrNull()?.let { return anchor to navigationItem(candidate, it) }
             }
             return null
         }
@@ -532,7 +538,8 @@ class ShyniClient(
             // racing a second HTTP request for the same candidate.
             val previousItem = previous.await()
             val nextItem = next.await()
-            PlaybackNeighbors(previousItem, nextItem, verifiedNextEpisode())
+            val verifiedEpisode = verifiedNextEpisode()
+            PlaybackNeighbors(previousItem, nextItem, verifiedEpisode?.second, verifiedEpisode?.first)
         }
         }.also { currentCoroutineContext().ensureActive(); authorization() }
     }

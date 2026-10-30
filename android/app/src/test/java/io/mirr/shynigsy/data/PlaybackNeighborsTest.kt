@@ -174,7 +174,9 @@ class PlaybackNeighborsTest {
             val adjacent = client.playbackNeighbors(spec(current))
             assertEquals(91, adjacent.next!!.navigationPartId)
             assertNull(adjacent.nextEpisode)
-            assertEquals(before + 1, server.requestCount)
+            // A missing card number now triggers a catalogue lookup. A 404 still
+            // cannot turn another part of this same episode into the next episode.
+            assertEquals(before + 2, server.requestCount)
         }
         client = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
         responses["/libraries/9/shows/5/episodes"] = """[
@@ -182,6 +184,43 @@ class PlaybackNeighborsTest {
             {"id":25,"season_number":0,"episode_number":1}]"""
         responses["/libraries/9/media_info/item/25"] = info(25, 95, "/fixture/series/next.mp4")
         assertEquals(95, client.playbackNeighbors(spec(episode(0, 0))).nextEpisode!!.navigationPartId)
+    }
+
+    @Test fun missingContinueCardNumbersAreRecoveredFromExactSeriesEpisode() = runBlocking {
+        responses["/libraries/9/media_info/90"] = info(23, 90, "/fixture/series/current.mp4")
+        responses["/libraries/9/shows/5/episodes"] = """[
+            {"id":23,"season_number":1,"episode_number":6},
+            {"id":25,"season_number":1,"episode_number":7}]"""
+        responses["/libraries/9/media_info/item/25"] = info(25, 95, "/fixture/series/next.mp4")
+        for (current in listOf(episode(null, null), episode(1, null), episode(null, 6))) {
+            client = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
+            val found = client.playbackNeighbors(spec(current))
+            assertEquals(95, found.nextEpisode?.navigationPartId)
+            assertEquals(23, found.currentEpisode?.id)
+            assertEquals(1, found.currentEpisode?.seasonNumber)
+            assertEquals(6, found.currentEpisode?.episodeNumber)
+            assertEquals(601, found.currentEpisode?.viewItemId)
+        }
+    }
+
+    @Test fun missingNumbersNeverUseConflictingOrAmbiguousEpisodeAnchors() = runBlocking {
+        responses["/libraries/9/media_info/90"] = info(23, 90, "/fixture/series/current.mp4")
+        responses["/libraries/9/media_info/item/25"] = info(25, 95, "/fixture/series/next.mp4")
+        val cases = listOf(
+            """{"id":23,"season_number":2,"episode_number":6}""" to episode(1, null),
+            """{"id":23,"season_number":1,"episode_number":6,"show_id":99}""" to episode(null, null),
+            """{"id":23,"season_number":1,"episode_number":6,"view_item_id":999}""" to episode(null, null),
+            """{"id":23,"season_number":1,"episode_number":6,"library_view_id":99}""" to episode(null, null),
+            """{"id":23,"season_number":1,"episode_number":6}, {"id":23,"season_number":1,"episode_number":6}""" to episode(null, null),
+            """{"id":23,"season_number":1,"episode_number":6}, {"id":23,"season_number":1,"episode_number":6,"view_item_id":999}""" to episode(null, null),
+        )
+        for ((anchor, current) in cases) {
+            client = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
+            responses["/libraries/9/shows/5/episodes"] = """[$anchor,{"id":25,"season_number":1,"episode_number":7}]"""
+            val found = client.playbackNeighbors(spec(current))
+            assertNull(anchor, found.nextEpisode)
+            assertNull(anchor, found.currentEpisode)
+        }
     }
 
     @Test fun anUnavailableOptionalEpisodeCatalogueRetainsBothGenericSplitParts() = runBlocking {
