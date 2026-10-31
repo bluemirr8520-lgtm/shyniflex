@@ -18,6 +18,7 @@ import android.widget.ArrayAdapter
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -159,6 +160,10 @@ class NativePlayerActivity : AppCompatActivity() {
     private var conversionJob: Job? = null
     private var conversionResumeWhenVisible: Boolean? = null
     private var conversionRestore: ConversionRestore? = null
+    private val continuousPlaybackGate = ContinuousPlaybackGate()
+    // Kept until the replacement renders, so a failure returns to the completed series.
+    private var continuousPrevious: ConversionRestore? = null
+    private var continuousLoadingOverlay: View? = null
     private var playbackNeighbors: PlaybackNeighbors? = null
     private var neighborsJob: Job? = null
     private var navigationLoading = false
@@ -444,7 +449,8 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (television && ::segmentActions.isInitialized && segmentActions.hasFocus()) {
+                if (continuousPrevious != null) leavePlayer()
+                else if (television && ::segmentActions.isInitialized && segmentActions.hasFocus()) {
                     playerView.hideController()
                     restoreSegmentPlaybackFocus()
                 } else if (television && playerView.isControllerFullyVisible) playerView.hideController()
@@ -477,6 +483,21 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         playerView.findViewById<ImageButton>(R.id.player_previous).setOnClickListener { switchNeighbor(false) }
         playerView.findViewById<ImageButton>(R.id.player_next).setOnClickListener { switchNeighbor(true) }
+        val continuousSettings = getSharedPreferences("gsy_settings", MODE_PRIVATE)
+        val continuousButton = playerView.findViewById<Button>(R.id.player_continuous)
+        fun updateContinuousButton() {
+            val enabled = continuousSettings.getBoolean("continuous_playback", false)
+            continuousButton.text = if (enabled) "연속재생\n켜짐" else "연속재생\n꺼짐"
+            continuousButton.contentDescription = if (enabled) "연속 재생 켜짐" else "연속 재생 꺼짐"
+            continuousButton.isSelected = enabled
+            continuousButton.setTextColor(if (enabled) 0xFF7BE6C6.toInt() else Color.WHITE)
+        }
+        continuousButton.setOnClickListener {
+            val enabled = !continuousSettings.getBoolean("continuous_playback", false)
+            continuousSettings.edit().putBoolean("continuous_playback", enabled).apply()
+            updateContinuousButton()
+        }
+        updateContinuousButton()
         updatePlaybackButtons()
         applyResizeMode()
         gestures = Media3GestureView(this).apply {
@@ -585,7 +606,7 @@ class NativePlayerActivity : AppCompatActivity() {
             lockButton.visibility = View.GONE
             playerView.controllerShowTimeoutMs = 6000
             listOf(R.id.player_back, R.id.player_resize, R.id.player_settings, R.id.player_speed,
-                R.id.player_conversion, R.id.player_subtitles, R.id.player_previous, R.id.player_next,
+                R.id.player_conversion, R.id.player_subtitles, R.id.player_previous, R.id.player_next, R.id.player_continuous,
                 androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_play_pause,
                 androidx.media3.ui.R.id.exo_ffwd).forEach { id ->
                 playerView.findViewById<View>(id)?.apply {
@@ -777,6 +798,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (continuousLoadingOverlay?.isShown == true) return super.dispatchKeyEvent(event)
         if (event.action == KeyEvent.ACTION_DOWN) abandonEnginePreflightForInteraction()
         if (television && event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_CENTER,
@@ -816,6 +838,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (continuousLoadingOverlay?.isShown == true) return super.dispatchTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) abandonEnginePreflightForInteraction()
         return super.dispatchTouchEvent(event)
     }
@@ -1008,6 +1031,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                     forceMpvSession = "${spec.sessionId}:${spec.partId}"
                     if (created.playbackState == Player.STATE_READY) acceptPreparedPlayer(created)
+                    finishReplacementAfterFirstFrame(created)
                     created.playWhenReady = resumeWhenVisible && visible
                     refreshSegmentActions()
                 }
@@ -1119,12 +1143,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     if (created.playbackState == Player.STATE_READY) checkMpvProbe(created, candidate)
                     return
                 }
-                if (conversionRestore != null) {
-                    conversionRestore = null
-                    conversionLoading = false
-                    handler.removeCallbacks(conversionTimeout)
-                    updatePlaybackButtons()
-                }
+                finishReplacementAfterFirstFrame(created)
                 if (!subtitleListFailed) loadDeferredSubtitles(created)
             }
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
@@ -1150,6 +1169,18 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         created.prepare()
         created.playWhenReady = resumeWhenVisible && visible && created !is ExoPlayer && !mpvProbePending
+    }
+
+    private fun finishReplacementAfterFirstFrame(created: Player) {
+        if (player !== created || !canFinishPlaybackHandoff(conversionRestore != null,
+                playbackFirstFrameReported, mpvProbePending)) return
+        conversionRestore = null
+        continuousPrevious = null
+        continuousPlaybackGate.reset()
+        dismissContinuousLoading(restoreFocus = true)
+        conversionLoading = false
+        handler.removeCallbacks(conversionTimeout)
+        updatePlaybackButtons()
     }
 
     private fun fallbackFromExo(active: Player) {
@@ -1613,6 +1644,7 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         if (!exiting) {
             exiting = true
+            dismissContinuousLoading()
             presenceLifecycle.close(endSession = false)
             cancelSpoilerPlaybackReauthentication()
             settleWatchTime(false)
@@ -2062,6 +2094,15 @@ class NativePlayerActivity : AppCompatActivity() {
         conversionRestore = null
         handler.removeCallbacks(conversionTimeout)
         if (exiting || isDestroyed) return
+        if (continuousPrevious != null) {
+            // The old item has already ended: never reopen its tail on auto-next failure.
+            continuousPrevious = null
+            spec = previous.spec; lastPosition = previous.duration; lastDuration = previous.duration
+            completed = true; refreshing = false; conversionLoading = false
+            toast("다음 회차를 재생하지 못했습니다.")
+            finishCompletedPlaybackNow(alreadyQueued = true)
+            return
+        }
         refreshing = true; conversionLoading = true
         conversionResumeWhenVisible = previous.playing
         releasePlayer()
@@ -2479,7 +2520,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun enqueueProgress(state: String) {
-        if (endingAfterCompletion || !prepared || !::spec.isInitialized || (completed && state != "completed")) return
+        if (endingAfterCompletion || (continuousPlaybackGate.isActive() && completed) ||
+            !prepared || !::spec.isInitialized || (completed && state != "completed")) return
         capturePosition(); settleWatchTime(visible && !exiting && player?.isPlaying == true)
         submitProgress(ProgressUpdate(spec, lastPosition, lastDuration, state, watchedMs))
     }
@@ -2525,9 +2567,22 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun finishCompletedPlayback() {
         if (exiting || endingAfterCompletion || isDestroyed) return
+        if (continuousPlaybackGate.isActive()) return
+        val shouldContinue = getSharedPreferences("gsy_settings", MODE_PRIVATE).getBoolean("continuous_playback", false) &&
+            spec.sourceItem?.type == "episode" && visible && activityStarted && player != null && !closeLockedSpoilerPlayback()
+        if (shouldContinue && continuousPlaybackGate.begin()) {
+            startContinuousPlayback()
+            return
+        }
+        finishCompletedPlaybackNow()
+    }
+
+    private fun finishCompletedPlaybackNow(alreadyQueued: Boolean = false) {
+        if (exiting || endingAfterCompletion || isDestroyed) return
         capturePosition()
         completionGate().finish()
         endingAfterCompletion = true; exiting = true; completed = true; resumeWhenVisible = false
+        dismissContinuousLoading()
         cancelSpoilerPlaybackReauthentication()
         settleWatchTime(false)
         if (lastDuration > 0) lastPosition = lastDuration
@@ -2540,14 +2595,145 @@ class NativePlayerActivity : AppCompatActivity() {
         updatePlaybackButtons()
         // The independent writer drains this critical snapshot after Activity exit.
         // A finished frame must never wait on the server before returning to the caller.
-        submitProgress(ProgressUpdate(spec, lastPosition, lastDuration, "completed", watchedMs))
+        if (!alreadyQueued) submitProgress(ProgressUpdate(spec, lastPosition, lastDuration, "completed", watchedMs))
         returnToCaller(spec.sourceItem?.takeIf { it.type == "episode" && it.id == spec.itemId &&
             it.libraryId == spec.libraryId && it.viewItemId == spec.viewItemId }?.toJson())
+    }
+
+    /** Complete the old item exactly once, then prepare only an independently verified next episode. */
+    private fun startContinuousPlayback() {
+        val active = player
+        val epoch = playbackAuthentication.captureProgress()
+        if (active == null || epoch == null) { continuousPlaybackGate.reset(); finishCompletedPlaybackNow(); return }
+        capturePosition(); completionGate().finish(); settleWatchTime(false)
+        completed = true
+        if (lastDuration > 0) lastPosition = lastDuration
+        val previous = ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition, false,
+            spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
+            selectedTrackPreference(C.TRACK_TYPE_AUDIO),
+            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+                selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
+            if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
+            lastDuration)
+        continuousPrevious = previous
+        val completionQueued = submitProgress(ProgressUpdate(previous.spec, lastPosition, lastDuration, "completed", watchedMs))
+        if (!completionQueued) {
+            // A closed queue or changing authentication means the critical write
+            // was not accepted; never begin another episode as if it had been.
+            continuousPrevious = null
+            continuousPlaybackGate.reset()
+            toast("시청 기록을 저장하지 못해 연속재생을 중단했습니다.")
+            finishCompletedPlaybackNow()
+            return
+        }
+        val account = client.token
+        val currentNeighbors = playbackNeighbors
+        handler.removeCallbacks(ticker); cancelPlaybackMetadata(); neighborsJob?.cancel()
+        refreshing = true; navigationLoading = true; conversionResumeWhenVisible = true
+        active.pause(); playerView.hideController(); hideLockControl(); hideSegmentActions(); updatePlaybackButtons()
+        showContinuousLoading()
+        neighborsJob = scope.launch {
+            var replaced = false
+            try {
+                val target = continuousPlaybackTarget(true, previous.spec, currentNeighbors)
+                    ?: withTimeoutOrNull(8_000) {
+                        continuousPlaybackTarget(true, previous.spec, client.playbackNeighbors(previous.spec))
+                    }
+                if (target == null) return@launch
+                if (exiting || isDestroyed || !visible || !activityStarted || player !== active || client.token != account ||
+                    !playbackAuthentication.isCurrent(epoch) || !samePlaybackPresenceSource(previous.spec, spec) ||
+                    closeLockedSpoilerPlayback()) return@launch
+                val next = withTimeoutOrNull(20_000) {
+                    var preparedNext = client.playback(target, deferSubtitles = true)
+                        .copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
+                    previous.spec.conversionHeight?.let { height -> preparedNext = client.convertPlayback(preparedNext, height, 0) }
+                    preparedNext
+                } ?: return@launch
+                if (exiting || isDestroyed || !visible || !activityStarted || player !== active || client.token != account ||
+                    !playbackAuthentication.isCurrent(epoch) || !samePlaybackPresenceSource(previous.spec, spec) ||
+                    closeLockedSpoilerPlayback() ||
+                    !getSharedPreferences("gsy_settings", MODE_PRIVATE).getBoolean("continuous_playback", false)) return@launch
+                conversionRestore = previous; conversionLoading = true; refreshing = false
+                replaced = true
+                applyConversionPlayback(next, previous.copy(position = 0, playing = true))
+                handler.postDelayed(conversionTimeout, 45_000)
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // Leaving or rotating the player invalidates this handoff.
+            } catch (_: Exception) {
+                if (!exiting && !isDestroyed) {
+                    if (replaced) restoreConversion("다음 회차를 불러오지 못했습니다.")
+                    else toast("다음 회차를 불러오지 못했습니다.")
+                }
+            } finally {
+                navigationLoading = false
+                if (!replaced && !exiting && !isDestroyed && player === active && continuousPrevious === previous) {
+                    continuousPrevious = null; refreshing = false; conversionResumeWhenVisible = null
+                    finishCompletedPlaybackNow(alreadyQueued = true)
+                }
+                if (!isDestroyed) updatePlaybackButtons()
+            }
+        }
     }
 
     private fun returnToCaller(completedEpisode: String? = null) {
         setResult(RESULT_OK, Intent().apply { if (completedEpisode != null) putExtra("completedEpisode", completedEpisode) })
         finish()
+    }
+
+    /** A responsive, cancellable overlay while next-episode network work runs asynchronously. */
+    private fun showContinuousLoading() {
+        if (continuousLoadingOverlay != null || isDestroyed || exiting) return
+        val root = playerView.parent as? FrameLayout ?: return
+        val overlay = FrameLayout(this).apply {
+            tag = "continuous_loading"
+            // The current video has ended; consume gestures so a seek cannot race the handoff.
+            isClickable = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(12), dp(10))
+            setBackgroundColor(0xE51B1B1B.toInt())
+        }
+        val spinner = ProgressBar(this).apply {
+            isIndeterminate = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val label = TextView(this).apply {
+            text = "다음 회차를 불러오는 중"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(dp(12), 0, dp(8), 0)
+        }
+        val cancel = Button(this).apply {
+            tag = "continuous_loading_cancel"
+            text = "취소"
+            contentDescription = "연속재생 취소하고 회차 목록으로 돌아가기"
+            setOnClickListener { if (continuousPrevious != null && !exiting) leavePlayer() }
+            if (television) {
+                applyControlHighlight(this)
+                isFocusable = true
+                isFocusableInTouchMode = true
+            }
+        }
+        panel.addView(spinner, LinearLayout.LayoutParams(dp(32), dp(32)))
+        panel.addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        panel.addView(cancel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+        overlay.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        root.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        continuousLoadingOverlay = overlay
+        if (television) cancel.post {
+            if (continuousLoadingOverlay === overlay && !exiting && !isDestroyed) cancel.requestFocus()
+        }
+    }
+
+    private fun dismissContinuousLoading(restoreFocus: Boolean = false) {
+        val overlay = continuousLoadingOverlay ?: return
+        continuousLoadingOverlay = null
+        (overlay.parent as? ViewGroup)?.removeView(overlay)
+        if (restoreFocus && television && !exiting && !isDestroyed && ::playerView.isInitialized) playerView.requestFocus()
     }
 
     private fun finishAfterProgress(acknowledgement: CompletableDeferred<Boolean>) {
@@ -2596,6 +2782,13 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun leavePlayer() {
         if (exiting) return
+        continuousPrevious?.let { previous ->
+            neighborsJob?.cancel(); continuousPrevious = null
+            spec = previous.spec; lastPosition = previous.duration; lastDuration = previous.duration
+            completed = true
+            finishCompletedPlaybackNow(alreadyQueued = true)
+            return
+        }
         gestures.cancelSeekGesture()?.let { lastPosition = it; pendingSeek = it }
         exiting = true; resumeWhenVisible = false
         hideSegmentActions()
@@ -2677,9 +2870,9 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean("endingAfterCompletion", endingAfterCompletion)
+        outState.putBoolean("endingAfterCompletion", endingAfterCompletion || continuousPrevious != null)
         if (::spec.isInitialized) {
-            capturePosition(); outState.putString("spec", spec.toJson()); outState.putLong("position", lastPosition)
+            capturePosition(); outState.putString("spec", (continuousPrevious?.spec ?: spec).toJson()); outState.putLong("position", lastPosition)
             outState.putLong("duration", lastDuration); outState.putLong("watched", watchedMs); outState.putFloat("speed", speed)
             outState.putStringArrayList("watchedReached", ArrayList(watchedReached + completionGates.filterValues { it.eligible }.keys))
             val desiredPlayback = if (mpvProbePending || (player is ExoPlayer && !exoValidated)) resumeWhenVisible
@@ -2695,6 +2888,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        dismissContinuousLoading()
         resizeNotice?.cancel()
         handler.removeCallbacksAndMessages(null); scope.cancel()
         if (::spec.isInitialized) { settleWatchTime(false); if (!isChangingConfigurations) enqueueProgress(if (completed) "completed" else "stopped") }

@@ -311,7 +311,142 @@ class CreditsPlaybackTest {
             fixture.assertHealthy()
         }
 
+    @Test fun continuousPlaybackStartsTheVerifiedNextEpisodeAtNaturalEndOnce() =
+        withFixture(continuous = true, nextDecisionDelayMs = 1_000) { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 5_000)
+            scenario.onActivity { player(it).play() }
+            waitUntil("Natural EOF must request the next episode", 12_000) { fixture.count("/playback/decision") == 1 }
+            scenario.onActivity { activity ->
+                assertTrue(requireNotNull(activity.window.decorView.findViewWithTag<View>("continuous_loading")).isShown)
+                assertTrue(requireNotNull(activity.window.decorView.findViewWithTag<View>("continuous_loading_cancel")).isShown)
+                // Native and Media3 can deliver the same end through independent paths.
+                val finish = NativePlayerActivity::class.java.getDeclaredMethod("finishCompletedPlayback")
+                    .apply { isAccessible = true }
+                repeat(2) { finish.invoke(activity) }
+            }
+            waitFor(scenario, "The verified next episode must start at zero", 15_000) {
+                spec(it).partId == NEXT_PART && player(it).playbackState == Player.STATE_READY && player(it).isPlaying
+            }
+            scenario.onActivity {
+                assertEquals(0L, spec(it).resumeMs)
+                assertTrue(player(it).currentPosition < 3_000)
+                assertNull(it.window.decorView.findViewWithTag<View>("continuous_loading"))
+            }
+            assertEquals(1, fixture.count("/playback/decision"))
+            waitUntil("The previous episode must be recorded as completed") {
+                fixture.requests().any { it.path == "/playback/progress" &&
+                    it.body.optInt("metadata_item_id") == ITEM && it.body.optString("state") == "completed_candidate" }
+            }
+            assertFalse(fixture.requests().any { it.path == "/stream/$ALTERNATE_PART" })
+            fixture.assertHealthy()
+        }
+
+    @Test fun deniedAutomaticNextReturnsInsteadOfReopeningTheFinishedEpisode() =
+        withFixture(continuous = true, denyNextDecision = true) { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 5_000)
+            scenario.onActivity { player(it).play() }
+            waitUntil("The automatic next decision must be attempted", 12_000) { fixture.count("/playback/decision") == 1 }
+            waitUntil("A failed automatic next must close the playback screen", 12_000) {
+                scenario.state == Lifecycle.State.DESTROYED
+            }
+            waitUntil("The finished episode must be recorded before returning") {
+                fixture.requests().any { it.path == "/playback/progress" &&
+                    it.body.optInt("metadata_item_id") == ITEM && it.body.optString("state") == "completed_candidate" }
+            }
+            assertFalse(fixture.requests().any { it.path == "/stream/$NEXT_PART" })
+            fixture.assertHealthy()
+        }
+
+    @Test fun continuousPlaybackOffReturnsAtNaturalEndWithoutOpeningAnotherEpisode() =
+        withFixture(continuous = false) { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 5_000)
+            scenario.onActivity { player(it).play() }
+            waitUntil("Without continuous playback natural EOF closes the playback screen", 12_000) {
+                scenario.state == Lifecycle.State.DESTROYED
+            }
+            assertEquals(0, fixture.count("/playback/decision"))
+            assertFalse(fixture.requests().any { it.path == "/stream/$NEXT_PART" })
+            fixture.assertHealthy()
+        }
+
+    @Test fun reachingTheWatchedThresholdWhilePausedDoesNotStartTheNextEpisode() =
+        withFixture(continuous = true) { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 5_700)
+            Thread.sleep(1_200)
+            scenario.onActivity {
+                assertFalse(player(it).isPlaying)
+                assertEquals(PART, spec(it).partId)
+                assertFalse(it.isFinishing)
+            }
+            assertEquals(0, fixture.count("/playback/decision"))
+            fixture.assertHealthy()
+        }
+
+    @Test fun rejectedCompletionQueueNeverStartsTheNextEpisode() =
+        withFixture(continuous = true) { fixture, scenario ->
+            preparePaused(scenario)
+            scenario.onActivity { activity ->
+                val queue = field<Any>(activity, "updates")
+                queue.javaClass.getDeclaredMethod("close").apply { isAccessible = true }.invoke(queue)
+            }
+            seekPaused(scenario, 5_000)
+            scenario.onActivity { player(it).play() }
+            waitUntil("A rejected completion must return to the series", 12_000) {
+                scenario.state == Lifecycle.State.DESTROYED
+            }
+            assertEquals(0, fixture.count("/playback/decision"))
+            assertFalse(fixture.requests().any { it.path == "/stream/$NEXT_PART" })
+            fixture.assertHealthy()
+        }
+
+    @Test fun continuousLoadingCanBeCancelledWithoutStartingTheNextEpisode() =
+        withFixture(continuous = true, nextDecisionDelayMs = 3_000) { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 5_000)
+            scenario.onActivity { player(it).play() }
+            waitUntil("The delayed next decision must begin", 12_000) { fixture.count("/playback/decision") == 1 }
+            fixture.expectDecisionCancellation()
+            scenario.onActivity { activity ->
+                val cancel = requireNotNull(activity.window.decorView.findViewWithTag<View>("continuous_loading_cancel"))
+                assertTrue(cancel.isShown)
+                assertTrue(cancel.performClick())
+            }
+            waitUntil("Cancelling the handoff must close the player", 12_000) {
+                scenario.state == Lifecycle.State.DESTROYED
+            }
+            waitUntil("Cancelling must retain the completed previous episode") {
+                fixture.requests().any { it.path == "/playback/progress" &&
+                    it.body.optInt("metadata_item_id") == ITEM && it.body.optString("state") == "completed_candidate" }
+            }
+            Thread.sleep(3_200)
+            assertFalse("A late next decision must not start playback", fixture.requests().any { it.path == "/stream/$NEXT_PART" })
+            fixture.assertHealthy()
+        }
+
+    @Test fun tvContinuousLoadingFocusesTheCancelButton() =
+        withTvFixture(continuous = true, nextDecisionDelayMs = 4_000) { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 5_000)
+            scenario.onActivity { player(it).play() }
+            waitUntil("The delayed next decision must begin", 12_000) { fixture.count("/playback/decision") == 1 }
+            fixture.expectDecisionCancellation()
+            waitFor(scenario, "TV remote focus must reach the cancellation button") {
+                it.window.decorView.findViewWithTag<View>("continuous_loading_cancel")?.hasFocus() == true
+            }
+            remoteKey(scenario, KeyEvent.KEYCODE_DPAD_CENTER)
+            waitUntil("Remote confirmation must cancel automatic playback", 12_000) {
+                scenario.state == Lifecycle.State.DESTROYED
+            }
+            assertFalse(fixture.requests().any { it.path == "/stream/$NEXT_PART" })
+            fixture.assertHealthy()
+        }
+
     private fun withFixture(includeNextEpisode: Boolean = true, denyNextDecision: Boolean = false,
+        continuous: Boolean = false, nextDecisionDelayMs: Long = 0,
         test: (Fixture, ActivityScenario<NativePlayerActivity>) -> Unit) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -322,11 +457,14 @@ class CreditsPlaybackTest {
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
         val oldDevice = settings.getString("device_id", null)
         val oldSpeed = settings.getFloat("playback_speed", 1f)
+        val hadContinuous = settings.contains("continuous_playback")
+        val oldContinuous = settings.getBoolean("continuous_playback", false)
         val store = SessionStore(context)
         val clip = instrumentation.context.assets.open("media3/gesture-av.mp4").use { it.readBytes() }
-        Fixture(clip, includeNextEpisode, denyNextDecision).use { fixture ->
+        Fixture(clip, includeNextEpisode, denyNextDecision, nextDecisionDelayMs).use { fixture ->
             try {
-                settings.edit().putString("device_id", DEVICE).putFloat("playback_speed", 1f).commit()
+                settings.edit().putString("device_id", DEVICE).putFloat("playback_speed", 1f)
+                    .putBoolean("continuous_playback", continuous).commit()
                 store.save(fixture.origin, SESSION, "합성 크레딧 검사")
                 val item = MediaItem(ITEM, VIEW, "합성 현재 회차", "episode", durationMs = 6_000,
                     seasonNumber = 1, episodeNumber = 1, viewItemId = VIEW_ITEM, showId = SHOW,
@@ -343,17 +481,19 @@ class CreditsPlaybackTest {
                 settings.edit().apply {
                     if (oldDevice == null) remove("device_id") else putString("device_id", oldDevice)
                     putFloat("playback_speed", oldSpeed)
+                    if (hadContinuous) putBoolean("continuous_playback", oldContinuous) else remove("continuous_playback")
                 }.commit()
             }
         }
     }
 
-    private fun withTvFixture(test: (Fixture, ActivityScenario<NativePlayerActivity>) -> Unit) {
+    private fun withTvFixture(continuous: Boolean = false, nextDecisionDelayMs: Long = 0,
+        test: (Fixture, ActivityScenario<NativePlayerActivity>) -> Unit) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         // Guard before delegating to any preferences, sessions, assets or sockets.
         assumeTrue("Only the isolated synthetic QA package may run TV focus tests", context.packageName.endsWith(".spoilerqa"))
         assumeTrue("Remote window-focus tests require an Android TV device", context.isTelevision())
-        withFixture(test = test)
+        withFixture(continuous = continuous, nextDecisionDelayMs = nextDecisionDelayMs, test = test)
     }
 
     private fun remoteKey(scenario: ActivityScenario<NativePlayerActivity>, keyCode: Int) {
@@ -451,12 +591,13 @@ class CreditsPlaybackTest {
 
     /** Exact synthetic API, no proxy, redirection, DNS or external destination. */
     private class Fixture(private val clip: ByteArray, private val includeNext: Boolean,
-        private val denyNext: Boolean) : AutoCloseable {
+        private val denyNext: Boolean, private val nextDecisionDelayMs: Long) : AutoCloseable {
         private val server = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 200 }
         private val workers = Executors.newFixedThreadPool(6) { task -> Thread(task, "credits-qa-http").apply { isDaemon = true } }
         private val records = Collections.synchronizedList(mutableListOf<Request>())
         private val sockets = Collections.synchronizedSet(mutableSetOf<Socket>())
         private val failure = AtomicReference<Throwable?>()
+        @Volatile private var decisionCancellationExpected = false
         val origin get() = "http://127.0.0.1:${server.localPort}"
         private val listener = thread(name = "credits-qa-loopback", isDaemon = true) {
             while (!server.isClosed) {
@@ -468,10 +609,12 @@ class CreditsPlaybackTest {
 
         fun requests(): List<Request> = synchronized(records) { records.toList() }
         fun count(path: String) = requests().count { it.path == path }
+        fun expectDecisionCancellation() { decisionCancellationExpected = true }
         fun assertHealthy() { failure.get()?.let { throw AssertionError("Synthetic credits fixture failed", it) } }
 
         private fun handle(socket: Socket) {
             var streaming = false
+            var decisionRequest = false
             try {
                 socket.use { connection ->
                     connection.soTimeout = 3_000
@@ -514,10 +657,12 @@ class CreditsPlaybackTest {
                             if (includeNext) put(episode(NEXT_ITEM, 2))
                         })
                         "/playback/decision" -> {
+                            decisionRequest = true
                             check(includeNext)
                             check(request.body.getInt("part_id") == NEXT_PART)
                             check(request.body.getInt("library_view_id") == VIEW)
                             check(request.body.getInt("view_item_id") == VIEW_ITEM)
+                            if (nextDecisionDelayMs > 0) Thread.sleep(nextDecisionDelayMs)
                             if (denyNext) json(connection, JSONObject().put("detail", "합성 다음 회차 권한 거부"), 403)
                             else json(connection, JSONObject().put("decision", "direct_play")
                                 .put("library_view_id", VIEW).put("view_item_id", VIEW_ITEM).put("playback_context_token", NEXT_CONTEXT)
@@ -529,13 +674,18 @@ class CreditsPlaybackTest {
                                 .put("view_item_id", VIEW_ITEM).put("part_id", NEXT_PART))
                         }
                         "/subtitles/$NEXT_PART" -> json(connection, JSONObject().put("subtitles", JSONArray()))
+                        "/continue-watching/$ITEM/watch-state", "/continue-watching/$NEXT_ITEM/watch-state" -> {
+                            check(request.method == "PUT" && request.body.optBoolean("watched"))
+                            json(connection, JSONObject().put("ok", true).put("watched", true))
+                        }
                         "/playback/progress" -> json(connection, if (request.method == "GET")
                             JSONObject().put("items", JSONArray()) else JSONObject().put("ok", true))
                         else -> error("Unexpected synthetic endpoint")
                     }
                 }
             } catch (error: SocketException) {
-                if (!streaming && !server.isClosed) failure.compareAndSet(null, error)
+                if (!streaming && !server.isClosed && !(decisionRequest && decisionCancellationExpected))
+                    failure.compareAndSet(null, error)
             } catch (error: Throwable) {
                 if (!server.isClosed) failure.compareAndSet(null, error)
             } finally { sockets -= socket }
