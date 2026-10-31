@@ -139,6 +139,11 @@ class NativePlayerActivity : AppCompatActivity() {
     private var resizeScale = 1f
     private var resizeNotice: Toast? = null
     private var player: Player? = null
+    // Kept outside PlaybackSpec: it is neither a server marker nor reusable across files.
+    private var chapterCreditsOwner: Player? = null
+    private var chapterCreditsEvidence: OriginalChapterCredits? = null
+    private val chapterCreditsCaptureGate = OriginalChapterCaptureGate()
+    private var chapterCreditsRetry: Runnable? = null
     private val mpvSubtitleController = MpvSubtitleController { native -> (player as? MpvPlayer)?.nativeSubtitleVisibility = native }
     private var engineSelectionJob: Job? = null
     private var engineGeneration = 0L
@@ -286,7 +291,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 (active?.isPlaying == true || gestures.isSeekGestureActive)
             val markerDelay = if (active != null && prepared && !refreshing && !navigationLoading && !conversionLoading &&
                 !playerGestureActive && !gestures.isSeekGestureActive && !gestures.locked)
-                playbackMarkerRefreshDelayMs(spec.markers, segmentPosition, lastDuration,
+                playbackMarkerRefreshDelayMs(effectiveSegmentMarkers(), segmentPosition, lastDuration,
                     active.playbackParameters.speed, active.isPlaying) else 500L
             handler.postDelayed(this, minOf(if (needsSubtitleUpdates) 50L else 500L, markerDelay))
         }
@@ -624,7 +629,34 @@ class NativePlayerActivity : AppCompatActivity() {
             active.playbackState != Player.STATE_READY ||
             !active.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) ||
             active.playerError != null || (::errorPanel.isInitialized && errorPanel.visibility == View.VISIBLE)) null
-        else currentSkipMarker(spec.markers, positionMs ?: active.currentPosition, lastDuration)
+        else currentSkipMarker(effectiveSegmentMarkers(), positionMs ?: active.currentPosition, lastDuration)
+
+    private fun effectiveSegmentMarkers(): List<PlaybackMarker> =
+        markersWithOriginalChapter(spec, chapterCreditsEvidence.takeIf { chapterCreditsOwner === player })
+
+    private fun captureOriginalChapterCredits(created: Player) {
+        if (player !== created || created !is MpvPlayer || exiting || isDestroyed || closeLockedSpoilerPlayback()) return
+        val source = originalChapterSource(spec) ?: return
+        if (!chapterCreditsCaptureGate.begin(created, source)) return
+        chapterCreditsRetry?.let(handler::removeCallbacks)
+        chapterCreditsRetry = null
+        val marker = runCatching { created.nativeChapterCredits(lastDuration) }.getOrNull()
+        if (player !== created || !sameOriginalChapterSource(spec, source) || exiting || isDestroyed) return
+        if (marker != null) {
+            chapterCreditsCaptureGate.finish(created, source)
+            chapterCreditsOwner = created
+            chapterCreditsEvidence = OriginalChapterCredits(source, marker)
+            refreshSegmentActions()
+        } else if (chapterCreditsCaptureGate.canRetry(created, source)) {
+            val retry = Runnable {
+                chapterCreditsRetry = null
+                if (player === created && !exiting && !isDestroyed && sameOriginalChapterSource(spec, source))
+                    captureOriginalChapterCredits(created)
+            }
+            chapterCreditsRetry = retry
+            handler.postDelayed(retry, 1_500)
+        }
+    }
 
     private fun creditsNextEpisodeTarget() = verifiedCreditsNextEpisode(spec, playbackNeighbors)
 
@@ -659,7 +691,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 else ViewGroup.FOCUS_BLOCK_DESCENDANTS
             // Timeline identity survives temporary loading/seek hides; only a genuine
             // interval exit or another physical file rearms automatic focus.
-            val timelineMarker = currentSkipMarker(spec.markers, positionMs ?: player?.currentPosition ?: lastPosition, lastDuration)
+            val timelineMarker = currentSkipMarker(effectiveSegmentMarkers(), positionMs ?: player?.currentPosition ?: lastPosition, lastDuration)
             val key = timelineMarker?.let { TvSegmentMarkerKey(spec.partId, it.type, it.startMs, it.endMs) }
             if (marker != null && next == null && nextHadFocus) focusSegmentSkip()
             tvSegmentFocusGate.offer(key, marker != null,
@@ -928,7 +960,8 @@ class NativePlayerActivity : AppCompatActivity() {
         engineSelectionJob?.start()
     }
 
-    private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean) {
+    private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean,
+        chapterCarry: OriginalChapterCredits? = null) {
         val headers = client.playbackHeaders(spec)
         val created: Player = if (useExo) try {
             // Media3 normally logs exception stack traces that can include signed URLs.
@@ -950,6 +983,11 @@ class NativePlayerActivity : AppCompatActivity() {
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
+        chapterCreditsOwner = created.takeIf { created is ExoPlayer && chapterCarry != null &&
+            chapterCarry.source == originalChapterSource(spec) }
+        chapterCreditsEvidence = chapterCarry.takeIf { chapterCreditsOwner === created }
+        chapterCreditsCaptureGate.reset()
+        if (created is MpvPlayer) originalChapterSource(spec)?.let { chapterCreditsCaptureGate.bind(created, it) }
         playbackMetadataGate.reset()
         playbackNeighbors = null
         updateNavigationButtons()
@@ -1076,6 +1114,7 @@ class NativePlayerActivity : AppCompatActivity() {
             override fun onRenderedFirstFrame() {
                 if (player !== created) return
                 playbackFirstFrameReported = true
+                captureOriginalChapterCredits(created)
                 if (mpvProbePending && created is MpvPlayer && candidate != null) {
                     if (created.playbackState == Player.STATE_READY) checkMpvProbe(created, candidate)
                     return
@@ -1153,11 +1192,15 @@ class NativePlayerActivity : AppCompatActivity() {
             mpvProbeJob = null
             finishMpvProbe = null
             handler.removeCallbacks(engineProbeTimeout)
+            // Carry only a snapshot taken from this validated original MPV source.
+            val chapterCarry = chapterCreditsEvidence.takeIf {
+                chapterCreditsOwner === created && it?.source == originalChapterSource(spec)
+            }
             releasePlayer()
             exoRestoreSubtitlePending = pendingSubtitles
             spec = spec.copy(subtitlesPending = false)
             playbackFirstFrameReported = false
-            startPreparedPlayer(null, true)
+            startPreparedPlayer(null, true, chapterCarry)
         }
     }
 
@@ -2518,6 +2561,11 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        chapterCreditsOwner = null
+        chapterCreditsEvidence = null
+        chapterCreditsRetry?.let(handler::removeCallbacks)
+        chapterCreditsRetry = null
+        chapterCreditsCaptureGate.reset()
         engineGeneration++
         engineSelectionJob?.cancel(); engineSelectionJob = null
         handler.removeCallbacks(engineSelectionTimeout)

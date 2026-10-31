@@ -93,6 +93,7 @@ class MpvPlayer(
     private var surfaceSize = Size.ZERO
     private var configuredVideoLayout: Triple<Boolean, Boolean, Float>? = null
     private var firstFrame = false
+    private var nativeFirstFrameSeen = false
     private var stopRequested = false
     private var startObserved = false
     private var output: Any? = null
@@ -266,7 +267,7 @@ class MpvPlayer(
         bufferedMs = positionMs; durationMs = conversionTimeline?.duration(null) ?: originalDuration.durationMs ?: C.TIME_UNSET
         seekable = isServerConverted && durationMs > 0
         loaded = false; loading = false; status = Player.STATE_IDLE; failure = null
-        startObserved = false; firstFrame = false; readiness.reset()
+        startObserved = false; firstFrame = false; nativeFirstFrameSeen = false; readiness.reset()
         tracks = Tracks.EMPTY; nativeTracks = emptyList(); video = VideoSize.UNKNOWN; clearCues()
         return done()
     }
@@ -277,7 +278,7 @@ class MpvPlayer(
         loadGeneration++
         main.removeCallbacks(eofCheck); eofState.reset()
         failure = null; stopRequested = false; startObserved = false; loaded = false; loading = true; status = Player.STATE_BUFFERING
-        firstFrame = false; readiness.reset(); bufferedMs = pendingStartMs
+        firstFrame = false; nativeFirstFrameSeen = false; readiness.reset(); bufferedMs = pendingStartMs
         nativePaused = !requestedPlay || focusSuppressed
         positionMs = pendingStartMs; positionUpdatedAt = SystemClock.elapsedRealtime()
         if (isServerConverted) {
@@ -448,6 +449,23 @@ class MpvPlayer(
             MPVLib.getPropertyDouble("container-fps"))
     }
 
+    /** Source chapters are read only from the currently loaded, original MPV file. */
+    internal fun nativeChapterCredits(expectedSourceDurationMs: Long): io.mirr.shynigsy.data.PlaybackMarker? {
+        if (!alive || !loaded || !nativeFirstFrameSeen || released || stopRequested || isServerConverted) return null
+        val expectedPath = expectedNativePath ?: return null
+        if (MPVLib.getPropertyString("path") != expectedPath) return null
+        val count = MPVLib.getPropertyInt("chapter-list/count")?.takeIf { it in 1..64 } ?: return null
+        val duration = MPVLib.getPropertyDouble("duration") ?: return null
+        val chapters = ArrayList<MpvChapter>(count)
+        for (index in 0 until count) {
+            val time = MPVLib.getPropertyDouble("chapter-list/$index/time") ?: return null
+            val title = MPVLib.getPropertyString("chapter-list/$index/title")
+            chapters.add(MpvChapter(time, title))
+        }
+        if (MPVLib.getPropertyString("path") != expectedPath) return null
+        return chapterCreditsMarker(chapters, duration, expectedSourceDurationMs, serverConversion = false)
+    }
+
     private fun refreshTracks(snapshot: String? = null) {
         if (!alive || !loaded) return
         // One snapshot replaces hundreds of synchronous core round trips for a
@@ -554,7 +572,7 @@ class MpvPlayer(
         when (eventId) {
             MPVLib.MpvEvent.MPV_EVENT_START_FILE -> {
                 if (!isExpectedNativeSource()) return@dispatchNative
-                startObserved = true; loaded = false; loading = true; status = Player.STATE_BUFFERING
+                startObserved = true; loaded = false; nativeFirstFrameSeen = false; loading = true; status = Player.STATE_BUFFERING
                 readiness.reset(); clearCues()
             }
             MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
@@ -583,7 +601,7 @@ class MpvPlayer(
                     eofState.playbackRestarted()
                     synchronizeNativePosition()
                     readiness.playbackRestarted(); updatePlaybackReadiness()
-                    firstFrame = true
+                    firstFrame = true; nativeFirstFrameSeen = true
                     // A seek inside one cue may not emit another sub-text change.
                     setText(MPVLib.getPropertyString("sub-text").orEmpty())
                     reconcileNativeEof()
