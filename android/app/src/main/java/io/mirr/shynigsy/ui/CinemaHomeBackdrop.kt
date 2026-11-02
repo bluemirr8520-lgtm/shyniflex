@@ -53,7 +53,9 @@ internal fun CinemaHomeBackdrop(
                     imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
             }
         }
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .38f)))
+        // Raise the artwork's transmission from 62% to 93% (1.5x), while
+        // retaining the separate fades that protect the title and page color.
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (hero != null) .07f else .38f)))
         Box(Modifier.fillMaxSize().continueSectionBackdropFade(
             heroHeight, MaterialTheme.colorScheme.background, wide))
         // This is after the page-color fade: even a white custom page cannot wash out gold actions.
