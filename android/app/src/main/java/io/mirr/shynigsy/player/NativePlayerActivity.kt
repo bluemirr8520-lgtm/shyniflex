@@ -551,7 +551,7 @@ class NativePlayerActivity : AppCompatActivity() {
         segmentSkipButton = Button(this).apply {
             id = R.id.player_segment_skip
             visibility = View.GONE
-            textSize = 14f; setTextColor(Color.WHITE); applyControlHighlight(this)
+            textSize = 14f; setTextColor(Color.WHITE); applySegmentActionHighlight(this)
             setPadding(dp(16), 0, dp(16), 0)
             setOnClickListener { skipCurrentSegment() }
         }
@@ -559,7 +559,7 @@ class NativePlayerActivity : AppCompatActivity() {
             id = R.id.player_credits_next
             visibility = View.GONE
             text = "다음 화"; textSize = 14f
-            setTextColor(Color.WHITE); applyControlHighlight(this)
+            setTextColor(Color.WHITE); applySegmentActionHighlight(this)
             setPadding(dp(12), 0, dp(16), 0)
             setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_player_next_episode, 0, 0, 0)
             compoundDrawablePadding = dp(6)
@@ -616,8 +616,8 @@ class NativePlayerActivity : AppCompatActivity() {
                     isFocusableInTouchMode = true
                 }
             }
-            applyControlHighlight(segmentSkipButton)
-            applyControlHighlight(creditsNextButton)
+            applySegmentActionHighlight(segmentSkipButton)
+            applySegmentActionHighlight(creditsNextButton)
             segmentSkipButton.isFocusableInTouchMode = true
             creditsNextButton.isFocusableInTouchMode = true
             listOf(segmentSkipButton, creditsNextButton).forEach { button ->
@@ -1271,6 +1271,12 @@ class NativePlayerActivity : AppCompatActivity() {
         view.elevation = 0f
         view.stateListAnimator = null
         (view as? TextView)?.setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
+    }
+
+    private fun applySegmentActionHighlight(view: View) {
+        applyControlHighlight(view)
+        view.background = getDrawable(R.drawable.player_credit_action)
+        view.backgroundTintList = null
     }
 
     private fun applyMenuHighlight(view: View) {

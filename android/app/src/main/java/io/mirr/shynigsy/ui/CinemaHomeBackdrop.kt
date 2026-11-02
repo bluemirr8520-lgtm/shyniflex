@@ -17,8 +17,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -57,15 +64,41 @@ internal fun CinemaHomeBackdrop(
         // retaining the separate fades that protect the title and page color.
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (hero != null) .07f else .38f)))
         Box(Modifier.fillMaxSize().continueSectionBackdropFade(
-            heroHeight, MaterialTheme.colorScheme.background, wide))
+            heroHeight, MaterialTheme.colorScheme.background, wide, cinematic = hero != null))
         // This is after the page-color fade: even a white custom page cannot wash out gold actions.
-        Box(Modifier.fillMaxWidth().height(heroHeight).background(if (wide) Brush.horizontalGradient(
-            0f to Color.Black.copy(alpha = .35f), .65f to Color.Black.copy(alpha = .35f),
-            1f to Color.Transparent,
-        ) else Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Black.copy(alpha = .35f)))))
+        if (hero != null) {
+            // Fade the extra title protection through the hero's lower edge so
+            // a light page color cannot reveal an abrupt horizontal seam.
+            Box(Modifier.fillMaxWidth().height(heroHeight + 32.dp).cinemaHeroTextScrim(heroHeight, wide))
+        } else {
+            Box(Modifier.fillMaxWidth().height(heroHeight).background(if (wide) Brush.horizontalGradient(
+                0f to Color.Black.copy(alpha = .35f), .65f to Color.Black.copy(alpha = .35f),
+                1f to Color.Transparent,
+            ) else Brush.verticalGradient(listOf(Color.Black.copy(alpha = .35f), Color.Black.copy(alpha = .35f)))))
+        }
         // The header stays readable even over a very bright still, regardless of the UI color.
         Box(Modifier.fillMaxWidth().height(128.dp).background(Brush.verticalGradient(
             listOf(Color.Black.copy(alpha = .72f), Color.Transparent))))
+    }
+}
+
+private fun Modifier.cinemaHeroTextScrim(heroHeight: Dp, wide: Boolean): Modifier = drawWithCache {
+    val shade = if (wide) Brush.horizontalGradient(
+        0f to Color.Black.copy(alpha = .35f), .65f to Color.Black.copy(alpha = .35f),
+        1f to Color.Transparent,
+    ) else SolidColor(Color.Black.copy(alpha = .35f))
+    val fadeStart = (heroHeight.toPx() - 32.dp.toPx()).coerceIn(0f, size.height)
+    val mask = Brush.verticalGradient(
+        0f to Color.White, (fadeStart / size.height.coerceAtLeast(1f)) to Color.White,
+        1f to Color.Transparent,
+    )
+    val layerPaint = Paint()
+    val bounds = Rect(Offset.Zero, size)
+    onDrawBehind {
+        drawIntoCanvas { it.saveLayer(bounds, layerPaint) }
+        drawRect(shade)
+        drawRect(mask, blendMode = BlendMode.DstIn)
+        drawIntoCanvas { it.restore() }
     }
 }
 

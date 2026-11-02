@@ -3,6 +3,9 @@ package io.mirr.shynigsy
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.net.Uri
 import android.os.SystemClock
 import android.security.NetworkSecurityPolicy
@@ -46,6 +49,44 @@ import kotlin.math.abs
 /** All preferences, sessions, media and HTTP belong to the synthetic QA package. */
 @RunWith(AndroidJUnit4::class)
 class CreditsPlaybackTest {
+    @Test fun introAndCreditsActionsHaveRoundedVisibleBackgrounds() =
+        withFixture { fixture, scenario ->
+            preparePaused(scenario)
+            seekPaused(scenario, 1_000)
+            waitFor(scenario, "Intro action must be visible") {
+                it.findViewById<View>(R.id.player_segment_skip).isShown
+            }
+            scenario.onActivity { assertPillBackground(it.findViewById(R.id.player_segment_skip)) }
+            seekPaused(scenario, 3_000)
+            waitFor(scenario, "Credit and next actions must be visible") {
+                it.findViewById<View>(R.id.player_segment_skip).isShown &&
+                    it.findViewById<View>(R.id.player_credits_next).isShown
+            }
+            scenario.onActivity {
+                assertPillBackground(it.findViewById(R.id.player_segment_skip))
+                assertPillBackground(it.findViewById(R.id.player_credits_next))
+            }
+            fixture.assertHealthy()
+        }
+
+    private fun assertPillBackground(button: Button) {
+        val background = requireNotNull(button.background.constantState).newDrawable().mutate()
+        background.setBounds(0, 0, 160, 48)
+        val bitmap = Bitmap.createBitmap(160, 48, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        background.state = intArrayOf(android.R.attr.state_enabled)
+        background.draw(canvas)
+        assertEquals("Rounded corners must remain transparent", 0, Color.alpha(bitmap.getPixel(0, 0)))
+        val normal = bitmap.getPixel(80, 24)
+        assertTrue("The action needs a visible background", Color.alpha(normal) > 0)
+        bitmap.eraseColor(Color.TRANSPARENT)
+        background.state = intArrayOf(android.R.attr.state_enabled, android.R.attr.state_focused)
+        background.jumpToCurrentState()
+        background.draw(canvas)
+        assertNotEquals("TV focus must be visibly distinct", normal, bitmap.getPixel(80, 24))
+        bitmap.recycle()
+    }
+
     @Test fun tvIntroAndCreditsPreferTheSkipActionWithControlsHidden(): Unit =
         withTvFixture { fixture, scenario ->
             preparePaused(scenario)

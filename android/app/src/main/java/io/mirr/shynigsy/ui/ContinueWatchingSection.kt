@@ -308,7 +308,17 @@ internal fun ContinueWatchingSection(
  * Artwork stays behind the entire shelf, while captions finish on the app's plain background.
  * Pixel positions follow the existing hero and actual shelf height; no layout state or extra row is needed.
  */
-internal fun Modifier.continueSectionBackdropFade(heroHeight: Dp, background: Color, wide: Boolean): Modifier =
+/** Artwork fades progressively across the whole section, including the poster shelf. */
+internal fun cinematicContinueFadeStops(): List<Pair<Float, Float>> = listOf(
+    0f to 0f, .18f to .04f, .45f to .20f, .72f to .52f, .90f to .90f, 1f to 1f,
+)
+
+internal fun cinematicContinueFadeColors(background: Color): Array<Pair<Float, Color>> =
+    cinematicContinueFadeStops().map { (position, alpha) -> position to background.copy(alpha = alpha) }.toTypedArray()
+
+internal fun Modifier.continueSectionBackdropFade(
+    heroHeight: Dp, background: Color, wide: Boolean, cinematic: Boolean = false,
+): Modifier =
     drawWithCache {
         val height = size.height.coerceAtLeast(1f)
         val heroEnd = heroHeight.toPx().coerceIn(0f, height)
@@ -318,7 +328,9 @@ internal fun Modifier.continueSectionBackdropFade(heroHeight: Dp, background: Co
             0f to Color.Black.copy(alpha = .78f), .58f to Color.Black.copy(alpha = .50f),
             1f to Color.Black.copy(alpha = .02f))
         else Brush.verticalGradient(listOf(Color.Black.copy(alpha = .48f), Color.Black.copy(alpha = .48f)))
-        val fade = Brush.verticalGradient(
+        val fade = if (cinematic) Brush.verticalGradient(
+            *cinematicContinueFadeColors(background),
+        ) else Brush.verticalGradient(
             0f to background.copy(alpha = 0f),
             (heroEnd * .88f / height) to background.copy(alpha = 0f),
             (heroEnd / height) to background.copy(alpha = .10f),
