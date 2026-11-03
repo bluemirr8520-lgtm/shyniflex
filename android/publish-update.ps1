@@ -18,8 +18,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the APK.' }
 $taskPackageLine = $taskBadging | Where-Object { $_ -like 'package:*' } | Select-Object -First 1
 if ($taskPackageLine -notmatch "name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)'") { throw 'Invalid APK metadata.' }
 $taskPackageName = $Matches[1]; $taskVersionCode = [long]$Matches[2]; $taskVersionName = $Matches[3]
-if ($taskPackageName -notin 'io.mirr.shyniflex','io.mirr.shyniflex.debug') { throw 'Unexpected APK package.' }
-$taskAssetName = if ($taskPackageName.EndsWith('.debug')) { 'shyniflex-tv.apk' } else { 'shyniflex.apk' }
+if ($taskPackageName -notin 'io.mirr.shyniflex','io.mirr.shyniflex.debug','io.mirr.shyniflex.renewed') { throw 'Unexpected APK package.' }
+if ($taskPackageName -eq 'io.mirr.shyniflex.renewed') {
+    $taskSigner = Join-Path $AndroidSdkPath 'build-tools/36.0.0/apksigner.bat'
+    $taskCertificate = & $taskSigner verify --print-certs $taskApk
+    if ($LASTEXITCODE -ne 0 -or -not ($taskCertificate -match '8d4bfd6534ce913ce90ca176878778ef24b6ebd1c4f7790972d2bcdae9b31c79')) { throw 'Unexpected signing certificate for the renewed app.' }
+}
+$taskAssetName = if ($taskPackageName.EndsWith('.debug')) { 'shyniflex-tv.apk' } elseif ($taskPackageName.EndsWith('.renewed')) { 'shyniflex-new.apk' } else { 'shyniflex.apk' }
 $taskHash = (Get-FileHash -LiteralPath $taskApk -Algorithm SHA256).Hash.ToLowerInvariant()
 $taskSourceHash = (Get-FileHash -LiteralPath $taskSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $taskManifest = @{ schema = 1; packages = @{ $taskPackageName = @{ versionCode = $taskVersionCode;

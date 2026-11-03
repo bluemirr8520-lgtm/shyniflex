@@ -16,12 +16,15 @@ val releaseProperties = Properties().apply {
 val runtimeAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 val targetAbi = providers.gradleProperty("shyniflexTargetAbi").orNull
 require(targetAbi == null || targetAbi in runtimeAbis) { "Unsupported shyniflexTargetAbi" }
+val applicationPackage = providers.gradleProperty("shyniflexApplicationId").orElse("io.mirr.shyniflex").get()
+require(applicationPackage in listOf("io.mirr.shyniflex", "io.mirr.shyniflex.renewed")) { "Unsupported application ID" }
 
 android {
     namespace = "io.mirr.shynigsy"
     compileSdk = 36
     defaultConfig {
-        applicationId = "io.mirr.shyniflex"
+        applicationId = applicationPackage
+        manifestPlaceholders["shyniAppLabel"] = if (applicationPackage.endsWith(".renewed")) "shyniflex 새 버전" else "@string/app_name"
         minSdk = 26
         targetSdk = 36
         versionCode = 69

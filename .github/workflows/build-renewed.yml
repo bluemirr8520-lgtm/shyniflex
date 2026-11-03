@@ -1,0 +1,60 @@
+name: Build renewed Android app
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Restore signing configuration
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.SHYNIFLEX_RENEWED_KEYSTORE }}
+          SIGNING_PROPERTIES: ${{ secrets.SHYNIFLEX_RENEWED_PROPERTIES }}
+        run: |
+          if (-not $env:SIGNING_KEY -or -not $env:SIGNING_PROPERTIES) { throw 'Signing secrets are missing.' }
+          $signRoot = Join-Path $env:RUNNER_TEMP 'shyniflex-signing'
+          $signDir = Join-Path $signRoot '.local'
+          New-Item -ItemType Directory -Path $signDir -Force | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $signDir 'release.keystore'), [Convert]::FromBase64String($env:SIGNING_KEY))
+          [IO.File]::WriteAllText((Join-Path $signDir 'release.properties'), $env:SIGNING_PROPERTIES, [Text.UTF8Encoding]::new($false))
+      - name: Prepare pinned playback runtime
+        shell: pwsh
+        run: |
+          ./android/setup-mpv.ps1
+          git restore -- android/app/src/main/assets/licenses/NATIVE-RUNTIME.txt
+      - name: Build signed APK
+        shell: pwsh
+        run: |
+          $signRoot = Join-Path $env:RUNNER_TEMP 'shyniflex-signing'
+          ./android/gradlew.bat -p android assembleRelease '-PshyniflexApplicationId=io.mirr.shyniflex.renewed' "-PshyniflexSigningRoot=$signRoot" --no-daemon --console=plain
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          $signer = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
+          $certificate = & $signer verify --print-certs android/app/build/outputs/apk/release/app-release.apk
+          if ($LASTEXITCODE -ne 0 -or -not ($certificate -match '8d4bfd6534ce913ce90ca176878778ef24b6ebd1c4f7790972d2bcdae9b31c79')) { throw 'Unexpected signing certificate.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shyniflex-renewed-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        run: |
+          $signDir = Join-Path (Join-Path $env:RUNNER_TEMP 'shyniflex-signing') '.local'
+          foreach ($name in @('release.keystore', 'release.properties')) {
+            $file = Join-Path $signDir $name
+            if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+          }
