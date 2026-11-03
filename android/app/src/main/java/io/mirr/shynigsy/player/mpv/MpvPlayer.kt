@@ -183,8 +183,13 @@ class MpvPlayer(
             check(owner == null) { "Release the previous MPV player before creating another" }
             owner = this
         }
+        var nativeCreateAttempted = false
         try {
-            MPVLib.create(app)
+            // Resolve the library first so a load failure can safely release
+            // ownership without attempting to use a partially initialized JNI.
+            val library = MPVLib
+            nativeCreateAttempted = true
+            library.create(app)
             val ca = File(app.filesDir, "mpv-cacert.pem")
             if (!ca.exists()) app.assets.open("cacert.pem").use { input -> ca.outputStream().use(input::copyTo) }
             val options = linkedMapOf(
@@ -223,10 +228,22 @@ class MpvPlayer(
             else @Suppress("DEPRECATION") app.registerReceiver(noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
             receiverRegistered = true
         } catch (error: Throwable) {
-            MPVLib.removeObserver(this)
-            if (alive) MPVLib.destroy()
-            alive = false
-            synchronized(OWNER_LOCK) { if (owner === this) owner = null }
+            var safeToReleaseOwner = !nativeCreateAttempted
+            try {
+                fun cleanup(block: () -> Unit): Boolean {
+                    return try { block(); true } catch (_: LinkageError) { false } catch (_: Exception) { false }
+                }
+                if (nativeCreateAttempted) {
+                    val observerRemoved = cleanup { MPVLib.removeObserver(this) }
+                    // The bundled JNI does not expose whether destroy is safe
+                    // between create and init. Keep ownership in that state.
+                    val destroyed = alive && cleanup { MPVLib.destroy() }
+                    safeToReleaseOwner = observerRemoved && destroyed
+                }
+            } finally {
+                alive = false
+                if (safeToReleaseOwner) synchronized(OWNER_LOCK) { if (owner === this) owner = null }
+            }
             throw error
         }
     }

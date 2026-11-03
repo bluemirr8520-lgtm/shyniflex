@@ -19,13 +19,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Paint
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -38,6 +34,7 @@ import io.mirr.shynigsy.AppViewModel
 import io.mirr.shynigsy.R
 import io.mirr.shynigsy.data.MediaItem
 import coil3.compose.AsyncImage
+import kotlin.math.roundToInt
 
 /** Bundled original art is immediately available, including when the server has no resume rows. */
 @Composable
@@ -83,24 +80,38 @@ internal fun CinemaHomeBackdrop(
 }
 
 private fun Modifier.cinemaHeroTextScrim(heroHeight: Dp, wide: Boolean): Modifier = drawWithCache {
-    val shade = if (wide) Brush.horizontalGradient(
-        0f to Color.Black.copy(alpha = .35f), .65f to Color.Black.copy(alpha = .35f),
+    val fadeStart = (heroHeight.toPx() - 32.dp.toPx()).roundToInt().toFloat().coerceIn(0f, size.height)
+    val fadeHeight = (size.height - fadeStart).coerceAtLeast(0f)
+    val topBrush = cinemaScrimHorizontalBrush(CINEMA_SCRIM_MAX_ALPHA)
+    // Small horizontal bands approximate the product of the two fades without
+    // allocating a screen-sized offscreen layer on the TV GPU.
+    val bandBrushes = if (wide) List(CINEMA_SCRIM_FADE_STEPS) { index ->
+        cinemaScrimHorizontalBrush(cinemaScrimAlphaAt(0f, cinemaScrimBandMidpoint(index), wide = true))
+    } else emptyList()
+    val mobileBrush = if (!wide) Brush.verticalGradient(
+        0f to Color.Black.copy(alpha = CINEMA_SCRIM_MAX_ALPHA),
+        (fadeStart / size.height.coerceAtLeast(1f)) to Color.Black.copy(alpha = CINEMA_SCRIM_MAX_ALPHA),
         1f to Color.Transparent,
-    ) else SolidColor(Color.Black.copy(alpha = .35f))
-    val fadeStart = (heroHeight.toPx() - 32.dp.toPx()).coerceIn(0f, size.height)
-    val mask = Brush.verticalGradient(
-        0f to Color.White, (fadeStart / size.height.coerceAtLeast(1f)) to Color.White,
-        1f to Color.Transparent,
-    )
-    val layerPaint = Paint()
-    val bounds = Rect(Offset.Zero, size)
+    ) else null
     onDrawBehind {
-        drawIntoCanvas { it.saveLayer(bounds, layerPaint) }
-        drawRect(shade)
-        drawRect(mask, blendMode = BlendMode.DstIn)
-        drawIntoCanvas { it.restore() }
+        if (!wide) {
+            drawRect(requireNotNull(mobileBrush))
+        } else {
+            if (fadeStart > 0f) drawRect(topBrush, size = Size(size.width, fadeStart))
+            if (fadeHeight > 0f) bandBrushes.forEachIndexed { index, brush ->
+                // Align shared band edges to physical pixels to avoid translucent seams.
+                val top = (fadeStart + fadeHeight * index / CINEMA_SCRIM_FADE_STEPS).roundToInt().toFloat()
+                val bottom = (fadeStart + fadeHeight * (index + 1) / CINEMA_SCRIM_FADE_STEPS).roundToInt().toFloat()
+                drawRect(brush, topLeft = Offset(0f, top), size = Size(size.width, bottom - top))
+            }
+        }
     }
 }
+
+private fun cinemaScrimHorizontalBrush(alpha: Float): Brush = Brush.horizontalGradient(
+    0f to Color.Black.copy(alpha = alpha), .65f to Color.Black.copy(alpha = alpha),
+    1f to Color.Transparent,
+)
 
 /** An empty history still gets a real home; illustrative art never invents a playable item. */
 @Composable

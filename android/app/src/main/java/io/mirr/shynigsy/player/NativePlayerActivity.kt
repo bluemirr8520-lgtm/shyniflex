@@ -986,22 +986,30 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean,
         chapterCarry: OriginalChapterCredits? = null) {
         val headers = client.playbackHeaders(spec)
-        val created: Player = if (useExo) try {
-            // Media3 normally logs exception stack traces that can include signed URLs.
-            // Keep its logs off; this activity reports only sanitized error codes.
-            androidx.media3.common.util.Log.setLogLevel(androidx.media3.common.util.Log.LOG_LEVEL_OFF)
-            val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-                .connectTimeout(20, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
-            val data = OkHttpDataSource.Factory(http).setDefaultRequestProperties(headers)
-            ExoPlayer.Builder(this).setMediaSourceFactory(DefaultMediaSourceFactory(data))
-                .setHandleAudioBecomingNoisy(true).build().apply { setAudioAttributes(AudioAttributes.DEFAULT, true) }
-        } catch (_: Exception) {
-            if (exoRestoreSubtitlePending) spec = spec.copy(subtitlesPending = true)
-            exoRestoreSubtitlePending = false
-            MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
+        val created: Player = try {
+            if (useExo) try {
+                // Media3 normally logs exception stack traces that can include signed URLs.
+                // Keep its logs off; this activity reports only sanitized error codes.
+                androidx.media3.common.util.Log.setLogLevel(androidx.media3.common.util.Log.LOG_LEVEL_OFF)
+                val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+                    .connectTimeout(20, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
+                val data = OkHttpDataSource.Factory(http).setDefaultRequestProperties(headers)
+                ExoPlayer.Builder(this).setMediaSourceFactory(DefaultMediaSourceFactory(data))
+                    .setHandleAudioBecomingNoisy(true).build().apply { setAudioAttributes(AudioAttributes.DEFAULT, true) }
+            } catch (_: Exception) {
+                if (exoRestoreSubtitlePending) spec = spec.copy(subtitlesPending = true)
+                exoRestoreSubtitlePending = false
+                MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
+                    serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
+            } else MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
                 serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
-        } else MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
-            serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
+        } catch (_: LinkageError) {
+            onPlayerInitializationFailure()
+            return
+        } catch (_: Exception) {
+            onPlayerInitializationFailure()
+            return
+        }
         mpvProbePending = candidate != null && created is MpvPlayer
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
@@ -1169,6 +1177,21 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         created.prepare()
         created.playWhenReady = resumeWhenVisible && visible && created !is ExoPlayer && !mpvProbePending
+    }
+
+    private fun onPlayerInitializationFailure() {
+        val message = "재생 엔진을 시작하지 못했습니다.\n다시 시도하거나 앱을 다시 시작해 주세요."
+        if (conversionRestore == null) {
+            showError(message)
+            return
+        }
+        // Let the handoff finish setting up its timeout before restoring the
+        // previous source. A newer playback request invalidates this callback.
+        val generation = engineGeneration
+        handler.post {
+            if (generation == engineGeneration && player == null && !exiting && !isDestroyed && conversionRestore != null)
+                restoreConversion(message)
+        }
     }
 
     private fun finishReplacementAfterFirstFrame(created: Player) {
