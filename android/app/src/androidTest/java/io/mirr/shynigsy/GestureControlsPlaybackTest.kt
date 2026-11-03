@@ -346,11 +346,25 @@ class GestureControlsPlaybackTest {
             active?.playbackState == Player.STATE_READY && !active.playWhenReady
         }
         scenario.onActivity { video!!.showController() }
-        tapThroughActivityRoot(scenario, R.id.player_subtitles)
+        if (instrumentation.targetContext.isTelevision()) {
+            scenario.onActivity { activity ->
+                assertTrue(activity.findViewById<View>(R.id.player_subtitles).requestFocus())
+            }
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+        } else {
+            tapThroughActivityRoot(scenario, R.id.player_subtitles)
+        }
         waitForWindow("direct shortcut opens the subtitle list even without subtitle tracks") {
             activeWindowChoiceLabels() == listOf("자막 끄기")
         }
-        assertTrue(clickWindowText("자막 끄기"))
+        if (instrumentation.targetContext.isTelevision()) {
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+        } else {
+            assertTrue(clickWindowText("자막 끄기"))
+        }
+        waitFor(scenario, "subtitle off choice applied") {
+            video!!.player!!.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        }
         scenario.onActivity {
             val active = video!!.player!!
             assertTrue(active.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT))

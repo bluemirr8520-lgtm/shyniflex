@@ -22,6 +22,31 @@ import org.junit.runner.RunWith
 /** The player can be much narrower than the fixed-width controls at large font scales. */
 @RunWith(AndroidJUnit4::class)
 class PlaybackControlsLayoutTest {
+    @Test fun televisionAndTouchLayoutsContainEveryRequiredPlaybackControl() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                listOf(android.content.res.Configuration.UI_MODE_TYPE_TELEVISION,
+                    android.content.res.Configuration.UI_MODE_TYPE_NORMAL).forEach { mode ->
+                    val configuration = android.content.res.Configuration(activity.resources.configuration).apply {
+                        uiMode = (uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK.inv()) or mode
+                    }
+                    val context = android.view.ContextThemeWrapper(activity.createConfigurationContext(configuration), activity.theme)
+                    val controls = activity.layoutInflater.cloneInContext(context).inflate(R.layout.shyniflix_controls, null)
+                    listOf(R.id.player_back, R.id.player_continuous, R.id.player_speed, R.id.player_conversion).forEach { id ->
+                        assertTrue("Mode $mode is missing required button $id", controls.findViewById<View>(id) is Button)
+                    }
+                    assertNotNull("Mode $mode needs scrollable remote controls",
+                        controls.findViewById<HorizontalScrollView>(R.id.player_control_scroller))
+                    listOf(R.id.player_previous, R.id.player_next, R.id.player_subtitles, R.id.player_resize,
+                        R.id.player_settings, androidx.media3.ui.R.id.exo_play_pause,
+                        androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_ffwd).forEach { id ->
+                        assertNotNull("Mode $mode is missing playback control $id", controls.findViewById<View>(id))
+                    }
+                }
+            }
+        }
+    }
+
     @Test fun continuousPlaybackIsInitiallyOffAndSurvivesReopening() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferences = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
