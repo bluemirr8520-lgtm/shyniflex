@@ -16,16 +16,30 @@ data class DetailDiscoveryState(
     val actorLoading: Boolean = false,
     val actorLoaded: Boolean = false,
     val actorError: String? = null,
+    val actorIncomplete: Boolean = false,
     val currentLibraryOnly: Boolean = false,
+    val tvLibrariesOnly: Boolean = false,
 )
 
 internal fun detailDiscoveryKey(item: MediaItem): String =
     "${item.libraryId}:${item.type}:${item.id}:${item.viewItemId}:${item.isSpoiler}"
 
-internal fun canDiscoverActorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>): Boolean =
-    (actor.tmdbId ?: 0) > 0 || (actor.canLoadWorks && libraries.any {
-        it.id == parent.libraryId && it.type == "tv" && it.isSpoiler == parent.isSpoiler
-    })
+internal fun canDiscoverActorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>,
+    spoilerUnlocked: Boolean = false): Boolean {
+    if ((actor.tmdbId ?: 0) > 0) return true
+    val parentType = when (parent.type) {
+        "movie" -> "movie"
+        "show", "tv", "season", "episode" -> "tv"
+        else -> return false
+    }
+    val parentAuthorized = libraries.any {
+        it.id == parent.libraryId && it.type == parentType && it.isSpoiler == parent.isSpoiler &&
+            (!it.isSpoiler || spoilerUnlocked)
+    }
+    return actor.canLoadWorks && parentAuthorized && libraries.any {
+        it.type == "tv" && (!it.isSpoiler || spoilerUnlocked)
+    }
+}
 
 /** A library returned by the server is a View; a private duplicate always wins. */
 internal fun visibleDetailWorks(items: List<MediaItem>, libraries: List<Library>, unlocked: Boolean): List<MediaItem> =

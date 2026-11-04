@@ -59,6 +59,14 @@ class DetailDiscoveryStateTest {
         assertFalse(kept.actorLoaded)
     }
 
+    @Test fun relockingKeepsIncompletePublicResultsRetryable() {
+        val frame = DetailDiscoveryState(movie, selectedActor = CastMember("배우", ppkey = "id"),
+            actorItems = listOf(movie), actorLoaded = true, actorIncomplete = true)
+        val locked = frame.withoutPrivateWorks()
+        assertEquals(listOf(movie), locked.actorItems)
+        assertTrue(locked.actorIncomplete)
+    }
+
     @Test fun explicitWatchAcknowledgementUpdatesBothShelvesAndLeavesAnotherViewUntouched() {
         val other = movie.copy(viewItemId = 99, resumeMs = 10_000)
         val frame = DetailDiscoveryState(movie, relatedItems = listOf(movie, other), actorItems = listOf(movie))
@@ -71,7 +79,7 @@ class DetailDiscoveryStateTest {
         assertEquals(0L, result.actorItems.single().resumeMs)
     }
 
-    @Test fun ppkeyRequiresTheParentsAuthorizedTvViewAndANameNeverBecomesAnIdentity() {
+    @Test fun ppkeyCanSearchAuthorizedSeriesViewsFromMovieOrSeriesDetails() {
         val ppkey = CastMember("합성 배우", ppkey = "provider-123")
         val episode = movie.copy(type = "episode")
         assertFalse(canDiscoverActorWorks(ppkey, movie, libraries))
@@ -79,5 +87,13 @@ class DetailDiscoveryStateTest {
         assertFalse(canDiscoverActorWorks(ppkey, episode, listOf(Library(1, "잠김", "tv", true))))
         assertFalse(canDiscoverActorWorks(CastMember("이름만"), episode, listOf(Library(1, "TV", "tv"))))
         assertTrue(canDiscoverActorWorks(CastMember("정확한 배우", tmdbId = 123), movie, libraries))
+        val movieAndTv = libraries + Library(3, "시리즈", "tv")
+        assertTrue(canDiscoverActorWorks(ppkey, movie, movieAndTv))
+        assertFalse(canDiscoverActorWorks(ppkey, movie.copy(libraryId = 99), movieAndTv))
+        val movieAndPrivateTv = libraries + Library(3, "잠긴 시리즈", "tv", true)
+        assertFalse(canDiscoverActorWorks(ppkey, movie, movieAndPrivateTv))
+        assertTrue(canDiscoverActorWorks(ppkey, movie, movieAndPrivateTv, spoilerUnlocked = true))
+        assertFalse(canDiscoverActorWorks(ppkey, privateItem, movieAndPrivateTv))
+        assertTrue(canDiscoverActorWorks(ppkey, privateItem, movieAndPrivateTv, spoilerUnlocked = true))
     }
 }

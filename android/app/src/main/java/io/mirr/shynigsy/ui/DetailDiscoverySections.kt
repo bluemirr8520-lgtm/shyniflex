@@ -52,7 +52,7 @@ internal fun discoveryActorTarget(actor: CastMember) = "cast:${actor.key}"
 internal fun discoveryWorkTarget(section: String, item: MediaItem) = "$section:${detailDiscoveryKey(item)}"
 
 internal fun discoveryFocusTargets(parent: MediaItem, cast: List<CastMember>, frame: DetailDiscoveryState?, libraries: List<Library>,
-    unlocked: Boolean): List<String> = cast.filter { canDiscoverActorWorks(it, parent, libraries) }.map(::discoveryActorTarget) +
+    unlocked: Boolean): List<String> = cast.filter { canDiscoverActorWorks(it, parent, libraries, unlocked) }.map(::discoveryActorTarget) +
     visibleDetailWorks(frame?.actorItems.orEmpty(), libraries, unlocked).map { discoveryWorkTarget("actor", it) } +
     visibleDetailWorks(frame?.relatedItems.orEmpty(), libraries, unlocked).map { discoveryWorkTarget("related", it) }
 
@@ -100,7 +100,7 @@ internal fun DetailDiscoverySections(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(cast.size, key = { cast[it].key }) { index ->
                     val actor = cast[index]
-                    val supported = canDiscoverActorWorks(actor, parent, libraries)
+                    val supported = canDiscoverActorWorks(actor, parent, libraries, spoilerUnlocked)
                     val selected = frame?.selectedActor?.key == actor.key
                     CompactMenuAction(onClick = { onActor(actor) },
                         modifier = targetModifier(discoveryActorTarget(actor)).width(88.dp)
@@ -131,16 +131,24 @@ internal fun DetailDiscoverySections(
                 Text("${actor.name}의 작품", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 if (frame.currentLibraryOnly) Text("현재 라이브러리", fontSize = 11.sp,
                     modifier = Modifier.testTag("detail-actor-scope"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else if (frame.tvLibrariesOnly) Text("전체 시리즈 라이브러리", fontSize = 11.sp,
+                    modifier = Modifier.testTag("detail-actor-scope"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 when {
                     frame.actorLoading -> Text("작품을 불러오는 중입니다", fontSize = 12.sp, modifier = Modifier.testTag("detail-actor-loading"))
                     frame.actorError != null -> {
                         Text(frame.actorError, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                         TvAction("다시 시도", enabled = !busy) { onActor(actor) }
                     }
-                    actorWorks.isEmpty() && frame.actorLoaded -> Text("표시할 작품이 없습니다", fontSize = 12.sp)
+                    actorWorks.isEmpty() && frame.actorLoaded -> Text(
+                        if (frame.actorIncomplete) "확인된 작품이 없습니다" else "표시할 작품이 없습니다", fontSize = 12.sp)
                 }
                 if (actorWorks.isNotEmpty()) DiscoveryWorksRow(actorWorks, actorScroll, "actor", busy,
                     onOpen, onWatchOptions, artwork, ::targetModifier)
+                if (frame.actorIncomplete && !frame.actorLoading) {
+                    Text("일부 라이브러리의 출연 정보를 확인하지 못했습니다.", fontSize = 12.sp,
+                        modifier = Modifier.testTag("detail-actor-incomplete"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TvAction("다시 확인", enabled = !busy) { onActor(actor) }
+                }
             }
         }
         if (frame != null && (frame.relatedLoading || frame.relatedError != null || related.isNotEmpty())) {

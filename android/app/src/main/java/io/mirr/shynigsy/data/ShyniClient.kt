@@ -1140,41 +1140,65 @@ class ShyniClient(
             val ppkey = actor.ppkey?.trim()?.takeIf {
                 it.isNotEmpty() && it.length <= 200 && it.none { character -> character.isISOControl() }
             }
-            val currentOnly = tmdbId == null && ppkey != null
-            if (tmdbId == null && (ppkey == null || parentLibrary.type != "tv")) {
+            if (tmdbId == null && ppkey == null) {
                 throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
             }
-            val path = if (tmdbId != null) "/people/tmdb/$tmdbId?navigation_context=view"
-                else "/libraries/${parentLibrary.id}/shows?sort=title&actor_ppkey=${encode(ppkey!!)}"
-            val response = request(path, responseLimit = 4L * 1024 * 1024,
-                spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
-            requireCurrent()
-            val creditRows = if (tmdbId != null) {
+            var incomplete = false
+            val creditRows: List<Pair<Library?, JSONObject>> = if (tmdbId != null) {
+                val response = request("/people/tmdb/$tmdbId?navigation_context=view", responseLimit = 4L * 1024 * 1024,
+                    spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
+                requireCurrent()
                 val array = (response as? JSONObject)?.optJSONArray("local_credits")
                     ?: throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
-                (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let { row -> null to row } }
             } else {
-                if (response !is JSONArray && (response !is JSONObject ||
-                        (response.optJSONArray("items") == null && response.optJSONArray("results") == null))) {
-                    throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
+                // The ppkey filter belongs to a TV View, so query each authorized
+                // View separately instead of assuming it applies only to the parent.
+                val views = scopes.values.filter { it.type == "tv" && (!it.isSpoiler || capturedGrant != null) }
+                if (views.isEmpty()) throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
+                val slots = Semaphore(2)
+                val batches = coroutineScope {
+                    views.map { view -> async {
+                        slots.withPermit {
+                            try {
+                                requireCurrent()
+                                val response = request("/libraries/${view.id}/shows?sort=title&actor_ppkey=${encode(ppkey!!)}",
+                                    responseLimit = 4L * 1024 * 1024, spoiler = capturedGrant != null,
+                                    spoilerToken = capturedGrant?.token)
+                                requireCurrent()
+                                if (response !is JSONArray && (response !is JSONObject ||
+                                        (response.optJSONArray("items") == null && response.optJSONArray("results") == null))) {
+                                    throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
+                                }
+                                rows(response).map { row -> view to row }
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (error: Exception) {
+                                requireCurrent()
+                                if (error is ApiException && error.status == 401) throw error
+                                null
+                            }
+                        }
+                    } }.awaitAll()
                 }
-                rows(response)
+                incomplete = batches.any { it == null }
+                batches.filterNotNull().flatten()
             }
             data class Identity(val libraryId: Int, val type: String, val id: Int, val viewItemId: Int?)
             val matched = linkedMapOf<Identity, MediaItem>()
-            for (row in creditRows) {
+            for ((queriedView, row) in creditRows) {
                 if (row.optBoolean("remote") || row.stringOrNull("federated_id") != null) continue
                 if (row.stringOrNull("context_kind")?.let { it != "view" } == true) continue
-                val libraryId = if (currentOnly) parentLibrary.id else row.exactPositiveInt("library_view_id") ?: continue
+                val libraryId = queriedView?.id ?: row.exactPositiveInt("library_view_id") ?: continue
                 if (!row.isNull("library_view_id") && row.exactPositiveInt("library_view_id") != libraryId) continue
                 val library = scopes[libraryId] ?: continue
-                val type = if (currentOnly) {
+                val type = if (queriedView != null) {
                     when (row.stringOrNull("item_type") ?: row.stringOrNull("type") ?: row.opt("metadata_type")?.toString()) {
                         null, "null", "2", "show", "tv" -> "show"; else -> continue
                     }
                 } else when (row.exactPositiveInt("metadata_type")) { 1 -> "movie"; 2 -> "show"; else -> continue }
                 if ((type == "movie" && library.type != "movie") || (type == "show" && library.type != "tv")) continue
-                val metadataId = if (currentOnly) row.exactPositiveInt("id") ?: row.exactPositiveInt("metadata_item_id")
+                val metadataId = if (queriedView != null) row.exactPositiveInt("id") ?: row.exactPositiveInt("metadata_item_id")
                     else if (!row.isNull("representative_metadata_item_id")) row.exactPositiveInt("representative_metadata_item_id")
                     else row.exactPositiveInt("metadata_item_id")
                 if (metadataId == null || row.stringOrNull("title").isNullOrBlank()) continue
@@ -1187,7 +1211,37 @@ class ShyniClient(
                 if (previous == null || (item.isSpoiler && !previous.isSpoiler)) matched[identity] = item
             }
             requireCurrent()
-            ActorWorks(matched.values.filter { !it.isSpoiler || capturedGrant != null }.take(200), currentOnly)
+            var visible = matched.values.filter { !it.isSpoiler || capturedGrant != null }
+            if (tmdbId == null) {
+                // A server may ignore an unknown filter, and a ppkey's scope across
+                // Views is undocumented. Verify every result outside the original
+                // TV View against its actual cast before showing it as a match.
+                val slots = Semaphore(2)
+                val checked = coroutineScope {
+                    visible.map { item -> async {
+                        slots.withPermit {
+                            if (item.libraryId == parentLibrary.id && parentLibrary.type == "tv") true else try {
+                                requireCurrent()
+                                val detail = request("/libraries/${item.libraryId}/shows/${item.id}",
+                                    responseLimit = 4L * 1024 * 1024, spoiler = capturedGrant != null,
+                                    spoilerToken = capturedGrant?.token).objectValue()
+                                requireCurrent()
+                                parseCastMembers(detail).any { it.ppkey?.trim() == ppkey && it.name.trim() == actor.name.trim() }
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (error: Exception) {
+                                requireCurrent()
+                                if (error is ApiException && error.status == 401) throw error
+                                false
+                            }
+                        }
+                    } }.awaitAll()
+                }
+                if (checked.any { !it }) incomplete = true
+                visible = visible.filterIndexed { index, _ -> checked[index] }
+            }
+            requireCurrent()
+            ActorWorks(visible, tvLibrariesOnly = tmdbId == null, incomplete = incomplete)
         }
     }
 

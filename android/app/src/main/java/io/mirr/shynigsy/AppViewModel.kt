@@ -861,7 +861,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val frameKeys = state.detailStack.map { detailDiscoveryKey(it.item) }.toSet()
             val previous = state.detailDiscovery[key] ?: DetailDiscoveryState(parent)
             val current = if (previous.selectedActor != null && detail.castMembers.none { it.key == previous.selectedActor.key })
-                previous.copy(selectedActor = null, actorItems = emptyList(), actorLoading = false, actorLoaded = false, actorError = null)
+                previous.copy(selectedActor = null, actorItems = emptyList(), actorLoading = false, actorLoaded = false,
+                    actorError = null, actorIncomplete = false)
                 else previous
             state.copy(detailDiscovery = state.detailDiscovery.filterKeys { it in frameKeys } +
                 (key to current.copy(parent = parent)))
@@ -944,23 +945,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val detail = snapshot.detailStack.lastOrNull() ?: return
         val selected = detail.castMembers.firstOrNull { it.key == actor.key && it.canLoadWorks } ?: return
         val parent = detail.item
-        if (!canDiscoverActorWorks(selected, parent, snapshot.libraries)) return
+        if (!canDiscoverActorWorks(selected, parent, snapshot.libraries,
+                snapshot.spoilerUnlocked && active.spoilerUnlocked)) return
         if (parent.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         val key = detailDiscoveryKey(parent)
         val frame = snapshot.detailDiscovery[key] ?: DetailDiscoveryState(parent)
-        if (frame.selectedActor?.key == selected.key && (frame.actorLoading || frame.actorLoaded)) return
+        if (frame.selectedActor?.key == selected.key && (frame.actorLoading || (frame.actorLoaded && !frame.actorIncomplete))) return
         actorWorksJob?.cancel()
         val requestRevision = ++actorWorksRevision
         val account = active.token
         val grant = SpoilerAccessRegistry.changes.value
         mutableState.update { state -> state.copy(detailDiscovery = state.detailDiscovery + (key to
             (state.detailDiscovery[key] ?: frame).copy(selectedActor = selected, actorItems = emptyList(),
-                actorLoading = true, actorLoaded = false, actorError = null, currentLibraryOnly = false))) }
+                actorLoading = true, actorLoaded = false, actorError = null, actorIncomplete = false,
+                currentLibraryOnly = false, tvLibrariesOnly = false))) }
         actorWorksJob = viewModelScope.launch {
             fun current() = requestRevision == actorWorksRevision && discoveryCurrent(active, account, grant, parent) &&
                 mutableState.value.detailDiscovery[key]?.selectedActor?.key == selected.key
             try {
-                val result = withTimeoutOrNull(20_000) { active.actorWorks(selected, parent, snapshot.libraries) }
+                val timeout = if ((selected.tmdbId ?: 0) > 0) 20_000L else 120_000L
+                val result = withTimeoutOrNull(timeout) { active.actorWorks(selected, parent, snapshot.libraries) }
                     ?: throw ApiException("배우의 작품을 불러오지 못했습니다.")
                 if (!current()) return@launch
                 mutableState.update { state ->
@@ -968,7 +972,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     val rows = visibleDetailWorks(retainKnownDetailWatchState(result.items, state), state.libraries,
                         state.spoilerUnlocked && active.spoilerUnlocked).map(::collectionWatchState)
                     reconcile(state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(actorItems = rows,
-                        actorLoading = false, actorLoaded = true, actorError = null, currentLibraryOnly = result.currentLibraryOnly))))
+                        actorLoading = false, actorLoaded = true, actorError = null,
+                        currentLibraryOnly = result.currentLibraryOnly, tvLibrariesOnly = result.tvLibrariesOnly,
+                        actorIncomplete = result.incomplete))))
                 }
             } catch (cancel: CancellationException) {
                 throw cancel

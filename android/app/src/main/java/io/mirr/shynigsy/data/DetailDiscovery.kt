@@ -19,5 +19,6 @@ data class CastMember(
     val canLoadWorks: Boolean get() = (tmdbId != null && tmdbId > 0) || lookupPpkey != null
 }
 
-/** ppkey browsing is supported only by the selected TV Library View. */
-data class ActorWorks(val items: List<MediaItem>, val currentLibraryOnly: Boolean = false)
+/** Results contain only works that can be addressed in an authorized Library View. */
+data class ActorWorks(val items: List<MediaItem>, val currentLibraryOnly: Boolean = false,
+    val tvLibrariesOnly: Boolean = false, val incomplete: Boolean = false)

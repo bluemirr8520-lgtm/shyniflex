@@ -64,7 +64,7 @@ class DetailDiscoveryUiTest {
         render(frame, onActor = {
             actorRequests++
             frame.value = frame.value!!.copy(selectedActor = it, actorItems = listOf(work),
-                actorLoaded = true, currentLibraryOnly = true)
+                actorLoaded = true, tvLibrariesOnly = true)
         }, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-play").assertIsDisplayed()
         screen.runOnIdle { assertEquals(0, actorRequests) }
@@ -73,11 +73,23 @@ class DetailDiscoveryUiTest {
         screen.onNodeWithTag("detail-cast-placeholder-1", useUnmergedTree = true).assertExists()
         screen.onNodeWithTag("detail-cast-1").assertIsNotEnabled()
         screen.onNodeWithTag("detail-cast-0").performClick().assertIsSelected()
-        screen.onNodeWithTag("detail-actor-scope").performScrollTo().assertTextEquals("현재 라이브러리")
+        screen.onNodeWithTag("detail-actor-scope").performScrollTo().assertTextEquals("전체 시리즈 라이브러리")
         screen.onNodeWithTag("detail-actor-${compactMediaIdentity(work)}").assertExists()
         screen.runOnIdle { assertEquals(1, actorRequests); assertEquals(0, plays) }
         screen.onNodeWithTag("detail-cast").performScrollTo()
         saveLightScreenshot()
+    }
+
+    @Test fun incompleteActorResultsKeepConfirmedWorksAndOfferRetry() {
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorItems = listOf(work), actorLoaded = true,
+            tvLibrariesOnly = true, actorIncomplete = true))
+        var retries = 0
+        render(frame, onActor = { retries++ })
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(work)}").performScrollTo().assertExists()
+        screen.onNodeWithTag("detail-actor-incomplete").performScrollTo().assertIsDisplayed()
+        screen.onNodeWithText("다시 확인").performScrollTo().performClick()
+        screen.runOnIdle { assertEquals(1, retries) }
     }
 
     @Test fun relatedAndActorCardsOpenTheirExactDetailAndKeepWatchLongPressSeparate() {

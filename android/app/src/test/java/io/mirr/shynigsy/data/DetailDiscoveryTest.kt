@@ -170,22 +170,109 @@ class DetailDiscoveryTest {
         assertEquals(0, server.requestCount)
     }
 
-    @Test fun ppkeyUsesOnlyTheCurrentTvViewAndEscapesItsIdentityWithoutFakePaging() = runBlocking {
-        reply = { MockResponse().setBody(JSONArray().put(JSONObject().put("id", 21).put("title", "Synthetic show")
+    @Test fun ppkeySearchesEveryAccessibleTvViewAndEscapesItsIdentity() = runBlocking {
+        reply = { request -> MockResponse().setBody(when (request.requestUrl!!.encodedPath) {
+            "/libraries/9/shows/21", "/libraries/10/shows/24" ->
+                section(person("Synthetic local actor", "actor_ppkey", "local & 한글/")).toString()
+            "/libraries/10/shows" -> JSONArray().put(JSONObject().put("id", 24).put("title", "Other show")).toString()
+            else -> JSONArray().put(JSONObject().put("id", 21).put("title", "Synthetic show")
             .put("view_item_id", 201)).put(JSONObject().put("id", 22).put("title", "Wrong View").put("library_view_id", 404))
-            .put(JSONObject().put("id", 23).put("title", "Wrong type").put("type", "movie")).toString()) }
+            .put(JSONObject().put("id", 23).put("title", "Wrong type").put("type", "movie")).toString()
+        }) }
         val localActor = CastMember("Synthetic local actor", ppkey = "local & 한글/")
-        val result = client.actorWorks(localActor, MediaItem(21, 9, "Synthetic show", "show"), listOf(tv, movies))
-        assertTrue(result.currentLibraryOnly)
-        assertEquals(listOf(21), result.items.map { it.id })
-        val request = requests.single()
-        assertEquals("/libraries/9/shows", request.requestUrl!!.encodedPath)
-        assertEquals("local & 한글/", request.requestUrl!!.queryParameter("actor_ppkey"))
-        assertNull(request.requestUrl!!.queryParameter("limit"))
-        assertNull(request.requestUrl!!.queryParameter("offset"))
+        val result = client.actorWorks(localActor, movie, listOf(tv, movies, Library(10, "More TV", "tv"),
+            Library(11, "Locked TV", "tv", true)))
+        assertFalse(result.currentLibraryOnly)
+        assertTrue(result.tvLibrariesOnly)
+        assertFalse(result.incomplete)
+        assertEquals(listOf(21, 24), result.items.map { it.id })
+        val searches = requests.filter { it.requestUrl!!.encodedPath.endsWith("/shows") }
+        assertEquals(setOf("/libraries/9/shows", "/libraries/10/shows"), searches.map { it.requestUrl!!.encodedPath }.toSet())
+        assertTrue(searches.all { it.requestUrl!!.queryParameter("actor_ppkey") == "local & 한글/" })
+        assertTrue(searches.all { it.requestUrl!!.queryParameter("limit") == null && it.requestUrl!!.queryParameter("offset") == null })
         val unsupported = runCatching { client.actorWorks(localActor, movie, listOf(movies)) }.exceptionOrNull()
         assertTrue(unsupported is ApiException)
-        assertEquals(1, server.requestCount)
+        assertEquals(4, server.requestCount)
+    }
+
+    @Test fun ppkeyDoesNotTrustAnotherViewWhenTheServerIgnoresItsFilter() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/9/shows" -> MockResponse().setBody("""[{"id":21,"title":"Known show"}]""")
+            "/libraries/10/shows" -> MockResponse().setBody("""[{"id":24,"title":"Unrelated"},{"id":25,"title":"Same key, different name"}]""")
+            "/libraries/10/shows/24" -> MockResponse().setBody(section(person("Someone else", "actor_ppkey", "other")).toString())
+            "/libraries/10/shows/25" -> MockResponse().setBody(section(person("Someone else", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"),
+            MediaItem(21, 9, "Show", "show"), listOf(tv, Library(10, "More", "tv")))
+        assertEquals(listOf(21), result.items.map { it.id })
+        assertTrue(result.incomplete)
+    }
+
+    @Test fun ppkeyIncludesUnlockedPrivateViewsButMarksAFailedViewIncomplete() = runBlocking {
+        client.unlockSpoiler("1234")
+        reply = { request -> if (request.requestUrl!!.encodedPath == "/libraries/10/shows")
+            MockResponse().setResponseCode(503) else MockResponse().setBody("[]") }
+        val views = listOf(movies, tv, Library(10, "Private", "tv", true))
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, views)
+        assertTrue(result.incomplete)
+        assertTrue(requests.filter { it.requestUrl!!.encodedPath.endsWith("/shows") }.all {
+            it.getHeader("X-Shyni-Spoiler") == "spc_synthetic_1" })
+    }
+
+    @Test fun tmdbCreditsAreNotTruncatedAtTwoHundred() = runBlocking {
+        reply = { people(*(1..250).map { credit(it) }.toTypedArray()) }
+        assertEquals(250, client.actorWorks(actor, movie, listOf(movies)).items.size)
+    }
+
+    @Test fun actorIdsAreAlwaysResolvedAgainstTheCurrentServerAndAccount() = runBlocking {
+        reply = { people(credit(12)) }
+        val otherServer = MockWebServer().apply { start() }
+        try {
+            otherServer.enqueue(people(credit(13)))
+            val otherClient = ShyniClient(otherServer.url("/").toString(), "different-account", deviceId = "other-device")
+            assertEquals(listOf(12), client.actorWorks(actor, movie, listOf(movies)).items.map { it.id })
+            assertEquals(listOf(13), otherClient.actorWorks(actor, movie, listOf(movies)).items.map { it.id })
+            assertEquals("Bearer different-account", otherServer.takeRequest().getHeader("Authorization"))
+            assertEquals("Bearer synthetic-account", requests.single().getHeader("Authorization"))
+        } finally { otherServer.shutdown() }
+    }
+
+    @Test fun ppkeyAccountChangeDoesNotReturnPartialResultsFromTheOldAccount() = runBlocking {
+        val started = CountDownLatch(1)
+        reply = { started.countDown(); release.await(5, TimeUnit.SECONDS); MockResponse().setBody("[]") }
+        val pending = async(Dispatchers.Default) { runCatching { client.actorWorks(CastMember("Actor", ppkey = "abc"),
+            MediaItem(21, 9, "Show", "show"), listOf(tv)) } }
+        try {
+            await(started)
+            client.token = "other-synthetic-account"
+            release.countDown()
+            val error = withTimeout(5_000) { pending.await() }.exceptionOrNull()
+            assertEquals(401, (error as ApiException).status)
+        } finally { release.countDown(); pending.cancelAndJoin() }
+    }
+
+    @Test fun ppkeyMalformedOtherViewKeepsConfirmedResultsAndMarksThemIncomplete() = runBlocking {
+        reply = { request -> MockResponse().setBody(if (request.requestUrl!!.encodedPath == "/libraries/9/shows")
+            """[{"id":21,"title":"Known"}]""" else """{"unexpected":[]}""") }
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), MediaItem(21, 9, "Show", "show"),
+            listOf(tv, Library(10, "Different TV", "tv")))
+        assertEquals(listOf(21), result.items.map { it.id })
+        assertTrue(result.incomplete)
+    }
+
+    @Test fun ppkeyAuthenticationFailureIsNotMisreportedAsPartialResults() = runBlocking {
+        for (failedPath in listOf("/libraries/10/shows", "/libraries/10/shows/24")) {
+            reply = { request -> when (request.requestUrl!!.encodedPath) {
+                failedPath -> MockResponse().setResponseCode(401).setBody("{}")
+                "/libraries/9/shows" -> MockResponse().setBody("""[{"id":21,"title":"Known"}]""")
+                "/libraries/10/shows" -> MockResponse().setBody("""[{"id":24,"title":"Other"}]""")
+                else -> MockResponse().setResponseCode(404)
+            } }
+            val error = runCatching { client.actorWorks(CastMember("Actor", ppkey = "abc"),
+                MediaItem(21, 9, "Show", "show"), listOf(tv, Library(10, "Other", "tv"))) }.exceptionOrNull()
+            assertEquals(401, (error as ApiException).status)
+        }
     }
 
     @Test fun privateViewWinsOverItsPublicShadowAndLockedPrivateParentsCannotSendRequests() = runBlocking {
