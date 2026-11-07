@@ -27,8 +27,8 @@ android {
         manifestPlaceholders["shyniAppLabel"] = if (applicationPackage.endsWith(".renewed")) "shyniflex 새 버전" else "@string/app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = 70
-        versionName = "1.0.69"
+        versionCode = 71
+        versionName = "1.0.70"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
     }

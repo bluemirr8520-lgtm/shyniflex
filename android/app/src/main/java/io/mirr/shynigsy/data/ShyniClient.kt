@@ -1058,7 +1058,7 @@ class ShyniClient(
     } }
 
     /** Read credits already present in a detail response; never fetch a second detail. */
-    internal fun parseCastMembers(detail: JSONObject): List<CastMember> {
+    internal fun parseCastMembers(detail: JSONObject, limit: Int = 50): List<CastMember> {
         fun portrait(value: String?): String? = value?.let { raw -> runCatching {
             resolve(raw).takeIf { it.username.isEmpty() && it.password.isEmpty() }?.toString()
         }.getOrNull() }
@@ -1066,11 +1066,11 @@ class ShyniClient(
             val name = row.stringOrNull(if (neutral) "title" else "name")?.trim()?.take(200)
                 ?.takeIf { it.isNotEmpty() } ?: return null
             val action = if (neutral) row.optJSONObject("action") else null
-            val tmdb = if (neutral && action?.optString("type") == "open_person")
-                action?.stringOrNull("value")?.toIntOrNull()?.takeIf { it > 0 }
-                else if (!neutral) row.exactPositiveInt("tmdb_id") else null
+            val tmdb = (if (neutral && action?.optString("type") == "open_person")
+                action?.stringOrNull("value")?.toIntOrNull()?.takeIf { it > 0 } else null)
+                ?: row.exactPositiveInt("tmdb_id")
             val ppkey = (if (neutral && action?.optString("type") == "actor_ppkey") action?.stringOrNull("value")
-                else if (!neutral) row.stringOrNull("ppkey") else null)
+                else row.stringOrNull("ppkey"))
                 ?.trim()?.takeIf { it.isNotEmpty() && it.length <= 200 && it.none { character -> character.isISOControl() } }
             return CastMember(name, row.stringOrNull(if (neutral) "subtitle" else "role").orEmpty().take(300),
                 portrait(row.stringOrNull(if (neutral) "image_url" else "thumb")), tmdb, ppkey)
@@ -1078,27 +1078,27 @@ class ShyniClient(
         val neutralRows = mutableListOf<JSONObject>()
         var hasNeutralCast = false
         val sections = detail.optJSONArray("metadata_sections")
-        if (sections != null) for (index in 0 until minOf(sections.length(), 32)) {
+        if (sections != null) for (index in 0 until (if (limit == Int.MAX_VALUE) sections.length() else minOf(sections.length(), 32))) {
             val section = sections.optJSONObject(index) ?: continue
             if (section.optString("presentation") != "person_row") continue
             val groups = section.optJSONArray("groups")
-            val cast = groups?.let { array -> (0 until minOf(array.length(), 16)).asSequence()
+            val cast = groups?.let { array -> (0 until (if (limit == Int.MAX_VALUE) array.length() else minOf(array.length(), 16))).asSequence()
                 .mapNotNull { array.optJSONObject(it) }.firstOrNull { it.optString("id") == "cast" } }
             // An explicitly empty cast group must not be replaced with crew cards.
             if (cast != null) {
                 hasNeutralCast = true
-                neutralRows.addAll(rowSequence(cast, "items").take(100))
+                neutralRows.addAll(rowSequence(cast, "items").take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100))
             } else if (groups == null) {
                 hasNeutralCast = true
-                neutralRows.addAll(rowSequence(section, "items").take(100))
+                neutralRows.addAll(rowSequence(section, "items").take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100))
             }
         }
-        val parsed = if (hasNeutralCast) neutralRows.take(100).mapNotNull { member(it, true) }
+        val parsed = if (hasNeutralCast) neutralRows.take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100).mapNotNull { member(it, true) }
             else {
                 val extra = detail.optJSONObject("extra") ?: detail.stringOrNull("extra")?.let {
                     runCatching { JSONObject(it) }.getOrNull()
                 }
-                extra?.let { rowSequence(it, "actors").take(100).mapNotNull { row -> member(row, false) }.toList() }.orEmpty()
+                extra?.let { rowSequence(it, "actors").take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100).mapNotNull { row -> member(row, false) }.toList() }.orEmpty()
             }
         val members = linkedMapOf<String, CastMember>()
         for (person in parsed) {
@@ -1107,11 +1107,12 @@ class ShyniClient(
                 role = (previous.role.split(" / ") + person.role.split(" / ")).filter { it.isNotBlank() }
                     .distinct().joinToString(" / ").take(300), portrait = previous.portrait ?: person.portrait)
         }
-        return members.values.take(50)
+        return members.values.take(limit.coerceAtLeast(0))
     }
 
     /** Provider filmography is not a library: expose only explicit, authorized local View matches. */
-    suspend fun actorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>): ActorWorks {
+    suspend fun actorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>,
+        onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks {
         val accountToken = token
         val grantKey = spoilerKey()
         val capturedGrant = spoilerGrant()
@@ -1144,33 +1145,47 @@ class ShyniClient(
                 throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
             }
             var incomplete = false
-            val creditRows: List<Pair<Library?, JSONObject>> = if (tmdbId != null) {
+            val tmdbCredits = if (tmdbId != null) {
                 val response = request("/people/tmdb/$tmdbId?navigation_context=view", responseLimit = 4L * 1024 * 1024,
                     spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
                 requireCurrent()
-                val array = (response as? JSONObject)?.optJSONArray("local_credits")
+                (response as? JSONObject)?.optJSONArray("local_credits")
                     ?: throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
-                (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let { row -> null to row } }
+            } else null
+            // A server can expose both identities yet have no local TMDB credits.
+            val useTmdb = tmdbCredits != null && (tmdbCredits.length() > 0 || ppkey == null)
+            val creditRows: List<Pair<Library?, JSONObject>> = if (useTmdb) {
+                (0 until tmdbCredits!!.length()).mapNotNull { tmdbCredits.optJSONObject(it)?.let { row -> null to row } }
             } else {
-                // The ppkey filter belongs to a TV View, so query each authorized
-                // View separately instead of assuming it applies only to the parent.
-                val views = scopes.values.filter { it.type == "tv" && (!it.isSpoiler || capturedGrant != null) }
+                // Movie Views do not expose an actor_ppkey filter. Enumerate those
+                // Views and verify each movie against its detail cast below.
+                val views = scopes.values.filter { !it.isSpoiler || capturedGrant != null }
                 if (views.isEmpty()) throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
                 val slots = Semaphore(2)
+                data class ViewBatch(val rows: List<Pair<Library, JSONObject>>, val incomplete: Boolean)
                 val batches = coroutineScope {
                     views.map { view -> async {
                         slots.withPermit {
                             try {
                                 requireCurrent()
-                                val response = request("/libraries/${view.id}/shows?sort=title&actor_ppkey=${encode(ppkey!!)}",
-                                    responseLimit = 4L * 1024 * 1024, spoiler = capturedGrant != null,
+                                val path = if (view.type == "tv")
+                                    "/libraries/${view.id}/shows?sort=title&actor_ppkey=${encode(ppkey!!)}"
+                                    else "/libraries/${view.id}/movies?sort=title"
+                                val response = request(path,
+                                    responseLimit = 32L * 1024 * 1024, spoiler = capturedGrant != null,
                                     spoilerToken = capturedGrant?.token)
                                 requireCurrent()
                                 if (response !is JSONArray && (response !is JSONObject ||
                                         (response.optJSONArray("items") == null && response.optJSONArray("results") == null))) {
                                     throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
                                 }
-                                rows(response).map { row -> view to row }
+                                val found = rows(response)
+                                val partial = (response as? JSONObject)?.let { json ->
+                                    json.optBoolean("has_more") || listOf("total", "total_count").any {
+                                        (json.exactPositiveInt(it) ?: 0) > found.size
+                                    }
+                                } ?: false
+                                ViewBatch(found.map { row -> view to row }, partial)
                             } catch (error: CancellationException) {
                                 throw error
                             } catch (error: Exception) {
@@ -1181,8 +1196,8 @@ class ShyniClient(
                         }
                     } }.awaitAll()
                 }
-                incomplete = batches.any { it == null }
-                batches.filterNotNull().flatten()
+                incomplete = batches.any { it == null || it.incomplete }
+                batches.filterNotNull().flatMap { it.rows }
             }
             data class Identity(val libraryId: Int, val type: String, val id: Int, val viewItemId: Int?)
             val matched = linkedMapOf<Identity, MediaItem>()
@@ -1193,7 +1208,10 @@ class ShyniClient(
                 if (!row.isNull("library_view_id") && row.exactPositiveInt("library_view_id") != libraryId) continue
                 val library = scopes[libraryId] ?: continue
                 val type = if (queriedView != null) {
-                    when (row.stringOrNull("item_type") ?: row.stringOrNull("type") ?: row.opt("metadata_type")?.toString()) {
+                    val rowType = row.stringOrNull("item_type") ?: row.stringOrNull("type") ?: row.opt("metadata_type")?.toString()
+                    if (queriedView.type == "movie") when (rowType) {
+                        null, "null", "1", "movie" -> "movie"; else -> continue
+                    } else when (rowType) {
                         null, "null", "2", "show", "tv" -> "show"; else -> continue
                     }
                 } else when (row.exactPositiveInt("metadata_type")) { 1 -> "movie"; 2 -> "show"; else -> continue }
@@ -1201,10 +1219,16 @@ class ShyniClient(
                 val metadataId = if (queriedView != null) row.exactPositiveInt("id") ?: row.exactPositiveInt("metadata_item_id")
                     else if (!row.isNull("representative_metadata_item_id")) row.exactPositiveInt("representative_metadata_item_id")
                     else row.exactPositiveInt("metadata_item_id")
-                if (metadataId == null || row.stringOrNull("title").isNullOrBlank()) continue
-                if (!row.isNull("view_item_id") && row.exactPositiveInt("view_item_id") == null) continue
+                if (metadataId == null || row.stringOrNull("title").isNullOrBlank()) {
+                    if (queriedView != null) incomplete = true
+                    continue
+                }
+                if (!row.isNull("view_item_id") && row.exactPositiveInt("view_item_id") == null) {
+                    if (queriedView != null) incomplete = true
+                    continue
+                }
                 val normalized = JSONObject(row.toString()).put("id", metadataId).put("type", type).put("item_type", type)
-                if (tmdbId != null) row.stringOrNull("poster")?.let { normalized.put("poster_url", it) }
+                if (useTmdb) row.stringOrNull("poster")?.let { normalized.put("poster_url", it) }
                 val item = parseMedia(normalized, libraryId, type).let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) }
                 val identity = Identity(libraryId, type, metadataId, item.viewItemId)
                 val previous = matched[identity]
@@ -1212,36 +1236,70 @@ class ShyniClient(
             }
             requireCurrent()
             var visible = matched.values.filter { !it.isSpoiler || capturedGrant != null }
-            if (tmdbId == null) {
-                // A server may ignore an unknown filter, and a ppkey's scope across
-                // Views is undocumented. Verify every result outside the original
-                // TV View against its actual cast before showing it as a match.
+            if (!useTmdb) {
+                // A ppkey's scope across Views is undocumented. Check movie details
+                // and show results from other Views; a name alone is not an identity.
                 val slots = Semaphore(2)
-                val checked = coroutineScope {
-                    visible.map { item -> async {
+                data class CastCheck(val matches: Boolean, val uncertain: Boolean = false, val failed: Boolean = false)
+                val candidates = visible.sortedBy { if (it.type == "show") 0 else 1 }
+                val confirmed = mutableListOf<MediaItem>()
+                var completed = 0
+                var consecutiveFailures = 0
+                requireCurrent()
+                onProgress(emptyList(), 0, candidates.size)
+                // Bound both in-flight network calls and queued coroutines on very large libraries.
+                for (chunk in candidates.chunked(4)) {
+                    val checked = coroutineScope { chunk.map { item -> async {
                         slots.withPermit {
-                            if (item.libraryId == parentLibrary.id && parentLibrary.type == "tv") true else try {
+                            if (item.type == "show" && item.libraryId == parentLibrary.id && parentLibrary.type == "tv")
+                                CastCheck(true) else try {
                                 requireCurrent()
-                                val detail = request("/libraries/${item.libraryId}/shows/${item.id}",
+                                val kind = if (item.type == "movie") "movies" else "shows"
+                                val detailPath = "/libraries/${item.libraryId}/$kind/${item.id}"
+                                suspend fun fetchDetail(path: String) = request(path,
                                     responseLimit = 4L * 1024 * 1024, spoiler = capturedGrant != null,
                                     spoilerToken = capturedGrant?.token).objectValue()
+                                val detail = if (item.type == "movie") try {
+                                    fetchDetail("$detailPath?fields=full")
+                                } catch (error: ApiException) {
+                                    if (error.status !in setOf(400, 403, 422)) throw error
+                                    requireCurrent()
+                                    fetchDetail(detailPath)
+                                } else fetchDetail(detailPath)
                                 requireCurrent()
-                                parseCastMembers(detail).any { it.ppkey?.trim() == ppkey && it.name.trim() == actor.name.trim() }
+                                val cast = parseCastMembers(detail, limit = Int.MAX_VALUE) +
+                                    detail.opt("extra")?.takeUnless { it == JSONObject.NULL }?.let {
+                                        parseCastMembers(JSONObject().put("extra", it), limit = Int.MAX_VALUE)
+                                    }.orEmpty()
+                                val matches = cast.any { it.ppkey?.trim() == ppkey && it.name.trim() == actor.name.trim() }
+                                val uncertain = if (matches) false else if (item.type == "show") true else
+                                    cast.isEmpty() || cast.size >= 100 ||
+                                        cast.any { it.ppkey.isNullOrBlank() || it.name.trim() == actor.name.trim() }
+                                CastCheck(matches, uncertain)
                             } catch (error: CancellationException) {
                                 throw error
                             } catch (error: Exception) {
                                 requireCurrent()
                                 if (error is ApiException && error.status == 401) throw error
-                                false
+                                CastCheck(false, true, true)
                             }
                         }
-                    } }.awaitAll()
+                    } }.awaitAll() }
+                    chunk.zip(checked).forEach { (item, check) ->
+                        if (check.matches) confirmed.add(item)
+                        if (check.uncertain) incomplete = true
+                        consecutiveFailures = if (check.failed) consecutiveFailures + 1 else 0
+                    }
+                    completed += chunk.size
+                    requireCurrent()
+                    onProgress(confirmed.toList(), completed, candidates.size)
+                    // Avoid spending minutes on every remaining item if the server is down.
+                    if (consecutiveFailures >= 4) { incomplete = true; break }
                 }
-                if (checked.any { !it }) incomplete = true
-                visible = visible.filterIndexed { index, _ -> checked[index] }
+                visible = confirmed
             }
             requireCurrent()
-            ActorWorks(visible, tvLibrariesOnly = tmdbId == null, incomplete = incomplete)
+            ActorWorks(visible, incomplete = incomplete)
         }
     }
 

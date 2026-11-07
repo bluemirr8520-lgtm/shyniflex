@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.mirr.shynigsy.DetailDiscoveryState
 import io.mirr.shynigsy.canDiscoverActorWorks
+import io.mirr.shynigsy.hasActorLocalIdentity
 import io.mirr.shynigsy.data.CastMember
 import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaItem
@@ -134,7 +135,11 @@ internal fun DetailDiscoverySections(
                 else if (frame.tvLibrariesOnly) Text("전체 시리즈 라이브러리", fontSize = 11.sp,
                     modifier = Modifier.testTag("detail-actor-scope"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 when {
-                    frame.actorLoading -> Text("작품을 불러오는 중입니다", fontSize = 12.sp, modifier = Modifier.testTag("detail-actor-loading"))
+                    frame.actorLoading -> Text(
+                        if (!hasActorLocalIdentity(actor)) "작품을 불러오는 중입니다"
+                        else if (frame.actorTotal != null) "영화와 시리즈를 검색 중입니다. ${frame.actorChecked}/${frame.actorTotal} 확인"
+                        else "영화와 시리즈를 검색 중입니다. 작품이 많으면 시간이 걸릴 수 있습니다.",
+                        fontSize = 12.sp, modifier = Modifier.testTag("detail-actor-loading"))
                     frame.actorError != null -> {
                         Text(frame.actorError, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                         TvAction("다시 시도", enabled = !busy) { onActor(actor) }

@@ -61,10 +61,28 @@ class DetailDiscoveryStateTest {
 
     @Test fun relockingKeepsIncompletePublicResultsRetryable() {
         val frame = DetailDiscoveryState(movie, selectedActor = CastMember("배우", ppkey = "id"),
-            actorItems = listOf(movie), actorLoaded = true, actorIncomplete = true)
+            actorItems = listOf(movie), actorLoaded = true, actorIncomplete = true,
+            actorChecked = 6, actorTotal = 20)
         val locked = frame.withoutPrivateWorks()
         assertEquals(listOf(movie), locked.actorItems)
         assertTrue(locked.actorIncomplete)
+        assertEquals(0, locked.actorChecked)
+        assertNull(locked.actorTotal)
+    }
+
+    @Test fun stoppingAnActorSearchPreservesPartialWorksAndOffersRetry() {
+        val frame = DetailDiscoveryState(movie, selectedActor = CastMember("배우", ppkey = "id"),
+            actorItems = listOf(movie, privateItem), actorLoading = true, actorChecked = 6, actorTotal = 20)
+        val interrupted = frame.withInterruptedLoads()
+        assertEquals(frame.actorItems, interrupted.actorItems)
+        assertFalse(interrupted.actorLoading)
+        assertTrue(interrupted.actorIncomplete)
+        assertNull(interrupted.actorTotal)
+        val locked = frame.withoutPrivateWorks()
+        assertEquals(listOf(movie), locked.actorItems)
+        assertFalse(locked.actorLoading)
+        assertTrue(locked.actorIncomplete)
+        assertNull(locked.actorTotal)
     }
 
     @Test fun explicitWatchAcknowledgementUpdatesBothShelvesAndLeavesAnotherViewUntouched() {
@@ -79,10 +97,10 @@ class DetailDiscoveryStateTest {
         assertEquals(0L, result.actorItems.single().resumeMs)
     }
 
-    @Test fun ppkeyCanSearchAuthorizedSeriesViewsFromMovieOrSeriesDetails() {
+    @Test fun ppkeyCanSearchAuthorizedMovieOrSeriesViews() {
         val ppkey = CastMember("합성 배우", ppkey = "provider-123")
         val episode = movie.copy(type = "episode")
-        assertFalse(canDiscoverActorWorks(ppkey, movie, libraries))
+        assertTrue(canDiscoverActorWorks(ppkey, movie, libraries))
         assertTrue(canDiscoverActorWorks(ppkey, episode, listOf(Library(1, "TV", "tv"))))
         assertFalse(canDiscoverActorWorks(ppkey, episode, listOf(Library(1, "잠김", "tv", true))))
         assertFalse(canDiscoverActorWorks(CastMember("이름만"), episode, listOf(Library(1, "TV", "tv"))))
@@ -91,9 +109,15 @@ class DetailDiscoveryStateTest {
         assertTrue(canDiscoverActorWorks(ppkey, movie, movieAndTv))
         assertFalse(canDiscoverActorWorks(ppkey, movie.copy(libraryId = 99), movieAndTv))
         val movieAndPrivateTv = libraries + Library(3, "잠긴 시리즈", "tv", true)
-        assertFalse(canDiscoverActorWorks(ppkey, movie, movieAndPrivateTv))
+        assertTrue(canDiscoverActorWorks(ppkey, movie, movieAndPrivateTv))
         assertTrue(canDiscoverActorWorks(ppkey, movie, movieAndPrivateTv, spoilerUnlocked = true))
         assertFalse(canDiscoverActorWorks(ppkey, privateItem, movieAndPrivateTv))
         assertTrue(canDiscoverActorWorks(ppkey, privateItem, movieAndPrivateTv, spoilerUnlocked = true))
+    }
+
+    @Test fun actorWithBothIdentitiesCanFallBackToTheLocalSearch() {
+        assertTrue(hasActorLocalIdentity(CastMember("배우", tmdbId = 123, ppkey = " local-id ")))
+        assertFalse(hasActorLocalIdentity(CastMember("배우", tmdbId = 123, ppkey = "  ")))
+        assertFalse(hasActorLocalIdentity(CastMember("배우", tmdbId = 123, ppkey = "bad\u0001key")))
     }
 }

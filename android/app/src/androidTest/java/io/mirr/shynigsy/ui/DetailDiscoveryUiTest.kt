@@ -54,7 +54,8 @@ class DetailDiscoveryUiTest {
     private val unavailable = CastMember("제공 ID 없는 배우", "조연")
     private val work = MediaItem(200, 7, "합성 보유 작품", "show", viewItemId = 701)
     private val privateWork = MediaItem(300, 8, "합성 비공개 작품", "movie", viewItemId = 800, isSpoiler = true)
-    private val libraries = listOf(Library(7, "합성 TV", "tv"), Library(8, "합성 비공개", "movie", true))
+    private val libraries = listOf(Library(7, "합성 TV", "tv"), Library(8, "합성 비공개", "movie", true),
+        Library(9, "합성 영화", "movie"))
 
     @Test fun selectingCastShowsOwnedWorksInlineAndDoesNotPlayTheSource() {
         val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
@@ -63,8 +64,7 @@ class DetailDiscoveryUiTest {
         var plays = 0
         render(frame, onActor = {
             actorRequests++
-            frame.value = frame.value!!.copy(selectedActor = it, actorItems = listOf(work),
-                actorLoaded = true, tvLibrariesOnly = true)
+            frame.value = frame.value!!.copy(selectedActor = it, actorItems = listOf(work), actorLoaded = true)
         }, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-play").assertIsDisplayed()
         screen.runOnIdle { assertEquals(0, actorRequests) }
@@ -73,11 +73,38 @@ class DetailDiscoveryUiTest {
         screen.onNodeWithTag("detail-cast-placeholder-1", useUnmergedTree = true).assertExists()
         screen.onNodeWithTag("detail-cast-1").assertIsNotEnabled()
         screen.onNodeWithTag("detail-cast-0").performClick().assertIsSelected()
-        screen.onNodeWithTag("detail-actor-scope").performScrollTo().assertTextEquals("전체 시리즈 라이브러리")
+        screen.onNodeWithTag("detail-actor-scope").assertDoesNotExist()
         screen.onNodeWithTag("detail-actor-${compactMediaIdentity(work)}").assertExists()
         screen.runOnIdle { assertEquals(1, actorRequests); assertEquals(0, plays) }
         screen.onNodeWithTag("detail-cast").performScrollTo()
         saveLightScreenshot()
+    }
+
+    @Test fun actorWorksIncludeMoviesFromAnotherAccessibleLibrary() {
+        val movie = MediaItem(400, 9, "합성 영화", "movie", viewItemId = 900)
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorItems = listOf(movie), actorLoaded = true))
+        render(frame)
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(movie)}").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun localActorLoadingExplainsTheBroaderSearch() {
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorLoading = true))
+        render(frame)
+        screen.onNodeWithTag("detail-actor-loading").performScrollTo()
+            .assertTextEquals("영화와 시리즈를 검색 중입니다. 작품이 많으면 시간이 걸릴 수 있습니다.")
+    }
+
+    @Test fun actorSearchDisplaysProgressAlongsideAlreadyFoundMovies() {
+        val movie = MediaItem(400, 9, "합성 영화", "movie", viewItemId = 900)
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorItems = listOf(movie), actorLoading = true,
+            actorChecked = 2, actorTotal = 10))
+        render(frame)
+        screen.onNodeWithTag("detail-actor-loading").performScrollTo()
+            .assertTextEquals("영화와 시리즈를 검색 중입니다. 2/10 확인")
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(movie)}").performScrollTo().assertIsDisplayed()
     }
 
     @Test fun incompleteActorResultsKeepConfirmedWorksAndOfferRetry() {

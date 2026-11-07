@@ -175,6 +175,7 @@ class DetailDiscoveryTest {
             "/libraries/9/shows/21", "/libraries/10/shows/24" ->
                 section(person("Synthetic local actor", "actor_ppkey", "local & 한글/")).toString()
             "/libraries/10/shows" -> JSONArray().put(JSONObject().put("id", 24).put("title", "Other show")).toString()
+            "/libraries/8/movies" -> "[]"
             else -> JSONArray().put(JSONObject().put("id", 21).put("title", "Synthetic show")
             .put("view_item_id", 201)).put(JSONObject().put("id", 22).put("title", "Wrong View").put("library_view_id", 404))
             .put(JSONObject().put("id", 23).put("title", "Wrong type").put("type", "movie")).toString()
@@ -183,16 +184,117 @@ class DetailDiscoveryTest {
         val result = client.actorWorks(localActor, movie, listOf(tv, movies, Library(10, "More TV", "tv"),
             Library(11, "Locked TV", "tv", true)))
         assertFalse(result.currentLibraryOnly)
-        assertTrue(result.tvLibrariesOnly)
+        assertFalse(result.tvLibrariesOnly)
         assertFalse(result.incomplete)
         assertEquals(listOf(21, 24), result.items.map { it.id })
         val searches = requests.filter { it.requestUrl!!.encodedPath.endsWith("/shows") }
         assertEquals(setOf("/libraries/9/shows", "/libraries/10/shows"), searches.map { it.requestUrl!!.encodedPath }.toSet())
         assertTrue(searches.all { it.requestUrl!!.queryParameter("actor_ppkey") == "local & 한글/" })
         assertTrue(searches.all { it.requestUrl!!.queryParameter("limit") == null && it.requestUrl!!.queryParameter("offset") == null })
-        val unsupported = runCatching { client.actorWorks(localActor, movie, listOf(movies)) }.exceptionOrNull()
-        assertTrue(unsupported is ApiException)
-        assertEquals(4, server.requestCount)
+        val movieOnly = client.actorWorks(localActor, movie, listOf(movies))
+        assertTrue(movieOnly.items.isEmpty())
+        assertFalse(movieOnly.incomplete)
+        assertEquals(6, server.requestCount)
+    }
+
+    @Test fun ppkeySearchesMoviesAcrossViewsAndVerifiesTheFullCastWithoutMatchingNamesAlone() = runBlocking {
+        val late = (1..120).map { person("Other actor $it", "actor_ppkey", "other-$it") } +
+            person("Actor", "actor_ppkey", "abc")
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/8/movies" -> MockResponse().setBody("""[{"id":11,"title":"From extra"},{"id":12,"title":"Late actor"},{"id":13,"title":"Namesake"}]""")
+            "/libraries/10/movies" -> MockResponse().setBody("""[{"id":21,"title":"Another view"}]""")
+            "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Different cast"))
+                .put("extra", JSONObject().put("actors", JSONArray().put(JSONObject().put("name", "Actor").put("ppkey", "abc")))).toString())
+            "/libraries/8/movies/12" -> MockResponse().setBody(section(*late.toTypedArray()).toString())
+            "/libraries/8/movies/13" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "different")).toString())
+            "/libraries/10/movies/21" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie,
+            listOf(movies, Library(10, "Other movies", "movie"), Library(11, "Locked", "movie", true)))
+        assertEquals(listOf(11, 12, 21), result.items.map { it.id })
+        assertTrue(result.incomplete) // A same-named person has a different identity.
+        assertTrue(requests.none { it.requestUrl!!.encodedPath.startsWith("/libraries/11/") })
+        assertTrue(requests.filter { it.requestUrl!!.encodedPath.matches(Regex("/libraries/\\d+/movies/\\d+")) }
+            .all { it.requestUrl!!.queryParameter("fields") == "full" })
+    }
+
+    @Test fun failedMovieDetailKeepsConfirmedWorksAndReportsIncomplete() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/8/movies" -> MockResponse().setBody("""[{"id":11,"title":"Confirmed"},{"id":12,"title":"Unavailable"}]""")
+            "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(503)
+        } }
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies))
+        assertEquals(listOf(11), result.items.map { it.id })
+        assertTrue(result.incomplete)
+    }
+
+    @Test fun movieSearchReportsOrderedSnapshotsAndStopsAfterRepeatedFailures() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/8/movies" -> MockResponse().setBody(JSONArray((1..10).map {
+                JSONObject().put("id", it).put("title", "Movie $it") }).toString())
+            "/libraries/8/movies/1" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(503)
+        } }
+        val updates = mutableListOf<Triple<List<MediaItem>, Int, Int>>()
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies)) { found, done, total ->
+            updates.add(Triple(found, done, total))
+        }
+        assertEquals(listOf(1), result.items.map { it.id })
+        assertTrue(result.incomplete)
+        assertEquals(listOf(0, 4, 8), updates.map { it.second })
+        assertTrue(updates.all { it.third == 10 })
+        assertEquals(emptyList<Int>(), updates.first().first.map { it.id })
+        assertEquals(listOf(1), updates.last().first.map { it.id })
+        assertTrue(requests.none { it.requestUrl!!.encodedPath.endsWith("/movies/9") })
+    }
+
+    @Test fun movieSearchReportsMissingIdsAndServerIndicatedTruncation() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/8/movies" -> MockResponse().setBody("""{"items":[{"id":11,"title":"Known"},{"title":"Missing id"}],"total":7}""")
+            "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies))
+        assertEquals(listOf(11), result.items.map { it.id })
+        assertTrue(result.incomplete)
+    }
+
+    @Test fun movieSearchFallsBackWhenTheFullFieldsOptionIsUnsupported() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/8/movies" -> MockResponse().setBody("""[{"id":11,"title":"Known"}]""")
+            "/libraries/8/movies/11" -> if (request.requestUrl!!.queryParameter("fields") != null)
+                MockResponse().setResponseCode(400) else MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies))
+        assertEquals(listOf(11), result.items.map { it.id })
+        assertFalse(result.incomplete)
+        assertEquals(2, requests.count { it.requestUrl!!.encodedPath == "/libraries/8/movies/11" })
+    }
+
+    @Test fun neutralRecordCanLinkDirectlyProvidedTmdbAndLocalIds() {
+        val row = person("Actor", "actor_ppkey", "abc").put("tmdb_id", 71)
+        val parsed = client.parseCastMembers(section(row)).single()
+        assertEquals(71, parsed.tmdbId)
+        assertEquals("abc", parsed.ppkey)
+    }
+
+    @Test fun emptyTmdbCreditsFallBackToTheSameActorsLocalIdentity() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/people/tmdb/71" -> people()
+            "/libraries/8/movies" -> MockResponse().setBody("""[{"id":11,"title":"Known"}]""")
+            "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val progress = mutableListOf<List<Int>>()
+        val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie, listOf(movies)) { found, _, _ ->
+            progress.add(found.map { it.id })
+        }
+        assertEquals(listOf(11), result.items.map { it.id })
+        assertEquals(listOf(11), progress.last())
+        assertEquals("/people/tmdb/71", requests.first().requestUrl!!.encodedPath)
     }
 
     @Test fun ppkeyDoesNotTrustAnotherViewWhenTheServerIgnoresItsFilter() = runBlocking {

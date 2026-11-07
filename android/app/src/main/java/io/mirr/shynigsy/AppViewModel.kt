@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -840,7 +841,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         relatedWorksJob?.cancel(); relatedWorksJob = null
         actorWorksJob?.cancel(); actorWorksJob = null
         mutableState.update { state -> state.copy(detailDiscovery = if (clear) emptyMap() else
-            state.detailDiscovery.mapValues { it.value.copy(relatedLoading = false, actorLoading = false) }) }
+            state.detailDiscovery.mapValues { it.value.withInterruptedLoads() }) }
     }
 
     private fun discoveryCurrent(active: ShyniClient, account: String?, grantRevision: Long, parent: MediaItem): Boolean {
@@ -862,7 +863,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val previous = state.detailDiscovery[key] ?: DetailDiscoveryState(parent)
             val current = if (previous.selectedActor != null && detail.castMembers.none { it.key == previous.selectedActor.key })
                 previous.copy(selectedActor = null, actorItems = emptyList(), actorLoading = false, actorLoaded = false,
-                    actorError = null, actorIncomplete = false)
+                    actorError = null, actorIncomplete = false, actorChecked = 0, actorTotal = null)
                 else previous
             state.copy(detailDiscovery = state.detailDiscovery.filterKeys { it in frameKeys } +
                 (key to current.copy(parent = parent)))
@@ -958,14 +959,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { state -> state.copy(detailDiscovery = state.detailDiscovery + (key to
             (state.detailDiscovery[key] ?: frame).copy(selectedActor = selected, actorItems = emptyList(),
                 actorLoading = true, actorLoaded = false, actorError = null, actorIncomplete = false,
+                actorChecked = 0, actorTotal = null,
                 currentLibraryOnly = false, tvLibrariesOnly = false))) }
         actorWorksJob = viewModelScope.launch {
             fun current() = requestRevision == actorWorksRevision && discoveryCurrent(active, account, grant, parent) &&
                 mutableState.value.detailDiscovery[key]?.selectedActor?.key == selected.key
+            data class Progress(val items: List<MediaItem>, val checked: Int, val total: Int)
+            // Callbacks can arrive on a network worker; coalesce them and publish on the UI scope.
+            val progressEvents = Channel<Progress>(Channel.CONFLATED)
+            val progressJob = launch {
+                for (progress in progressEvents) {
+                    if (!current()) continue
+                    mutableState.update { state ->
+                        if (!current()) return@update state
+                        val latest = state.detailDiscovery[key] ?: return@update state
+                        if (!latest.actorLoading || progress.checked < latest.actorChecked) return@update state
+                        val rows = visibleDetailWorks(retainKnownDetailWatchState(progress.items, state), state.libraries,
+                            state.spoilerUnlocked && active.spoilerUnlocked).map(::collectionWatchState)
+                        reconcile(state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
+                            actorItems = rows, actorChecked = progress.checked, actorTotal = progress.total))))
+                    }
+                }
+            }
             try {
-                val timeout = if ((selected.tmdbId ?: 0) > 0) 20_000L else 120_000L
-                val result = withTimeoutOrNull(timeout) { active.actorWorks(selected, parent, snapshot.libraries) }
-                    ?: throw ApiException("배우의 작품을 불러오지 못했습니다.")
+                val result = if (!hasActorLocalIdentity(selected))
+                    withTimeoutOrNull(20_000L) { active.actorWorks(selected, parent, snapshot.libraries) }
+                        ?: throw ApiException("배우의 작품을 불러오지 못했습니다.")
+                else active.actorWorks(selected, parent, snapshot.libraries) { items, checked, total ->
+                    progressEvents.trySend(Progress(items, checked, total))
+                }
                 if (!current()) return@launch
                 mutableState.update { state ->
                     val latest = state.detailDiscovery[key] ?: return@update state
@@ -983,11 +1005,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (error is ApiException && error.status == 401) launchRequest { throw error }
                     else mutableState.update { state ->
                         val latest = state.detailDiscovery[key] ?: return@update state
-                        state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(actorItems = emptyList(),
-                            actorLoading = false, actorError = "배우의 작품을 불러오지 못했습니다.")))
+                        state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
+                            actorLoading = false, actorLoaded = false, actorError = "배우의 작품을 불러오지 못했습니다.")))
                     }
                 }
             } finally {
+                progressEvents.close()
+                progressJob.cancel()
                 if (requestRevision == actorWorksRevision) {
                     actorWorksJob = null
                     mutableState.update { state ->
