@@ -133,4 +133,38 @@ class UpdateReleaseTest {
             addVariants(manifest(), JSONObject().put("arm64-v8a", variant("source.zip"))),
             packageName, 15, listOf("arm64-v8a")) }.isFailure)
     }
+
+    @Test fun assetApiUrlComesOnlyFromValidatedPositiveReleaseAssetId() {
+        val row = release().getJSONArray("assets").getJSONObject(0)
+        row.put("id", 123).put("url", "https://api.github.com/repos/$UPDATE_REPOSITORY/releases/assets/123")
+        assertEquals("https://api.github.com/repos/$UPDATE_REPOSITORY/releases/assets/123",
+            releaseAsset(JSONObject().put("tag_name", "tv-1.0.15").put("assets", JSONArray().put(row)), "app.apk").apiUrl)
+        for (bad in listOf<Any>(0, -1, "1.5", "not-an-id")) {
+            row.put("id", bad)
+            assertTrue(runCatching { releaseAsset(JSONObject().put("tag_name", "tv-1.0.15")
+                .put("assets", JSONArray().put(row)), "app.apk") }.isFailure)
+        }
+        row.put("id", 123).put("url", "https://api.github.com/repos/other/repo/releases/assets/123")
+        assertTrue(runCatching { releaseAsset(JSONObject().put("tag_name", "tv-1.0.15")
+            .put("assets", JSONArray().put(row)), "app.apk") }.isFailure)
+    }
+
+    @Test fun olderReleaseFailureDoesNotHideCandidateButNewerFailureIsNotCurrent() {
+        val row = JSONObject()
+        val releases = JSONArray().put(JSONObject().put("number", 1)).put(JSONObject().put("number", 2))
+        val candidate = UpdateCandidate(packageName, 17, "1.0.16", "a".repeat(64),
+            UpdateAsset("app.apk", "https://github.com/example", 1))
+        val result = selectNewestUpdateCandidate(releases) {
+            if (it.getInt("number") == 1) candidate else throw java.io.IOException("older failed")
+        }
+        assertEquals(candidate.copy(incompleteScan = true), result)
+        assertTrue(runCatching { selectNewestUpdateCandidate(releases) {
+            if (it.getInt("number") == 1) throw java.io.IOException("newer failed") else candidate
+        } }.isFailure)
+        assertTrue(runCatching { selectNewestUpdateCandidate(JSONArray().put(row)) {
+            throw java.io.IOException("no candidate")
+        } }.isFailure)
+        assertEquals(candidate, selectNewestUpdateCandidate(JSONArray().put(row)) { candidate })
+        assertNull(selectNewestUpdateCandidate(JSONArray().put(row)) { null })
+    }
 }

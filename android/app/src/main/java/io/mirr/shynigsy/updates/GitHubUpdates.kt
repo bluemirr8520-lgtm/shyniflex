@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
 import org.json.JSONArray
@@ -20,30 +19,27 @@ import kotlin.coroutines.coroutineContext
 internal class GitHubUpdates(private val context: Context) {
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    private val transport = UpdateHttpTransport(http)
     private val folder = File(context.cacheDir, "updates").apply { mkdirs() }
 
     suspend fun latest(installed: Long): UpdateCandidate? = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/$UPDATE_REPOSITORY/releases?per_page=10"
-        val releases = response(url).use { value ->
-            if (value.code == 404) return@withContext null
+        val releases = transport.response(url).use { value ->
             require(value.isSuccessful)
             JSONArray(limitedBody(value, 512 * 1024))
         }
-        val candidates = mutableListOf<UpdateCandidate>()
-        for (index in 0 until releases.length()) {
-            val release = releases.getJSONObject(index)
-            if (release.optBoolean("draft") || release.optBoolean("prerelease")) continue
-            val assets = release.optJSONArray("assets") ?: continue
-            if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name") == UPDATE_MANIFEST }) continue
+        selectNewestUpdateCandidate(releases) { release ->
+            if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@selectNewestUpdateCandidate null
+            val assets = release.optJSONArray("assets") ?: return@selectNewestUpdateCandidate null
+            if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name") == UPDATE_MANIFEST })
+                return@selectNewestUpdateCandidate null
             val manifest = releaseAsset(release, UPDATE_MANIFEST)
             require(manifest.size <= 256 * 1024)
-            val data = response(manifest.url).use { value ->
-                require(value.isSuccessful)
+            val data = transport.asset(manifest) { value ->
                 JSONObject(limitedBody(value, 256 * 1024))
             }
-            updateCandidate(release, data, context.packageName, installed, Build.SUPPORTED_ABIS.toList())?.let(candidates::add)
+            updateCandidate(release, data, context.packageName, installed, Build.SUPPORTED_ABIS.toList())
         }
-        candidates.maxByOrNull { it.versionCode }
     }
 
     suspend fun download(candidate: UpdateCandidate, progress: (Int) -> Unit): File = withContext(Dispatchers.IO) {
@@ -52,9 +48,9 @@ internal class GitHubUpdates(private val context: Context) {
             return@withContext destination
         destination.delete()
         val temporary = File(folder, "update-${candidate.versionCode}.download.apk")
+        val downloadContext = coroutineContext
         try {
-            response(candidate.asset.url).use { value ->
-                require(value.isSuccessful)
+            transport.asset(candidate.asset) { value ->
                 val body = requireNotNull(value.body)
                 require(body.contentLength() <= MAX_UPDATE_BYTES)
                 var received = 0L
@@ -62,7 +58,7 @@ internal class GitHubUpdates(private val context: Context) {
                 body.byteStream().use { input -> temporary.outputStream().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
-                        coroutineContext.ensureActive()
+                        downloadContext.ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
                         received += count
@@ -80,25 +76,6 @@ internal class GitHubUpdates(private val context: Context) {
                 ?.forEach { it.delete() }
             destination
         } finally { temporary.delete() }
-    }
-
-    /** Redirects for public release assets never carry Shyni account headers or GitHub credentials. */
-    private fun response(initialUrl: String): Response {
-        var url = initialUrl
-        repeat(5) {
-            val request = Request.Builder().url(url).header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "ShyniFlix-Android-Updater").build()
-            val target = request.url
-            require(target.scheme == "https" && target.port == 443 && target.username.isEmpty() && target.password.isEmpty() &&
-                target.host in setOf("api.github.com", "github.com", "release-assets.githubusercontent.com",
-                    "objects.githubusercontent.com", "github-releases.githubusercontent.com"))
-            val result = http.newCall(request).execute()
-            if (result.code !in setOf(301, 302, 303, 307, 308)) return result
-            val next = result.header("Location")?.let { target.resolve(it)?.toString() }
-            result.close()
-            url = requireNotNull(next)
-        }
-        error("Too many update redirects")
     }
 
     private fun limitedBody(response: Response, limit: Int): String {

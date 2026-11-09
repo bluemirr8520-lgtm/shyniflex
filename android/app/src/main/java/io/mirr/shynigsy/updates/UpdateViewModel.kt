@@ -42,12 +42,17 @@ internal class UpdateViewModel(application: Application) : AndroidViewModel(appl
                     mutable.update { it.copy(phase = UpdatePhase.CURRENT, message = "최신 버전을 사용 중입니다") }
                 } else {
                     mutable.update { it.copy(phase = UpdatePhase.DOWNLOADING, version = candidate.versionName,
-                        message = "새 버전을 내려받고 있습니다") }
+                        message = if (candidate.incompleteScan) "일부 릴리스를 확인하지 못했습니다. 찾은 새 버전을 내려받고 있습니다."
+                            else "새 버전을 내려받고 있습니다") }
                     val file = service.download(candidate) { percent -> mutable.update { it.copy(percent = percent) } }
                     ready = candidate to file
-                    preferences.edit().putLong("last_success", System.currentTimeMillis()).apply()
+                    preferences.edit().apply {
+                        if (candidate.incompleteScan) remove("last_success")
+                        else putLong("last_success", System.currentTimeMillis())
+                    }.apply()
                     mutable.value = UpdateState(UpdatePhase.READY, true, 100, candidate.versionName,
-                        "새 버전이 준비되었습니다. 설치하면 계정과 설정이 유지됩니다.")
+                        if (candidate.incompleteScan) "일부 릴리스를 확인하지 못했습니다. 찾은 새 버전을 설치할 수 있습니다."
+                        else "새 버전이 준비되었습니다. 설치하면 계정과 설정이 유지됩니다.")
                 }
             } catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) {

@@ -1,15 +1,39 @@
 package io.mirr.shynigsy.updates
 
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.CancellationException
 
 internal const val UPDATE_REPOSITORY = "bluemirr8520-lgtm/shyniflex"
 internal const val UPDATE_MANIFEST = "shyniflex-update.json"
 internal const val MAX_UPDATE_BYTES = 300L * 1024 * 1024
 
-internal data class UpdateAsset(val name: String, val url: String, val size: Long)
+internal data class UpdateAsset(val name: String, val url: String, val size: Long, val apiUrl: String? = null)
 internal data class UpdateCandidate(val packageName: String, val versionCode: Long,
-    val versionName: String, val sha256: String, val asset: UpdateAsset)
+    val versionName: String, val sha256: String, val asset: UpdateAsset, val incompleteScan: Boolean = false)
+
+/** Release list order is not a version guarantee. If a later scan fails, offer
+ * an already found update but mark the scan incomplete; it may not be the
+ * highest version. A failure before finding a candidate remains an error. */
+internal fun selectNewestUpdateCandidate(releases: JSONArray, inspect: (JSONObject) -> UpdateCandidate?): UpdateCandidate? {
+    var best: UpdateCandidate? = null
+    var failure: Exception? = null
+    var incomplete = false
+    for (index in 0 until releases.length()) {
+        try {
+            val candidate = inspect(releases.getJSONObject(index))
+            if (candidate != null && (best == null || candidate.versionCode > best.versionCode)) best = candidate
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            if (best == null && failure == null) failure = error
+            if (best != null) incomplete = true
+        }
+    }
+    if (failure != null) throw failure
+    return best?.copy(incompleteScan = incomplete)
+}
 
 /** Only assets attached to this repository's published release can supply an update. */
 internal fun releaseAsset(release: JSONObject, name: String): UpdateAsset {
@@ -27,7 +51,13 @@ internal fun releaseAsset(release: JSONObject, name: String): UpdateAsset {
         path[4] == release.getString("tag_name") && path[5] == name)
     val size = row.getLong("size")
     require(size in 1..MAX_UPDATE_BYTES)
-    return UpdateAsset(name, url.toString(), size)
+    // Construct the API endpoint from the ID returned in this release's own
+    // asset list; never follow an arbitrary API URL supplied by a manifest.
+    val assetId = if (!row.has("id") || row.isNull("id")) null else
+        java.math.BigDecimal(row.get("id").toString()).longValueExact().also { require(it > 0) }
+    val apiUrl = assetId?.let { "https://api.github.com/repos/$UPDATE_REPOSITORY/releases/assets/$it" }
+    if (apiUrl != null && row.has("url")) require(row.getString("url") == apiUrl)
+    return UpdateAsset(name, url.toString(), size, apiUrl)
 }
 
 internal fun updateCandidate(release: JSONObject, manifest: JSONObject, packageName: String, installed: Long,
