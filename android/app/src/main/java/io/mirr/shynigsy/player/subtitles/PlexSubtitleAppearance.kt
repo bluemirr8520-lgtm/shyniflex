@@ -22,6 +22,8 @@ internal data class PlexSubtitleAppearance(
     val edgeType: Int = CaptionStyleCompat.EDGE_TYPE_OUTLINE,
     val edgeColor: Int = Color.BLACK,
     val verticalSpacingPercent: Int = 100,
+    val horizontalAlignment: SubtitleHorizontalAlignment = SubtitleHorizontalAlignment.DEFAULT,
+    val verticalAlignment: SubtitleVerticalAlignment = SubtitleVerticalAlignment.DEFAULT,
 )
 
 internal object PlexSubtitleFonts {
@@ -107,6 +109,7 @@ internal class PlexSubtitleOverlayView(context: Context) : FrameLayout(context) 
             subtitleEdgeColor = appearance.edgeColor
             outlineStrokeWidth = 3.5f * density
             horizontalOffsetPercent = x; verticalOffsetPercent = y
+            horizontalAlignment = appearance.horizontalAlignment; verticalAlignment = appearance.verticalAlignment
             setPadding((24 * density).roundToInt(), (24 * density).roundToInt(),
                 (24 * density).roundToInt(), (72 * density).roundToInt())
             invalidate()
@@ -122,6 +125,7 @@ internal class PlexSubtitleOverlayView(context: Context) : FrameLayout(context) 
             subtitleEdgeColor = appearance.edgeColor
             outlineStrokeWidth = 3.5f * density
             horizontalOffsetPercent = x; verticalOffsetPercent = y
+            horizontalAlignment = appearance.horizontalAlignment; verticalAlignment = appearance.verticalAlignment
             setPadding((34 * density).roundToInt(), (18 * density).roundToInt(),
                 (80 * density).roundToInt(), (18 * density).roundToInt())
             requestLayout(); invalidate()

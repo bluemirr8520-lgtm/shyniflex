@@ -54,6 +54,8 @@ internal class PlexHorizontalSubtitleView(context: Context) : View(context) {
     var outlineStrokeWidth: Float = 4f
     var horizontalOffsetPercent: Int = 0
     var verticalOffsetPercent: Int = 0
+    var horizontalAlignment: SubtitleHorizontalAlignment = SubtitleHorizontalAlignment.DEFAULT
+    var verticalAlignment: SubtitleVerticalAlignment = SubtitleVerticalAlignment.DEFAULT
     var lineHeightMultiplier: Float = SubtitleLineSpacingMultiplier
 
     private var paragraphs: List<String> = emptyList()
@@ -95,19 +97,23 @@ internal class PlexHorizontalSubtitleView(context: Context) : View(context) {
         val lineHeight = textSizePx * lineHeightMultiplier
         val textHeight = fontMetrics.descent - fontMetrics.ascent
         val contentHeight = textHeight + lineHeight * (lines.size - 1)
-        val centerX = width / 2f + width * horizontalOffsetPercent / 100f
+        val offsetX = width * horizontalOffsetPercent / 100f
         val offsetY = height * verticalOffsetPercent / 100f
-        val top = height - paddingBottom - contentHeight + offsetY
+        val top = subtitleVerticalStart(paddingTop.toFloat(), (height - paddingBottom).toFloat(),
+            contentHeight, verticalAlignment, SubtitleVerticalAlignment.BOTTOM, offsetY)
         var baseline = top - fontMetrics.ascent
         lines.forEach { line ->
             val textWidth = fillPaint.measureText(line)
+            val left = subtitleHorizontalStart(paddingLeft + horizontalPadding,
+                width - paddingRight - horizontalPadding, textWidth, horizontalAlignment,
+                SubtitleHorizontalAlignment.CENTER, offsetX)
+            val centerX = left + textWidth / 2f
             val edgePadding = subtitleEdgePadding(subtitleEdgeType, outlineStrokeWidth)
             val previousAlign = fillPaint.textAlign
             fillPaint.textAlign = Paint.Align.LEFT
             fillPaint.getTextBounds(line, 0, line.length, textBounds)
             fillPaint.textAlign = previousAlign
             if (!textBounds.isEmpty) {
-                val left = centerX - textWidth / 2f
                 drawBounds.set(left + textBounds.left, baseline + textBounds.top,
                     left + textBounds.right, baseline + textBounds.bottom)
                 drawBounds.inset(-edgePadding, -edgePadding)
@@ -229,6 +235,8 @@ internal class PlexVerticalSubtitleView(context: Context) : View(context) {
             field = value
             invalidate()
         }
+    var horizontalAlignment: SubtitleHorizontalAlignment = SubtitleHorizontalAlignment.DEFAULT
+    var verticalAlignment: SubtitleVerticalAlignment = SubtitleVerticalAlignment.DEFAULT
 
     private var sourceColumns: List<List<VerticalSubtitleGlyph>> = emptyList()
     private var measuredColumns: List<List<VerticalSubtitleGlyph>> = emptyList()
@@ -277,19 +285,21 @@ internal class PlexVerticalSubtitleView(context: Context) : View(context) {
         val columnWidth = verticalColumnWidth()
         val columnAdvance = verticalColumnAdvance()
         val availableTop = paddingTop.toFloat()
+        val availableLeft = paddingLeft.toFloat()
         val availableRight = (width - paddingRight).toFloat()
         val availableBottom = (height - paddingBottom).toFloat()
         val offsetX = width * horizontalOffsetPercent / 100f
-        val rightEdge = availableRight + offsetX
+        val contentWidth = columnWidth + (columns.size - 1) * columnAdvance
+        val leftEdge = subtitleHorizontalStart(availableLeft, availableRight, contentWidth,
+            horizontalAlignment, SubtitleHorizontalAlignment.RIGHT, offsetX)
+        val rightEdge = leftEdge + contentWidth
         val firstColumnX = rightEdge - columnWidth / 2f
         columns.forEachIndexed { columnIndex, glyphs ->
             val x = firstColumnX - columnIndex * columnAdvance
             val contentHeight = glyphs.verticalAdvance() * glyphAdvancePx
             val offsetY = height * verticalOffsetPercent / 100f
-            val availableHeight = availableBottom - availableTop
-            val top = availableTop +
-                (availableHeight - contentHeight) / 2f +
-                offsetY
+            val top = subtitleVerticalStart(availableTop, availableBottom, contentHeight,
+                verticalAlignment, SubtitleVerticalAlignment.CENTER, offsetY)
             if (android.graphics.Color.alpha(subtitleBackgroundColor) > 0 && contentHeight > 0f) {
                 backgroundPaint.color = subtitleBackgroundColor
                 val halfWidth = columnWidth * .46f

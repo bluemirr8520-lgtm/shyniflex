@@ -346,7 +346,13 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitleAppearance = PlexSubtitleAppearance(sizePercent = settings.getInt("subtitle_size", 100),
             horizontalOffsetPercent = settings.getInt("subtitle_x", 0), verticalOffsetPercent = settings.getInt("subtitle_y", 0),
             verticalWriting = settings.getBoolean("subtitle_vertical", false),
-            verticalSpacingPercent = normalizedVerticalSubtitleSpacingPercent(settings.getInt("subtitle_vertical_spacing", 100)))
+            verticalSpacingPercent = normalizedVerticalSubtitleSpacingPercent(settings.getInt("subtitle_vertical_spacing", 100)),
+            horizontalAlignment = SubtitleHorizontalAlignment.values().firstOrNull {
+                it.name == settings.getString("subtitle_horizontal_alignment", null)
+            } ?: SubtitleHorizontalAlignment.DEFAULT,
+            verticalAlignment = SubtitleVerticalAlignment.values().firstOrNull {
+                it.name == settings.getString("subtitle_vertical_alignment", null)
+            } ?: SubtitleVerticalAlignment.DEFAULT)
         watchedMs = savedInstanceState?.getLong("watched", 0) ?: 0
         resumeWhenVisible = savedInstanceState?.getBoolean("playing", true) ?: true
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1410,6 +1416,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     addRow("자막 선택", if (!subtitlesEnabled) "끔" else selectedTrackLabel(C.TRACK_TYPE_TEXT)) { showTracks(C.TRACK_TYPE_TEXT) }
                     addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
                     addRow("자막 위치") { showSubtitlePosition() }
+                    addRow("자막 정렬") { showSubtitleAlignment() }
                     addRow("자막 모양") { showSubtitleAppearance() }
                     if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
                     addRow("싱크 다시 맞추기") { resynchronize() }
@@ -1432,6 +1439,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     addRow("자막 선택", subtitleLabel) { showTracks(C.TRACK_TYPE_TEXT) }
                     addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
                     addRow("자막 위치", if (television) "방향별 위치 조절" else "길게 눌러 이동") { showSubtitlePosition() }
+                    addRow("자막 정렬") { showSubtitleAlignment() }
                     addRow("자막 모양") { showSubtitleAppearance() }
                     if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
                 }
@@ -2371,13 +2379,51 @@ class NativePlayerActivity : AppCompatActivity() {
         getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("subtitle_font", subtitleFont)
             .putInt("subtitle_size", subtitleAppearance.sizePercent).putInt("subtitle_x", subtitleAppearance.horizontalOffsetPercent)
             .putInt("subtitle_y", subtitleAppearance.verticalOffsetPercent).putBoolean("subtitle_vertical", subtitleAppearance.verticalWriting)
-            .putInt("subtitle_vertical_spacing", subtitleAppearance.verticalSpacingPercent).apply()
+            .putInt("subtitle_vertical_spacing", subtitleAppearance.verticalSpacingPercent)
+            .putString("subtitle_horizontal_alignment", subtitleAppearance.horizontalAlignment.name)
+            .putString("subtitle_vertical_alignment", subtitleAppearance.verticalAlignment.name).apply()
+    }
+
+    private fun showSubtitleAlignment() {
+        fun horizontalLabel(value: SubtitleHorizontalAlignment) = when (value) {
+            SubtitleHorizontalAlignment.DEFAULT -> "기본"
+            SubtitleHorizontalAlignment.LEFT -> "왼쪽"
+            SubtitleHorizontalAlignment.CENTER -> "가운데"
+            SubtitleHorizontalAlignment.RIGHT -> "오른쪽"
+        }
+        fun verticalLabel(value: SubtitleVerticalAlignment) = when (value) {
+            SubtitleVerticalAlignment.DEFAULT -> "기본"
+            SubtitleVerticalAlignment.TOP -> "위"
+            SubtitleVerticalAlignment.CENTER -> "가운데"
+            SubtitleVerticalAlignment.BOTTOM -> "아래"
+        }
+        AlertDialog.Builder(this).setTitle("자막 정렬")
+            .setItems(arrayOf("가로 정렬 · ${horizontalLabel(subtitleAppearance.horizontalAlignment)}",
+                "세로 정렬 · ${verticalLabel(subtitleAppearance.verticalAlignment)}")) { _, axis ->
+                if (axis == 0) {
+                    val values = SubtitleHorizontalAlignment.values()
+                    AlertDialog.Builder(this).setTitle("가로 정렬")
+                        .setSingleChoiceItems(values.map(::horizontalLabel).toTypedArray(),
+                            values.indexOf(subtitleAppearance.horizontalAlignment)) { choice, selected ->
+                            subtitleAppearance = subtitleAppearance.copy(horizontalAlignment = values[selected])
+                            applySubtitleStyle(); choice.dismiss()
+                        }.setNegativeButton("취소", null).show()
+                } else {
+                    val values = SubtitleVerticalAlignment.values()
+                    AlertDialog.Builder(this).setTitle("세로 정렬")
+                        .setSingleChoiceItems(values.map(::verticalLabel).toTypedArray(),
+                            values.indexOf(subtitleAppearance.verticalAlignment)) { choice, selected ->
+                            subtitleAppearance = subtitleAppearance.copy(verticalAlignment = values[selected])
+                            applySubtitleStyle(); choice.dismiss()
+                        }.setNegativeButton("취소", null).show()
+                }
+            }.setNegativeButton("닫기", null).show()
     }
 
     private fun showSubtitleAppearance() {
         AlertDialog.Builder(this).setTitle("자막 모양")
             .setItems(arrayOf("글꼴", "크기 (${subtitleAppearance.sizePercent}%)", "위치", "세로 쓰기 ${if (subtitleAppearance.verticalWriting) "켜짐" else "꺼짐"}", "색상·테두리",
-                "세로 자간 (${subtitleAppearance.verticalSpacingPercent}%)")) { _, index ->
+                "세로 자간 (${subtitleAppearance.verticalSpacingPercent}%)", "정렬")) { _, index ->
                 when (index) {
                     0 -> showSubtitleFont()
                     1 -> {
@@ -2394,6 +2440,7 @@ class NativePlayerActivity : AppCompatActivity() {
                         applySubtitleStyle()
                     }.setNegativeButton("닫기", null).show()
                     5 -> showSubtitleVerticalSpacing()
+                    6 -> showSubtitleAlignment()
                 }
             }.setNegativeButton("닫기", null).show()
     }
