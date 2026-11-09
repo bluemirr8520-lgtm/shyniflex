@@ -17,6 +17,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Prepare verified Gradle distribution
+        shell: pwsh
+        run: ./.github/scripts/get-pinned-gradle.ps1
       - name: Restore signing configuration
         shell: pwsh
         env:
@@ -38,7 +41,8 @@ jobs:
         shell: pwsh
         run: |
           $signRoot = Join-Path $env:RUNNER_TEMP 'shyniflex-signing'
-          ./android/gradlew.bat -p android assembleRelease '-PshyniflexApplicationId=io.mirr.shyniflex.renewed' "-PshyniflexSigningRoot=$signRoot" --no-daemon --console=plain
+          $gradle = Join-Path $env:RUNNER_TEMP 'gradle-8.13/bin/gradle.bat'
+          & $gradle -p android assembleRelease '-PshyniflexApplicationId=io.mirr.shyniflex.renewed' "-PshyniflexSigningRoot=$signRoot" --no-daemon --console=plain
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
           $signer = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
           $certificate = & $signer verify --print-certs android/app/build/outputs/apk/release/app-release.apk
