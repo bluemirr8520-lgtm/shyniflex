@@ -4,6 +4,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 internal const val UPDATE_REPOSITORY = "bluemirr8520-lgtm/shyniflex"
 internal const val UPDATE_MANIFEST = "shyniflex-update.json"
@@ -12,6 +17,26 @@ internal const val MAX_UPDATE_BYTES = 300L * 1024 * 1024
 internal data class UpdateAsset(val name: String, val url: String, val size: Long, val apiUrl: String? = null)
 internal data class UpdateCandidate(val packageName: String, val versionCode: Long,
     val versionName: String, val sha256: String, val asset: UpdateAsset, val incompleteScan: Boolean = false)
+
+/** Bound parallel reads while retaining release-list order for failure reporting. */
+internal suspend fun inspectUpdateReleases(
+    releases: JSONArray,
+    inspect: suspend (JSONObject) -> UpdateCandidate?,
+): UpdateCandidate? = coroutineScope {
+    val permit = Semaphore(4)
+    val rows = (0 until releases.length()).map { releases.getJSONObject(it) }
+    val outcomes = rows.map { row ->
+        async {
+            permit.withPermit {
+                try { Result.success(inspect(row)) }
+                catch (cancel: CancellationException) { throw cancel }
+                catch (error: Exception) { Result.failure(error) }
+            }
+        }
+    }.awaitAll()
+    var index = 0
+    selectNewestUpdateCandidate(releases) { outcomes[index++].getOrThrow() }
+}
 
 /** Release list order is not a version guarantee. If a later scan fails, offer
  * an already found update but mark the scan incomplete; it may not be the

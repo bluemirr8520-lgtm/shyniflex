@@ -4,6 +4,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicInteger
 
 class UpdateReleaseTest {
     private val packageName = "io.mirr.shyniflex.debug"
@@ -166,5 +169,39 @@ class UpdateReleaseTest {
         } }.isFailure)
         assertEquals(candidate, selectNewestUpdateCandidate(JSONArray().put(row)) { candidate })
         assertNull(selectNewestUpdateCandidate(JSONArray().put(row)) { null })
+    }
+
+    @Test fun concurrentInspectionIsBoundedAndSelectsHighestRegardlessOfCompletionOrder() = runBlocking {
+        val rows = JSONArray().apply { (1..9).forEach { put(JSONObject().put("n", it)) } }
+        val active = AtomicInteger()
+        val peak = AtomicInteger()
+        val result = inspectUpdateReleases(rows) { row ->
+            val count = active.incrementAndGet()
+            peak.updateAndGet { maxOf(it, count) }
+            try {
+                val n = row.getInt("n")
+                delay(if (n == 1) 80 else 10)
+                UpdateCandidate(packageName, n.toLong(), "v$n", "a".repeat(64),
+                    UpdateAsset("app.apk", "https://github.com/example", 1))
+            } finally { active.decrementAndGet() }
+        }
+        assertEquals(9L, result!!.versionCode)
+        assertTrue(peak.get() in 2..4)
+        assertEquals(0, active.get())
+    }
+
+    @Test fun concurrentInspectionKeepsFailurePolicyInReleaseOrder() = runBlocking {
+        val rows = JSONArray().put(JSONObject().put("n", 1)).put(JSONObject().put("n", 2))
+        val candidate = UpdateCandidate(packageName, 17, "v17", "a".repeat(64),
+            UpdateAsset("app.apk", "https://github.com/example", 1))
+        val result = inspectUpdateReleases(rows) { row ->
+            if (row.getInt("n") == 1) { delay(40); candidate }
+            else throw java.io.IOException("older failed first in time")
+        }
+        assertEquals(candidate.copy(incompleteScan = true), result)
+        assertTrue(runCatching { inspectUpdateReleases(rows) { row ->
+            if (row.getInt("n") == 1) { delay(40); throw java.io.IOException("newer failed late") }
+            else candidate
+        } }.isFailure)
     }
 }

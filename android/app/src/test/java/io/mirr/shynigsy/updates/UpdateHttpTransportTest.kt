@@ -9,6 +9,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 class UpdateHttpTransportTest {
     private val url = "https://github.com/$UPDATE_REPOSITORY/releases/download/v1/app.apk"
@@ -77,5 +78,18 @@ class UpdateHttpTransportTest {
         assertEquals(listOf("github.com", "api.github.com"), hosts)
         val failed = transport { request -> reply(request, 404) }
         assertTrue(runCatching { failed.asset(asset) { it.body!!.string() } }.isFailure)
+    }
+
+    @Test fun shortBrowserTimeoutIsLimitedToManifestTransportAndApiKeepsItsTimeout() {
+        val timeouts = mutableListOf<Long>()
+        val client = OkHttpClient.Builder().callTimeout(7, TimeUnit.SECONDS)
+            .addInterceptor(Interceptor { chain ->
+                timeouts += chain.call().timeout().timeoutNanos()
+                if (chain.request().url.host == "github.com") throw IOException("browser timeout")
+                reply(chain.request(), 200, "ok")
+            }).build()
+        val t = UpdateHttpTransport(client, browserTimeoutMillis = 3_000)
+        assertEquals("ok", t.asset(asset) { it.body!!.string() })
+        assertEquals(listOf(TimeUnit.SECONDS.toNanos(3), TimeUnit.SECONDS.toNanos(7)), timeouts)
     }
 }

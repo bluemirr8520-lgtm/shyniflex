@@ -20,6 +20,11 @@ internal class GitHubUpdates(private val context: Context) {
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     private val transport = UpdateHttpTransport(http)
+    // Small update manifests should not wait for the long timeout intended for APKs.
+    // Prefer the ordinary asset URL, but move to the GitHub API after a short stall.
+    private val manifestTransport = UpdateHttpTransport(http.newBuilder()
+        .callTimeout(7, TimeUnit.SECONDS).connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS).build(), browserTimeoutMillis = 3_000)
     private val folder = File(context.cacheDir, "updates").apply { mkdirs() }
 
     suspend fun latest(installed: Long): UpdateCandidate? = withContext(Dispatchers.IO) {
@@ -28,14 +33,14 @@ internal class GitHubUpdates(private val context: Context) {
             require(value.isSuccessful)
             JSONArray(limitedBody(value, 512 * 1024))
         }
-        selectNewestUpdateCandidate(releases) { release ->
-            if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@selectNewestUpdateCandidate null
-            val assets = release.optJSONArray("assets") ?: return@selectNewestUpdateCandidate null
+        inspectUpdateReleases(releases) { release ->
+            if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@inspectUpdateReleases null
+            val assets = release.optJSONArray("assets") ?: return@inspectUpdateReleases null
             if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name") == UPDATE_MANIFEST })
-                return@selectNewestUpdateCandidate null
+                return@inspectUpdateReleases null
             val manifest = releaseAsset(release, UPDATE_MANIFEST)
             require(manifest.size <= 256 * 1024)
-            val data = transport.asset(manifest) { value ->
+            val data = manifestTransport.asset(manifest) { value ->
                 JSONObject(limitedBody(value, 256 * 1024))
             }
             updateCandidate(release, data, context.packageName, installed, Build.SUPPORTED_ABIS.toList())

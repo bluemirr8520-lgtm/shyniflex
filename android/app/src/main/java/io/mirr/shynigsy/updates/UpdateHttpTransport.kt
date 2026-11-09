@@ -5,10 +5,16 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /** No account credentials are attached to GitHub or its public asset redirects. */
-internal class UpdateHttpTransport(private val http: OkHttpClient) {
-    fun response(initialUrl: String, accept: String = "application/vnd.github+json"): Response {
+internal class UpdateHttpTransport(private val http: OkHttpClient, browserTimeoutMillis: Long? = null) {
+    private val browserHttp = browserTimeoutMillis?.let {
+        http.newBuilder().callTimeout(it, TimeUnit.MILLISECONDS).build()
+    } ?: http
+
+    fun response(initialUrl: String, accept: String = "application/vnd.github+json",
+        client: OkHttpClient = http): Response {
         var url = initialUrl
         repeat(5) {
             val request = Request.Builder().url(url).header("Accept", accept)
@@ -17,7 +23,7 @@ internal class UpdateHttpTransport(private val http: OkHttpClient) {
             require(target.scheme == "https" && target.port == 443 && target.username.isEmpty() && target.password.isEmpty() &&
                 target.host in setOf("api.github.com", "github.com", "release-assets.githubusercontent.com",
                     "objects.githubusercontent.com", "github-releases.githubusercontent.com"))
-            val result = http.newCall(request).execute()
+            val result = client.newCall(request).execute()
             if (result.code !in setOf(301, 302, 303, 307, 308)) return result
             val next = result.header("Location")?.let { target.resolve(it)?.toString() }
             result.close()
@@ -30,14 +36,14 @@ internal class UpdateHttpTransport(private val http: OkHttpClient) {
 
     /** Retry only transport/HTTP failures, never a content validation failure. */
     fun <T> asset(asset: UpdateAsset, consume: (Response) -> T): T {
-        fun attempt(url: String, accept: String): T = response(url, accept).use { result ->
+        fun attempt(url: String, accept: String, client: OkHttpClient = http): T = response(url, accept, client).use { result ->
             if (!result.isSuccessful) throw AssetHttpFailure(result.code)
             consume(result)
         }
         val browserAccept = "application/vnd.github+json"
         var last: IOException
         try {
-            return attempt(asset.url, browserAccept)
+            return attempt(asset.url, browserAccept, browserHttp)
         } catch (error: IOException) {
             last = error
         }
@@ -46,7 +52,7 @@ internal class UpdateHttpTransport(private val http: OkHttpClient) {
                 // The original URL has already been checked against the release.
                 // Add only a fixed cache-buster, not a URL from an untrusted manifest.
                 val retryUrl = asset.url.toHttpUrl().newBuilder().addQueryParameter("retry", "1").build().toString()
-                return attempt(retryUrl, browserAccept)
+                return attempt(retryUrl, browserAccept, browserHttp)
             } catch (error: IOException) {
                 last = error
             }
