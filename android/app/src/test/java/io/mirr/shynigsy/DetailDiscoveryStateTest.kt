@@ -85,6 +85,17 @@ class DetailDiscoveryStateTest {
         assertNull(locked.actorTotal)
     }
 
+    @Test fun confirmedWorksRemainVisibleAndPrivateWinsWhenMovieSearchAddsDuplicates() {
+        val unknownView = movie.copy(viewItemId = null, isSpoiler = true)
+        val matchingView = movie.copy(viewItemId = 10)
+        val separateView = movie.copy(viewItemId = 99)
+        val combined = mergeActorWorks(listOf(unknownView), listOf(matchingView, separateView))
+        assertEquals(2, combined.size)
+        assertEquals(10, combined.first().viewItemId)
+        assertTrue(combined.first().isSpoiler)
+        assertEquals(separateView, combined.last())
+    }
+
     @Test fun explicitWatchAcknowledgementUpdatesBothShelvesAndLeavesAnotherViewUntouched() {
         val other = movie.copy(viewItemId = 99, resumeMs = 10_000)
         val frame = DetailDiscoveryState(movie, relatedItems = listOf(movie, other), actorItems = listOf(movie))

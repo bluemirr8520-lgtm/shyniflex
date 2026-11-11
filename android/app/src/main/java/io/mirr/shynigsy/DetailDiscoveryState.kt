@@ -21,6 +21,9 @@ data class DetailDiscoveryState(
     val actorTotal: Int? = null,
     val currentLibraryOnly: Boolean = false,
     val tvLibrariesOnly: Boolean = false,
+    val movieSearchAvailable: Boolean = false,
+    val movieSearchRunning: Boolean = false,
+    val movieSearchRetry: Boolean = false,
 )
 
 internal fun detailDiscoveryKey(item: MediaItem): String =
@@ -63,12 +66,30 @@ internal fun retainKnownDetailWatchState(items: List<MediaItem>, state: AppState
     }
 }
 
+/** Preserve already confirmed works while a user-requested movie scan runs. */
+internal fun mergeActorWorks(existing: List<MediaItem>, incoming: List<MediaItem>): List<MediaItem> {
+    val merged = existing.toMutableList()
+    for (item in incoming) {
+        val index = merged.indexOfFirst { previous ->
+            previous.libraryId == item.libraryId && previous.type == item.type && previous.id == item.id &&
+                (previous.viewItemId == item.viewItemId || previous.viewItemId == null || item.viewItemId == null)
+        }
+        if (index < 0) merged.add(item) else {
+            val previous = merged[index]
+            val richer = if (previous.viewItemId == null && item.viewItemId != null) item else previous
+            merged[index] = richer.copy(isSpoiler = previous.isSpoiler || item.isSpoiler)
+        }
+    }
+    return merged
+}
+
 internal fun DetailDiscoveryState.withoutPrivateWorks() = copy(
     relatedItems = relatedItems.filterNot { it.isSpoiler },
     actorItems = actorItems.filterNot { it.isSpoiler },
     relatedLoading = false, actorLoading = false, relatedError = null, actorError = null,
     actorIncomplete = actorIncomplete || actorLoading,
     actorChecked = 0, actorTotal = null,
+    movieSearchAvailable = false, movieSearchRunning = false, movieSearchRetry = false,
     relatedLoaded = relatedLoaded && !parent.isSpoiler && relatedItems.none { it.isSpoiler },
     actorLoaded = actorLoaded && !parent.isSpoiler && actorItems.none { it.isSpoiler },
 )
@@ -78,4 +99,6 @@ internal fun DetailDiscoveryState.withInterruptedLoads() = copy(
     relatedLoading = false, actorLoading = false,
     actorIncomplete = actorIncomplete || actorLoading,
     actorChecked = 0, actorTotal = null,
+    movieSearchAvailable = movieSearchAvailable || movieSearchRunning,
+    movieSearchRunning = false,
 )

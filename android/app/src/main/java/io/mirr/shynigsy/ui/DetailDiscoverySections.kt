@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.mirr.shynigsy.DetailDiscoveryState
 import io.mirr.shynigsy.canDiscoverActorWorks
-import io.mirr.shynigsy.hasActorLocalIdentity
 import io.mirr.shynigsy.data.CastMember
 import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaItem
@@ -66,6 +65,7 @@ internal fun DetailDiscoverySections(
     portrait: @Composable (CastMember, Modifier) -> Unit,
     restoreTarget: String? = null, requestFocus: Boolean = false, focus: FocusRequester? = null,
     onFocused: (String) -> Unit = {}, onRestoreDone: () -> Unit = {},
+    onSearchActorMovies: () -> Unit = {}, onCancelActorMovieSearch: () -> Unit = {},
 ) {
     if (parent.isSpoiler && !spoilerUnlocked) return
     if (castMembers.isEmpty() && frame == null) return
@@ -136,23 +136,37 @@ internal fun DetailDiscoverySections(
                     modifier = Modifier.testTag("detail-actor-scope"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 when {
                     frame.actorLoading -> Text(
-                        if (!hasActorLocalIdentity(actor)) "작품을 불러오는 중입니다"
-                        else if (frame.actorTotal != null) "영화와 시리즈를 검색 중입니다. ${frame.actorChecked}/${frame.actorTotal} 확인"
-                        else "영화와 시리즈를 검색 중입니다. 작품이 많으면 시간이 걸릴 수 있습니다.",
+                        if (frame.movieSearchRunning && frame.actorTotal != null)
+                            "영화 출연작을 검색 중입니다. ${frame.actorChecked}/${frame.actorTotal} 확인"
+                        else if (frame.movieSearchRunning) "영화 출연작을 검색 중입니다"
+                        else "서버에서 출연작을 불러오는 중입니다",
                         fontSize = 12.sp, modifier = Modifier.testTag("detail-actor-loading"))
                     frame.actorError != null -> {
                         Text(frame.actorError, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-                        TvAction("다시 시도", enabled = !busy) { onActor(actor) }
+                        TvAction("다시 시도", enabled = !busy) {
+                        if (frame.movieSearchRetry) onSearchActorMovies() else onActor(actor)
+                        }
                     }
                     actorWorks.isEmpty() && frame.actorLoaded -> Text(
                         if (frame.actorIncomplete) "확인된 작품이 없습니다" else "표시할 작품이 없습니다", fontSize = 12.sp)
                 }
                 if (actorWorks.isNotEmpty()) DiscoveryWorksRow(actorWorks, actorScroll, "actor", busy,
                     onOpen, onWatchOptions, artwork, ::targetModifier)
+                if (frame.movieSearchRunning) {
+                    TvAction("영화 검색 취소", Modifier.testTag("detail-actor-movies-cancel"),
+                        enabled = true, onClick = onCancelActorMovieSearch)
+                } else if (frame.movieSearchAvailable && !frame.actorLoading && frame.actorError == null) {
+                    Text("영화를 하나씩 확인하므로 오래 걸리고 서버에 부하가 생길 수 있습니다.",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TvAction("영화 출연작 추가 검색", Modifier.testTag("detail-actor-movies-search"),
+                        enabled = !busy, onClick = onSearchActorMovies)
+                }
                 if (frame.actorIncomplete && !frame.actorLoading) {
                     Text("일부 라이브러리의 출연 정보를 확인하지 못했습니다.", fontSize = 12.sp,
                         modifier = Modifier.testTag("detail-actor-incomplete"), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TvAction("다시 확인", enabled = !busy) { onActor(actor) }
+                    TvAction("다시 확인", enabled = !busy) {
+                        if (frame.movieSearchRetry) onSearchActorMovies() else onActor(actor)
+                    }
                 }
             }
         }

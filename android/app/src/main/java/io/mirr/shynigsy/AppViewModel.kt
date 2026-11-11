@@ -46,6 +46,7 @@ data class AppState(
     val searchQuery: String = "",
     val searchItems: List<MediaItem> = emptyList(),
     val searchFailureCount: Int = 0,
+    val searchHydrating: Boolean = false,
     val librarySort: LibrarySort = LibrarySort.TITLE_ASC,
     val libraryContentType: LibraryContentType = LibraryContentType.MOVIES,
     val libraryBrowseRevision: Long = 0,
@@ -132,7 +133,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         seriesCountRevision = state.seriesCountRevision + 1,
         libraries = state.libraries.filterNot { it.isSpoiler }, recentItems = state.recentItems.filterNot { it.isSpoiler },
         continueItems = state.continueItems.filterNot { it.isSpoiler },
-        searchItems = state.searchItems.filterNot { it.isSpoiler }, searchFailureCount = 0,
+        searchItems = state.searchItems.filterNot { it.isSpoiler }, searchFailureCount = 0, searchHydrating = false,
         continueDetails = state.continueDetails?.takeUnless { it.isSpoiler },
         library = state.library?.takeUnless { it.isSpoiler },
         items = if (privateScreen) emptyList() else state.items.filterNot { it.isSpoiler },
@@ -308,7 +309,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchRequest(keepCompletedEpisodePending: Boolean = false, block: suspend () -> Unit) {
         requestJob?.cancel()
         val current = ++revision
-        mutableState.update { it.copy(busy = true, error = null, homeLoading = false,
+        mutableState.update { it.copy(busy = true, error = null, homeLoading = false, searchHydrating = false,
             completedEpisodePending = if (keepCompletedEpisodePending) it.completedEpisodePending else null) }
         requestJob = viewModelScope.launch {
             try {
@@ -335,7 +336,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     } else mutableState.update { it.copy(error = error.message ?: "요청을 처리하지 못했습니다.") }
                 }
             } finally {
-                if (current == revision) mutableState.update { it.copy(busy = false) }
+                if (current == revision) mutableState.update { it.copy(busy = false, searchHydrating = false) }
             }
         }
     }
@@ -787,7 +788,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 check(status.unlocked && active.spoilerUnlocked)
                 requestJob?.cancel(); revision++
-                mutableState.update { it.copy(spoilerUnlocked = true, spoilerPromptOpen = false, spoilerBusy = false,
+                mutableState.update { it.copy(spoilerUnlocked = true, spoilerPromptOpen = false, spoilerBusy = false, searchHydrating = false,
                     spoilerAvailable = status.available, spoilerPinEnabled = status.pinEnabled != false, busy = false,
                     completedEpisodePending = null) }
                 scheduleSpoilerExpiry(active)
@@ -863,7 +864,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val previous = state.detailDiscovery[key] ?: DetailDiscoveryState(parent)
             val current = if (previous.selectedActor != null && detail.castMembers.none { it.key == previous.selectedActor.key })
                 previous.copy(selectedActor = null, actorItems = emptyList(), actorLoading = false, actorLoaded = false,
-                    actorError = null, actorIncomplete = false, actorChecked = 0, actorTotal = null)
+                    actorError = null, actorIncomplete = false, actorChecked = 0, actorTotal = null,
+                    movieSearchAvailable = false, movieSearchRunning = false, movieSearchRetry = false)
                 else previous
             state.copy(detailDiscovery = state.detailDiscovery.filterKeys { it in frameKeys } +
                 (key to current.copy(parent = parent)))
@@ -921,7 +923,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val selected = mutableState.value.detailDiscovery[key]?.takeIf {
             !it.actorLoaded && !it.actorLoading && it.actorError == null
         }?.selectedActor
-        if (selected != null) selectDetailActor(selected, reconcile)
+        if (selected != null) selectDetailActor(selected, reconcile = reconcile)
     }
 
     fun retryRelatedWorks() {
@@ -941,7 +943,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         selectDetailActor(actor) { it }
     }
 
-    private fun selectDetailActor(actor: CastMember, reconcile: (AppState) -> AppState) {
+    /** Movie detail scans are costly, and only run after an explicit request. */
+    fun searchDetailActorMovies() {
+        val snapshot = mutableState.value
+        if (snapshot.busy && !snapshot.homeLoading) return
+        val detail = snapshot.detailStack.lastOrNull() ?: return
+        val frame = snapshot.detailDiscovery[detailDiscoveryKey(detail.item)] ?: return
+        val selected = frame.selectedActor ?: return
+        if (!frame.movieSearchAvailable || frame.actorLoading) return
+        selectDetailActor(selected, searchMovies = true) { it }
+    }
+
+    fun cancelDetailActorMovieSearch() {
+        val detail = mutableState.value.detailStack.lastOrNull() ?: return
+        val key = detailDiscoveryKey(detail.item)
+        val frame = mutableState.value.detailDiscovery[key] ?: return
+        if (!frame.movieSearchRunning) return
+        actorWorksRevision++
+        actorWorksJob?.cancel()
+        actorWorksJob = null
+        mutableState.update { state ->
+            val latest = state.detailDiscovery[key] ?: return@update state
+            state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
+                actorLoading = false, actorLoaded = true, actorChecked = 0, actorTotal = null,
+                movieSearchAvailable = true, movieSearchRunning = false, movieSearchRetry = false)))
+        }
+    }
+
+    private fun selectDetailActor(actor: CastMember, searchMovies: Boolean = false, reconcile: (AppState) -> AppState) {
         val active = client ?: return
         val snapshot = mutableState.value
         val detail = snapshot.detailStack.lastOrNull() ?: return
@@ -952,16 +981,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (parent.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         val key = detailDiscoveryKey(parent)
         val frame = snapshot.detailDiscovery[key] ?: DetailDiscoveryState(parent)
-        if (frame.selectedActor?.key == selected.key && (frame.actorLoading || (frame.actorLoaded && !frame.actorIncomplete))) return
+        if (!searchMovies && frame.selectedActor?.key == selected.key &&
+            (frame.actorLoading || (frame.actorLoaded && !frame.actorIncomplete))) return
+        if (searchMovies && (frame.selectedActor?.key != selected.key || !frame.movieSearchAvailable || frame.actorLoading)) return
+        val retained = if (searchMovies) frame.actorItems else emptyList()
         actorWorksJob?.cancel()
         val requestRevision = ++actorWorksRevision
         val account = active.token
         val grant = SpoilerAccessRegistry.changes.value
         mutableState.update { state -> state.copy(detailDiscovery = state.detailDiscovery + (key to
-            (state.detailDiscovery[key] ?: frame).copy(selectedActor = selected, actorItems = emptyList(),
+            (state.detailDiscovery[key] ?: frame).copy(selectedActor = selected, actorItems = retained,
                 actorLoading = true, actorLoaded = false, actorError = null, actorIncomplete = false,
                 actorChecked = 0, actorTotal = null,
-                currentLibraryOnly = false, tvLibrariesOnly = false))) }
+                currentLibraryOnly = false, tvLibrariesOnly = false,
+                movieSearchAvailable = false, movieSearchRunning = searchMovies, movieSearchRetry = false))) }
         actorWorksJob = viewModelScope.launch {
             fun current() = requestRevision == actorWorksRevision && discoveryCurrent(active, account, grant, parent) &&
                 mutableState.value.detailDiscovery[key]?.selectedActor?.key == selected.key
@@ -975,7 +1008,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         if (!current()) return@update state
                         val latest = state.detailDiscovery[key] ?: return@update state
                         if (!latest.actorLoading || progress.checked < latest.actorChecked) return@update state
-                        val rows = visibleDetailWorks(retainKnownDetailWatchState(progress.items, state), state.libraries,
+                        val incoming = if (searchMovies) mergeActorWorks(retained, progress.items) else progress.items
+                        val rows = visibleDetailWorks(retainKnownDetailWatchState(incoming, state), state.libraries,
                             state.spoilerUnlocked && active.spoilerUnlocked).map(::collectionWatchState)
                         reconcile(state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
                             actorItems = rows, actorChecked = progress.checked, actorTotal = progress.total))))
@@ -986,18 +1020,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val result = if (!hasActorLocalIdentity(selected))
                     withTimeoutOrNull(20_000L) { active.actorWorks(selected, parent, snapshot.libraries) }
                         ?: throw ApiException("배우의 작품을 불러오지 못했습니다.")
-                else active.actorWorks(selected, parent, snapshot.libraries, allowLocalFallback = true) { items, checked, total ->
+                else active.actorWorks(selected, parent, snapshot.libraries, allowLocalFallback = true,
+                    scanMovieDetails = searchMovies, includeExtraMovieScan = searchMovies) { items, checked, total ->
                     progressEvents.trySend(Progress(items, checked, total))
                 }
                 if (!current()) return@launch
                 mutableState.update { state ->
                     val latest = state.detailDiscovery[key] ?: return@update state
-                    val rows = visibleDetailWorks(retainKnownDetailWatchState(result.items, state), state.libraries,
+                    val incoming = if (searchMovies) mergeActorWorks(retained, result.items) else result.items
+                    val rows = visibleDetailWorks(retainKnownDetailWatchState(incoming, state), state.libraries,
                         state.spoilerUnlocked && active.spoilerUnlocked).map(::collectionWatchState)
                     reconcile(state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(actorItems = rows,
                         actorLoading = false, actorLoaded = true, actorError = null,
                         currentLibraryOnly = result.currentLibraryOnly, tvLibrariesOnly = result.tvLibrariesOnly,
-                        actorIncomplete = result.incomplete))))
+                        actorIncomplete = result.incomplete,
+                        movieSearchAvailable = result.movieSearchAvailable || (searchMovies && result.incomplete),
+                        movieSearchRunning = false, movieSearchRetry = searchMovies && result.incomplete))))
                 }
             } catch (cancel: CancellationException) {
                 throw cancel
@@ -1007,7 +1045,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     else mutableState.update { state ->
                         val latest = state.detailDiscovery[key] ?: return@update state
                         state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
-                            actorLoading = false, actorLoaded = false, actorError = "배우의 작품을 불러오지 못했습니다.")))
+                            actorLoading = false, actorLoaded = searchMovies,
+                            movieSearchAvailable = searchMovies, movieSearchRunning = false, movieSearchRetry = searchMovies,
+                            actorError = if (searchMovies) "영화 출연작을 불러오지 못했습니다." else "배우의 작품을 불러오지 못했습니다.")))
                     }
                 }
             } finally {
@@ -1017,7 +1057,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     actorWorksJob = null
                     mutableState.update { state ->
                         val latest = state.detailDiscovery[key] ?: return@update state
-                        state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(actorLoading = false)))
+                        state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
+                            actorLoading = false, movieSearchRunning = false)))
                     }
                 }
             }
@@ -1192,10 +1233,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openItem(item: MediaItem) {
         val active = client ?: return
+        val snapshot = mutableState.value
+        if (snapshot.searchOpen && snapshot.searchHydrating && snapshot.detailStack.isEmpty() &&
+            snapshot.searchItems.none { detailDiscoveryKey(it) == detailDiscoveryKey(item) }) return
         if (item.isSpoiler && !active.spoilerUnlocked) { clearSpoilerUi(); return }
         cancelDetailDiscoveryJobs()
         mutableState.update { it.copy(detailStack = it.detailStack + MediaDetails(item),
-            versions = emptyList(), selectedPartId = null) }
+            versions = emptyList(), selectedPartId = null, searchHydrating = false) }
         launchRequest {
             val detail = collectionWatchState(episodeListDetails(active, active.details(item)))
             // File-version labels are supplemental; the selected title/episodes are already usable.
@@ -1414,7 +1458,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelDetailDiscoveryJobs(clear = true)
         requestJob?.cancel(); revision++
         clearContinueSelection(clearCache = false)
-        mutableState.update { it.copy(searchOpen = true, library = null, items = emptyList(), total = 0, query = "",
+        mutableState.update { it.copy(searchOpen = true, searchHydrating = false, library = null, items = emptyList(), total = 0, query = "",
             detailStack = emptyList(), versions = emptyList(), selectedPartId = null, busy = false, error = null,
             homeLoading = false, completedEpisodePending = null) }
     }
@@ -1423,7 +1467,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val active = client ?: return
         if (!mutableState.value.loggedIn || !mutableState.value.searchOpen) return
         val normalized = query.trim()
-        mutableState.update { it.copy(searchQuery = normalized, searchItems = emptyList(), searchFailureCount = 0,
+        mutableState.update { it.copy(searchQuery = normalized, searchItems = emptyList(), searchFailureCount = 0, searchHydrating = false,
             detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
         if (normalized.isEmpty()) {
             requestJob?.cancel(); revision++
@@ -1451,14 +1495,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } else emptyList()
         val privateIds = privateLibraries.map { it.id }.toSet() + mutableState.value.libraries.filter { it.isSpoiler }.map { it.id }
         val libraries = (publicLibraries.filterNot { it.id in privateIds } + privateLibraries).distinctBy { it.id }
-        val result = active.searchLibraries(libraries, query)
-        if (active !== client || active.token != accountToken || navigationRevision != revision ||
-            accessRevision != spoilerRevision || grantRevision != SpoilerAccessRegistry.changes.value) return
-        mutableState.update { state ->
-            if (!state.loggedIn || !state.searchOpen || state.searchQuery != query) state
-            else reconcile(state.copy(libraries = libraries.filter { !it.isSpoiler || active.spoilerUnlocked },
-                searchItems = result.items.filter { !it.isSpoiler || (state.spoilerUnlocked && active.spoilerUnlocked) }
-                    .map(::collectionWatchState), searchFailureCount = result.failedLibraryCount + if (privateCatalogFailed) 1 else 0))
+        fun publish(items: List<MediaItem>, failedCount: Int, hydrating: Boolean) {
+            if (active !== client || active.token != accountToken || navigationRevision != revision ||
+                accessRevision != spoilerRevision || grantRevision != SpoilerAccessRegistry.changes.value) return
+            mutableState.update { state ->
+                if (!state.loggedIn || !state.searchOpen || state.searchQuery != query) state
+                else reconcile(state.copy(libraries = libraries.filter { !it.isSpoiler || active.spoilerUnlocked },
+                    searchItems = items.filter { !it.isSpoiler || (state.spoilerUnlocked && active.spoilerUnlocked) }
+                        .map(::collectionWatchState), searchFailureCount = failedCount + if (privateCatalogFailed) 1 else 0,
+                    searchHydrating = hydrating))
+            }
+        }
+        try {
+            val result = active.searchLibrariesUnified(libraries, query) { items ->
+                withContext(Dispatchers.Main.immediate) { publish(items, 0, true) }
+            }
+            publish(result.items, result.failedLibraryCount, false)
+        } finally {
+            if (active === client && active.token == accountToken && navigationRevision == revision &&
+                accessRevision == spoilerRevision && grantRevision == SpoilerAccessRegistry.changes.value) {
+                mutableState.update { state ->
+                    if (!state.searchOpen || state.searchQuery != query) state else state.copy(searchHydrating = false)
+                }
+            }
         }
     }
 
@@ -1466,7 +1525,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelDetailDiscoveryJobs(clear = true)
         requestJob?.cancel(); revision++
         mutableState.update { it.copy(detailStack = emptyList(), library = null, items = emptyList(),
-            total = 0, query = "", searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0,
+            total = 0, query = "", searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0, searchHydrating = false,
             busy = false, error = null, versions = emptyList(), selectedPartId = null, completedEpisodePending = null) }
     }
 
@@ -1476,9 +1535,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestJob?.cancel(); revision++
         mutableState.update {
             if (it.detailStack.isNotEmpty()) it.copy(detailStack = it.detailStack.dropLast(1),
-                busy = false, versions = emptyList(), selectedPartId = null, error = null)
+                busy = false, versions = emptyList(), selectedPartId = null, error = null, searchHydrating = false)
             else it.copy(library = null, items = emptyList(), total = 0, query = "",
-                searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0, busy = false, error = null)
+                searchOpen = false, searchQuery = "", searchItems = emptyList(), searchFailureCount = 0, busy = false, error = null, searchHydrating = false)
         }
         val detail = mutableState.value.detailStack.lastOrNull()
         if (detail == null) cancelDetailDiscoveryJobs(clear = true)

@@ -21,4 +21,5 @@ data class CastMember(
 
 /** Results contain only works that can be addressed in an authorized Library View. */
 data class ActorWorks(val items: List<MediaItem>, val currentLibraryOnly: Boolean = false,
-    val tvLibrariesOnly: Boolean = false, val incomplete: Boolean = false)
+    val tvLibrariesOnly: Boolean = false, val incomplete: Boolean = false,
+    val movieSearchAvailable: Boolean = false)

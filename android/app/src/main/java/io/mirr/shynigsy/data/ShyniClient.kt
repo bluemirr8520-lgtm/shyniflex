@@ -875,6 +875,80 @@ class ShyniClient(
             outcomes.sumOf { it.failedLibraryCount })
     }
 
+    /**
+     * Prefer the server's single, ranked cross-View search.  Every returned row
+     * is still checked against the caller's authorized Views before it reaches
+     * the screen.  Old servers that lack this endpoint keep the scoped path.
+     */
+    suspend fun searchLibrariesUnified(
+        libraries: List<Library>, query: String,
+        onCatalogReady: suspend (List<MediaItem>) -> Unit = {},
+    ): LibrarySearchResult = withContext(Dispatchers.Default) {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) return@withContext LibrarySearchResult(emptyList())
+        val account = token
+        val grantRevision = SpoilerAccessRegistry.changes.value
+        fun privateAccessUnchanged() = spoilerUnlocked && SpoilerAccessRegistry.changes.value == grantRevision
+        fun requireCurrent() {
+            if (token != account) throw CancellationException("검색 요청이 종료되었습니다.")
+        }
+        val privateIds = libraries.filter { it.id > 0 && it.isSpoiler }.mapTo(HashSet()) { it.id }
+        val scopes = libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") &&
+            (it.isSpoiler || it.id !in privateIds) && (!it.isSpoiler || privateAccessUnchanged()) }
+            .distinctBy { it.id }.associateBy { it.id }
+        if (scopes.isEmpty()) return@withContext LibrarySearchResult(emptyList())
+        val response = try {
+            request("/search?q=${encode(normalizedQuery)}&limit=200&types=movie%2Ctv",
+                responseLimit = 16L * 1024 * 1024, spoiler = scopes.values.any { it.isSpoiler })
+        } catch (error: ApiException) {
+            if (error.status !in setOf(404, 405, 501)) throw error
+            requireCurrent()
+            currentCoroutineContext().ensureActive()
+            return@withContext searchLibraries(libraries, normalizedQuery)
+        }
+        requireCurrent()
+        currentCoroutineContext().ensureActive()
+        val array = when (response) {
+            is JSONArray -> response
+            is JSONObject -> response.optJSONArray("items") ?: response.optJSONArray("results")
+                ?: throw ApiException("검색 응답 형식이 올바르지 않습니다.")
+            else -> throw ApiException("검색 응답 형식이 올바르지 않습니다.")
+        }
+        data class Identity(val libraryId: Int, val type: String, val id: Int, val viewItemId: Int?)
+        val selected = linkedMapOf<Identity, Pair<JSONObject, MediaItem>>()
+        for (index in 0 until minOf(array.length(), 200)) {
+            val row = array.optJSONObject(index) ?: throw ApiException("검색 응답 형식이 올바르지 않습니다.")
+            if (row.optBoolean("remote") || row.stringOrNull("federated_id") != null) continue
+            val libraryId = row.exactPositiveInt("library_view_id") ?: continue
+            if (!row.isNull("library_id") && row.exactPositiveInt("library_id") != libraryId) continue
+            val library = scopes[libraryId] ?: continue
+            val type = when (row.exactPositiveInt("metadata_type")) { 1 -> "movie"; 2 -> "show"; else -> continue }
+            if ((type == "movie" && library.type != "movie") || (type == "show" && library.type != "tv")) continue
+            if (row.exactPositiveInt("id") == null || row.stringOrNull("title").isNullOrBlank()) continue
+            val item = parseMedia(row, libraryId, type).let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) }
+            val key = Identity(libraryId, type, item.id, item.viewItemId)
+            val previous = selected[key]
+            if (previous == null || (item.isSpoiler && !previous.second.isSpoiler)) selected[key] = row to item
+        }
+        requireCurrent()
+        currentCoroutineContext().ensureActive()
+        val visiblePairs = selected.values.filter { !it.second.isSpoiler || privateAccessUnchanged() }
+        val itemByRow = java.util.IdentityHashMap<JSONObject, MediaItem>()
+        visiblePairs.forEach { (row, item) -> itemByRow[row] = item }
+        val visible = rankSearchRows(visiblePairs.map { it.first }, normalizedQuery).mapNotNull { itemByRow[it] }
+        requireCurrent()
+        currentCoroutineContext().ensureActive()
+        onCatalogReady(visible.filter { !it.isSpoiler || privateAccessUnchanged() }.map {
+            if (it.playable) it.copy(watched = false, resumeMs = 0, watchState = null) else it
+        })
+        requireCurrent()
+        currentCoroutineContext().ensureActive()
+        val enriched = withProgress(visible.filter { !it.isSpoiler || privateAccessUnchanged() })
+        requireCurrent()
+        currentCoroutineContext().ensureActive()
+        LibrarySearchResult(enriched.filter { !it.isSpoiler || privateAccessUnchanged() })
+    }
+
     /** Movies/shows are full arrays in beta4; paginate them locally, never fake API offsets. */
     suspend fun items(library: Library, offset: Int = 0, query: String = "", sort: LibrarySort? = null,
         genre: String? = null, year: Int? = null,
@@ -961,7 +1035,26 @@ class ShyniClient(
             }
             (0 until array.length()).map { array.optJSONObject(it) ?: throw ApiException("검색 응답 형식이 올바르지 않습니다.") }
         } else rows(value, "items", "results")
-        val parsed = catalogRows
+        val parsed = if (query.isNotEmpty() && !nested) {
+            data class SearchIdentity(val type: String, val id: Int, val viewItemId: Int?)
+            val selected = linkedMapOf<SearchIdentity, Pair<JSONObject, MediaItem>>()
+            for (row in catalogRows) {
+                if (row.optBoolean("remote") || row.stringOrNull("federated_id") != null ||
+                    row.exactPositiveInt("id") == null || row.stringOrNull("title").isNullOrBlank()) continue
+                if (!row.isNull("library_view_id") && row.exactPositiveInt("library_view_id") != library.id) continue
+                if (!row.isNull("library_id") && row.exactPositiveInt("library_id") != library.id) continue
+                val item = parseMedia(row, library.id, contentType.itemType)
+                    .let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) }
+                if (item.type != contentType.itemType) continue
+                val key = SearchIdentity(item.type, item.id, item.viewItemId)
+                val previous = selected[key]
+                if (previous == null || (item.isSpoiler && !previous.second.isSpoiler)) selected[key] = row to item
+            }
+            val visible = selected.values.filter { !it.second.isSpoiler || spoilerUnlocked }
+            val itemByRow = java.util.IdentityHashMap<JSONObject, MediaItem>()
+            visible.forEach { (row, item) -> itemByRow[row] = item }
+            rankSearchRows(visible.map { it.first }, query).mapNotNull { itemByRow[it] }
+        } else catalogRows
             .filter { !it.optBoolean("remote") && it.stringOrNull("federated_id") == null }
             .map { row -> parseMedia(row, library.id, contentType.itemType).let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) } }
         val enriched = if (nested && inheritFacets && parsed.isNotEmpty()) {
@@ -1140,6 +1233,8 @@ class ShyniClient(
     /** Provider filmography is not a library: expose only explicit, authorized local View matches. */
     suspend fun actorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>,
         allowLocalFallback: Boolean = false,
+        scanMovieDetails: Boolean = false,
+        includeExtraMovieScan: Boolean = false,
         onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks {
         val accountToken = token
         val grantKey = spoilerKey()
@@ -1172,6 +1267,10 @@ class ShyniClient(
             if (tmdbId == null && ppkey == null) {
                 throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
             }
+            // A server-side ppkey filter exists for TV Views only. Movie detail
+            // scanning is deliberately opted into by the user in the UI.
+            val movieSearchAvailable = ppkey != null && (tmdbId == null || allowLocalFallback) && !scanMovieDetails &&
+                scopes.values.any { it.type == "movie" && (!it.isSpoiler || capturedGrant != null) }
             var incomplete = false
             val tmdbCredits = if (tmdbId != null) {
                 val response = try {
@@ -1195,8 +1294,12 @@ class ShyniClient(
             suspend fun localCreditRows(tvOnly: Boolean = false): List<Pair<Library?, JSONObject>> {
                 // Movie Views do not expose an actor_ppkey filter. Enumerate those
                 // Views and verify each movie against its detail cast below.
-                val views = scopes.values.filter { (!tvOnly || it.type == "tv") && (!it.isSpoiler || capturedGrant != null) }
-                if (views.isEmpty()) throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
+                val views = scopes.values.filter { (!(tvOnly || !scanMovieDetails) || it.type == "tv") &&
+                    (!it.isSpoiler || capturedGrant != null) }
+                if (views.isEmpty()) {
+                    if (!scanMovieDetails && movieSearchAvailable) return emptyList()
+                    throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
+                }
                 val slots = Semaphore(2)
                 data class ViewBatch(val rows: List<Pair<Library, JSONObject>>, val incomplete: Boolean)
                 val batches = coroutineScope {
@@ -1290,12 +1393,13 @@ class ShyniClient(
             // malformed or locked rows, or just the current TV show. Only the
             // user's explicit actor selection may perform the local search,
             // using the credentials and spoiler grant captured for this request.
-            if (useTmdb && (visible.isEmpty() || providerOnlyCurrentShow) && ppkey != null && allowLocalFallback) {
+            if (useTmdb && (visible.isEmpty() || providerOnlyCurrentShow || includeExtraMovieScan) &&
+                ppkey != null && allowLocalFallback) {
                 requireCurrent()
                 retainedProviderWorks = visible
                 useTmdb = false
                 matched.clear()
-                collectAuthorizedRows(localCreditRows(tvOnly = providerOnlyCurrentShow))
+                collectAuthorizedRows(localCreditRows(tvOnly = providerOnlyCurrentShow && !includeExtraMovieScan))
                 requireCurrent()
                 visible = matched.values.filter { !it.isSpoiler || capturedGrant != null }
             }
@@ -1382,7 +1486,9 @@ class ShyniClient(
                 visible = merged
             }
             requireCurrent()
-            ActorWorks(visible, incomplete = incomplete)
+            ActorWorks(visible, tvLibrariesOnly = !scanMovieDetails && !useTmdb && visible.isNotEmpty() &&
+                visible.all { it.type == "show" || it.type == "tv" }, incomplete = incomplete,
+                movieSearchAvailable = movieSearchAvailable)
         }
     }
 

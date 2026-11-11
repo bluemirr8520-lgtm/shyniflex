@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
@@ -93,18 +94,40 @@ class DetailDiscoveryUiTest {
             selectedActor = actor, actorLoading = true))
         render(frame)
         screen.onNodeWithTag("detail-actor-loading").performScrollTo()
-            .assertTextEquals("영화와 시리즈를 검색 중입니다. 작품이 많으면 시간이 걸릴 수 있습니다.")
+            .assertTextEquals("서버에서 출연작을 불러오는 중입니다")
     }
 
     @Test fun actorSearchDisplaysProgressAlongsideAlreadyFoundMovies() {
         val movie = MediaItem(400, 9, "합성 영화", "movie", viewItemId = 900)
         val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
             selectedActor = actor, actorItems = listOf(movie), actorLoading = true,
-            actorChecked = 2, actorTotal = 10))
+            actorChecked = 2, actorTotal = 10, movieSearchRunning = true))
         render(frame)
         screen.onNodeWithTag("detail-actor-loading").performScrollTo()
-            .assertTextEquals("영화와 시리즈를 검색 중입니다. 2/10 확인")
+            .assertTextEquals("영화 출연작을 검색 중입니다. 2/10 확인")
         screen.onNodeWithTag("detail-actor-${compactMediaIdentity(movie)}").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun movieDetailScanStartsOnlyWhenRequestedAndCanBeCanceled() {
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorItems = listOf(work), actorLoaded = true,
+            tvLibrariesOnly = true, movieSearchAvailable = true))
+        val busyState = mutableStateOf(false)
+        var requests = 0
+        var cancellations = 0
+        render(frame, busyState = busyState, onMovieSearch = { requests++ }, onCancelMovieSearch = { cancellations++ })
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(work)}").performScrollTo().assertExists()
+        screen.runOnIdle { assertEquals(0, requests) }
+        screen.onNodeWithTag("detail-actor-movies-search").performScrollTo().performClick()
+        screen.runOnIdle {
+            assertEquals(1, requests)
+            frame.value = frame.value!!.copy(actorLoading = true, movieSearchRunning = true,
+                movieSearchAvailable = false, actorChecked = 2, actorTotal = 100)
+            busyState.value = true
+        }
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(work)}").assertExists()
+        screen.onNodeWithTag("detail-actor-movies-cancel").performScrollTo().assertIsEnabled().performClick()
+        screen.runOnIdle { assertEquals(1, cancellations) }
     }
 
     @Test fun incompleteActorResultsKeepConfirmedWorksAndOfferRetry() {
@@ -195,9 +218,10 @@ class DetailDiscoveryUiTest {
 
     @Suppress("DEPRECATION")
     private fun render(frame: State<DetailDiscoveryState?>, unlocked: State<Boolean>? = null,
-        detail: State<MediaDetails>? = null, onActor: (CastMember) -> Unit = {},
+        detail: State<MediaDetails>? = null, busyState: State<Boolean>? = null, onActor: (CastMember) -> Unit = {},
         onOpen: (MediaItem) -> Unit = {}, onWatch: (MediaItem) -> Unit = {},
-        onPlay: (MediaItem, Boolean) -> Unit = { _, _ -> }) {
+        onPlay: (MediaItem, Boolean) -> Unit = { _, _ -> },
+        onMovieSearch: () -> Unit = {}, onCancelMovieSearch: () -> Unit = {}) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         assumeTrue("Synthetic UI evidence belongs only to the isolated QA package", instrumentation.targetContext.packageName.endsWith(".spoilerqa"))
         instrumentation.setInTouchMode(true)
@@ -210,11 +234,12 @@ class DetailDiscoveryUiTest {
                     key(compactMediaIdentity(current.item)) {
                     CompactDetailContent(current,
                         versions = listOf(MediaVersion(900, "합성 1080p", resolution = "1080p")), selectedPartId = null,
-                        busy = false, error = null, spoilerUnlocked = unlocked?.value ?: false,
+                        busy = busyState?.value ?: false, error = null, spoilerUnlocked = unlocked?.value ?: false,
                         onPlay = onPlay, onOpenItem = onOpen, onSelectSeason = {}, onSelectVersion = {},
                         onWatchOptions = onWatch, onWatchedChange = { _, _ -> },
                         artwork = { _, modifier -> Box(modifier.background(Color(0xFFD6E7E2))) },
                         discovery = frame.value, libraries = libraries, onSelectActor = onActor,
+                        onSearchActorMovies = onMovieSearch, onCancelActorMovieSearch = onCancelMovieSearch,
                         portrait = { _, modifier -> Box(modifier.background(Color(0xFFCBDAD7))) })
                     }
                 }

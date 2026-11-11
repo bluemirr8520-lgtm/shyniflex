@@ -62,6 +62,7 @@ internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOp
             imageUrl = if (item.type == "episode") item.thumbnail ?: item.poster else item.poster) },
         discovery = state.detailDiscovery[detailDiscoveryKey(detail.item)], libraries = state.libraries,
         onSelectActor = model::selectDetailActor, onRetryRelated = model::retryRelatedWorks,
+        onSearchActorMovies = model::searchDetailActorMovies, onCancelActorMovieSearch = model::cancelDetailActorMovieSearch,
         portrait = { actor, modifier -> Poster(detail.item, model, modifier, imageUrl = actor.portrait) })
 }
 
@@ -86,6 +87,8 @@ internal fun CompactDetailContent(
     libraries: List<Library> = emptyList(),
     onSelectActor: (CastMember) -> Unit = {},
     onRetryRelated: () -> Unit = {},
+    onSearchActorMovies: () -> Unit = {},
+    onCancelActorMovieSearch: () -> Unit = {},
     portrait: @Composable (CastMember, Modifier) -> Unit = { _, _ -> },
 ) {
     val item = detail.item
@@ -232,7 +235,8 @@ internal fun CompactDetailContent(
             DetailDiscoverySections(item, detail.castMembers, frame, libraries, spoilerUnlocked, busy,
                 onSelectActor, onOpenItem, onWatchOptions, onRetryRelated, artwork, portrait,
                 restoreTarget = focusedDiscovery, requestFocus = restoreDiscoveryFocus, focus = discoveryFocus,
-                onFocused = { focusedDiscovery = it }, onRestoreDone = { restoreDiscoveryFocus = false })
+                onFocused = { focusedDiscovery = it }, onRestoreDone = { restoreDiscoveryFocus = false },
+                onSearchActorMovies = onSearchActorMovies, onCancelActorMovieSearch = onCancelActorMovieSearch)
         }
     }
 }

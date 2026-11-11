@@ -73,7 +73,7 @@ class ActorFilteredViewsTest {
         val libraries = listOf(Library(8, "Movies", "movie"), Library(9, "Current TV", "tv"),
             Library(10, "Other TV", "tv"), Library(11, "Locked TV", "tv", true))
 
-        val result = client.actorWorks(actor, parent, libraries, allowLocalFallback = true)
+        val result = client.actorWorks(actor, parent, libraries, allowLocalFallback = true, scanMovieDetails = true)
 
         assertEquals(setOf(11, 21, 31), result.items.map { it.id }.toSet())
         val queries = requests.filter { it.requestUrl!!.encodedPath.endsWith("/shows") }

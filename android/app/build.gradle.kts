@@ -27,8 +27,8 @@ android {
         manifestPlaceholders["shyniAppLabel"] = "@string/app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = 77
-        versionName = "1.0.76"
+        versionCode = 78
+        versionName = "1.0.77"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
     }

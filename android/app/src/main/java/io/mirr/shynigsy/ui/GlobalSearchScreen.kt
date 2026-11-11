@@ -61,7 +61,7 @@ internal fun GlobalSearchScreen(state: AppState, model: AppViewModel, onWatchOpt
         state.error, state.searchFailureCount, state.spoilerUnlocked, model::searchAll, model::openItem,
         onWatchOptions, artwork = { item, modifier ->
             Poster(item, model, modifier, imageUrl = item.poster ?: item.thumbnail ?: item.backdrop)
-        })
+        }, searchHydrating = state.searchHydrating)
 }
 
 /** Text edits remain local; only submit requests an authorized cross-library search. */
@@ -79,6 +79,7 @@ internal fun GlobalSearchContent(
     onWatchOptions: (MediaItem) -> Unit,
     artwork: @Composable (MediaItem, Modifier) -> Unit,
     modifier: Modifier = Modifier,
+    searchHydrating: Boolean = false,
 ) {
     var text by rememberSaveable(query) { mutableStateOf(query) }
     val knownLibraries = remember(libraries, spoilerUnlocked) {
@@ -100,7 +101,7 @@ internal fun GlobalSearchContent(
     val television = LocalContext.current.isTelevision()
     var focusRequested by remember(query) { mutableStateOf(false) }
     fun submit() {
-        if (!busy && text.isNotBlank()) {
+        if ((!busy || searchHydrating) && text.isNotBlank()) {
             keyboard?.hide()
             focusManager.clearFocus()
             focusedKey = null
@@ -109,8 +110,8 @@ internal fun GlobalSearchContent(
             onSearch(text.trim())
         }
     }
-    LaunchedEffect(television, busy, restoreKey) {
-        if (television && !busy && !focusRequested) {
+    LaunchedEffect(television, busy, searchHydrating, restoreKey) {
+        if (television && (!busy || searchHydrating) && !focusRequested) {
             val index = visibleItems.indexOfFirst { compactMediaIdentity(it) == restoreKey }
             grid.scrollToItem(if (index >= 0) index + 2 else 0)
             withFrameNanos { }
@@ -131,7 +132,7 @@ internal fun GlobalSearchContent(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submit() }))
                 TvAction("검색", Modifier.widthIn(min = 64.dp).testTag("global-search-submit"),
-                    enabled = !busy && text.isNotBlank(), onClick = ::submit)
+                    enabled = (!busy || searchHydrating) && text.isNotBlank(), onClick = ::submit)
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }, key = "search-status") {
@@ -168,9 +169,10 @@ internal fun GlobalSearchContent(
                         true
                     } else false
                 }
-                .combinedClickable(enabled = !busy, onClick = { onOpen(item) },
-                    onLongClickLabel = "시청 상태 변경",
-                    onLongClick = if (canChangeWatchState(item)) ({ onWatchOptions(item) }) else null)
+                .combinedClickable(enabled = !busy || searchHydrating, onClick = { onOpen(item) },
+                    onLongClickLabel = if (!busy && canChangeWatchState(item)) "시청 상태 변경" else null,
+                    onLongClick = if (busy && searchHydrating) ({})
+                        else if (!busy && canChangeWatchState(item)) ({ onWatchOptions(item) }) else null)
                 .testTag("global-search-result-$identity").padding(3.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).background(MaterialTheme.colorScheme.surfaceContainer)) {

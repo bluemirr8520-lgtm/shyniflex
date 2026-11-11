@@ -225,7 +225,7 @@ class DetailDiscoveryTest {
         }) }
         val localActor = CastMember("Synthetic local actor", ppkey = "local & 한글/")
         val result = client.actorWorks(localActor, movie, listOf(tv, movies, Library(10, "More TV", "tv"),
-            Library(11, "Locked TV", "tv", true)))
+            Library(11, "Locked TV", "tv", true)), scanMovieDetails = true)
         assertFalse(result.currentLibraryOnly)
         assertFalse(result.tvLibrariesOnly)
         assertFalse(result.incomplete)
@@ -234,7 +234,7 @@ class DetailDiscoveryTest {
         assertEquals(setOf("/libraries/9/shows", "/libraries/10/shows"), searches.map { it.requestUrl!!.encodedPath }.toSet())
         assertTrue(searches.all { it.requestUrl!!.queryParameter("actor_ppkey") == "local & 한글/" })
         assertTrue(searches.all { it.requestUrl!!.queryParameter("limit") == null && it.requestUrl!!.queryParameter("offset") == null })
-        val movieOnly = client.actorWorks(localActor, movie, listOf(movies))
+        val movieOnly = client.actorWorks(localActor, movie, listOf(movies), scanMovieDetails = true)
         assertTrue(movieOnly.items.isEmpty())
         assertFalse(movieOnly.incomplete)
         assertEquals(4, server.requestCount)
@@ -254,7 +254,8 @@ class DetailDiscoveryTest {
             else -> MockResponse().setResponseCode(404)
         } }
         val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie,
-            listOf(movies, Library(10, "Other movies", "movie"), Library(11, "Locked", "movie", true)))
+            listOf(movies, Library(10, "Other movies", "movie"), Library(11, "Locked", "movie", true)),
+            scanMovieDetails = true)
         assertEquals(listOf(11, 12, 21), result.items.map { it.id })
         assertTrue(result.incomplete) // A same-named person has a different identity.
         assertTrue(requests.none { it.requestUrl!!.encodedPath.startsWith("/libraries/11/") })
@@ -268,7 +269,7 @@ class DetailDiscoveryTest {
             "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
             else -> MockResponse().setResponseCode(503)
         } }
-        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies))
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies), scanMovieDetails = true)
         assertEquals(listOf(11), result.items.map { it.id })
         assertTrue(result.incomplete)
     }
@@ -281,7 +282,7 @@ class DetailDiscoveryTest {
             else -> MockResponse().setResponseCode(503)
         } }
         val updates = mutableListOf<Triple<List<MediaItem>, Int, Int>>()
-        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies)) { found, done, total ->
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies), scanMovieDetails = true) { found, done, total ->
             updates.add(Triple(found, done, total))
         }
         assertEquals(listOf(1), result.items.map { it.id })
@@ -299,7 +300,7 @@ class DetailDiscoveryTest {
             "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
             else -> MockResponse().setResponseCode(404)
         } }
-        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies))
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies), scanMovieDetails = true)
         assertEquals(listOf(11), result.items.map { it.id })
         assertTrue(result.incomplete)
     }
@@ -311,7 +312,7 @@ class DetailDiscoveryTest {
                 MockResponse().setResponseCode(400) else MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
             else -> MockResponse().setResponseCode(404)
         } }
-        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies))
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, listOf(movies), scanMovieDetails = true)
         assertEquals(listOf(11), result.items.map { it.id })
         assertFalse(result.incomplete)
         assertEquals(2, requests.count { it.requestUrl!!.encodedPath == "/libraries/8/movies/11" })
@@ -332,7 +333,7 @@ class DetailDiscoveryTest {
             else -> MockResponse().setResponseCode(404)
         } }
         val progress = mutableListOf<List<Int>>()
-        val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie, listOf(movies), allowLocalFallback = true) { found, _, _ ->
+        val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie, listOf(movies), allowLocalFallback = true, scanMovieDetails = true) { found, _, _ ->
             progress.add(found.map { it.id })
         }
         assertEquals(listOf(11), result.items.map { it.id })
@@ -348,7 +349,7 @@ class DetailDiscoveryTest {
             else -> MockResponse().setResponseCode(404)
         } }
         val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie,
-            listOf(movies), allowLocalFallback = true)
+            listOf(movies), allowLocalFallback = true, scanMovieDetails = true)
         assertEquals(listOf(11), result.items.map { it.id })
         assertTrue(requests.any { it.requestUrl!!.encodedPath == "/libraries/8/movies/11" })
     }
@@ -393,7 +394,7 @@ class DetailDiscoveryTest {
         reply = { request -> if (request.requestUrl!!.encodedPath == "/libraries/10/shows")
             MockResponse().setResponseCode(503) else MockResponse().setBody("[]") }
         val views = listOf(movies, tv, Library(10, "Private", "tv", true))
-        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, views)
+        val result = client.actorWorks(CastMember("Actor", ppkey = "abc"), movie, views, scanMovieDetails = true)
         assertTrue(result.incomplete)
         assertTrue(requests.filter { it.requestUrl!!.encodedPath.endsWith("/shows") }.all {
             it.getHeader("X-Shyni-Spoiler") == "spc_synthetic_1" })
