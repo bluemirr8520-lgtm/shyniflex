@@ -985,7 +985,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val result = if (!hasActorLocalIdentity(selected))
                     withTimeoutOrNull(20_000L) { active.actorWorks(selected, parent, snapshot.libraries) }
                         ?: throw ApiException("배우의 작품을 불러오지 못했습니다.")
-                else active.actorWorks(selected, parent, snapshot.libraries) { items, checked, total ->
+                else active.actorWorks(selected, parent, snapshot.libraries, allowLocalFallback = true) { items, checked, total ->
                     progressEvents.trySend(Progress(items, checked, total))
                 }
                 if (!current()) return@launch

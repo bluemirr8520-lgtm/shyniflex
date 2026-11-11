@@ -289,12 +289,44 @@ class DetailDiscoveryTest {
             else -> MockResponse().setResponseCode(404)
         } }
         val progress = mutableListOf<List<Int>>()
-        val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie, listOf(movies)) { found, _, _ ->
+        val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie, listOf(movies), allowLocalFallback = true) { found, _, _ ->
             progress.add(found.map { it.id })
         }
         assertEquals(listOf(11), result.items.map { it.id })
         assertEquals(listOf(11), progress.last())
         assertEquals("/people/tmdb/71", requests.first().requestUrl!!.encodedPath)
+    }
+
+    @Test fun manualActorLookupFallsBackWhenPeopleEndpointIsUnavailable() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/people/tmdb/71" -> MockResponse().setResponseCode(404)
+            "/libraries/8/movies" -> MockResponse().setBody("""[{"id":11,"title":"Known"}]""")
+            "/libraries/8/movies/11" -> MockResponse().setBody(section(person("Actor", "actor_ppkey", "abc")).toString())
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val result = client.actorWorks(CastMember("Actor", tmdbId = 71, ppkey = "abc"), movie,
+            listOf(movies), allowLocalFallback = true)
+        assertEquals(listOf(11), result.items.map { it.id })
+        assertTrue(requests.any { it.requestUrl!!.encodedPath == "/libraries/8/movies/11" })
+    }
+
+    @Test fun automaticActorLookupNeverScansLibrariesWhenPeopleEndpointIsUnavailable() = runBlocking {
+        reply = { MockResponse().setResponseCode(404) }
+        val selected = CastMember("Actor", tmdbId = 71, ppkey = "abc")
+        assertTrue(runCatching { client.actorWorks(selected, movie, listOf(movies)) }.exceptionOrNull() is ApiException)
+        assertEquals(listOf("/people/tmdb/71"), requests.map { it.requestUrl!!.encodedPath })
+        requests.clear()
+        reply = { people() }
+        assertTrue(client.actorWorks(selected, movie, listOf(movies)).items.isEmpty())
+        assertEquals(listOf("/people/tmdb/71"), requests.map { it.requestUrl!!.encodedPath })
+    }
+
+    @Test fun actorLookupDoesNotFallBackAfterAuthorizationFailure() = runBlocking {
+        reply = { MockResponse().setResponseCode(403) }
+        val selected = CastMember("Actor", tmdbId = 71, ppkey = "abc")
+        val error = runCatching { client.actorWorks(selected, movie, listOf(movies), allowLocalFallback = true) }.exceptionOrNull()
+        assertEquals(403, (error as? ApiException)?.status)
+        assertEquals(listOf("/people/tmdb/71"), requests.map { it.requestUrl!!.encodedPath })
     }
 
     @Test fun ppkeyDoesNotTrustAnotherViewWhenTheServerIgnoresItsFilter() = runBlocking {

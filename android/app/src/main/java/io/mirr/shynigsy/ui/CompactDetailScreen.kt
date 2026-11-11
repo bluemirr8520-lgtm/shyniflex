@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -47,6 +48,7 @@ import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.isTelevision
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
@@ -102,18 +104,19 @@ internal fun CompactDetailContent(
     val selectedSeason = seasons.firstOrNull { it.id == detail.selectedSeasonId } ?: seasons.firstOrNull()
     val focus = remember { FocusRequester() }
     val list = rememberLazyListState()
+    val jumpScope = rememberCoroutineScope()
     val seasonList = rememberLazyListState()
     val television = LocalContext.current.isTelevision()
     var focusRequested by remember(identity, detail.selectedSeasonId, childKeys) { mutableStateOf(false) }
     var expanded by rememberSaveable(identity) { mutableStateOf(false) }
     val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty() || discoveryTargets.isNotEmpty()
+    val primaryRows = if (item.playable) 1 + (if (versions.isNotEmpty()) 1 else 0) else children.size.coerceAtLeast(1)
+    val discoveryIndex = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0) +
+        primaryRows + (if (item.summary.isNotBlank()) 1 else 0)
     LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId) {
         if (busy) return@LaunchedEffect
         if (!television || !hasFocusTarget || focusRequested) return@LaunchedEffect
         if ((focusedDiscovery != null || (!item.playable && children.isEmpty() && seasons.isEmpty())) && discoveryTargets.isNotEmpty()) {
-            val primaryRows = if (item.playable) 1 + (if (versions.isNotEmpty()) 1 else 0) else children.size.coerceAtLeast(1)
-            val discoveryIndex = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0) +
-                primaryRows + (if (item.summary.isNotBlank()) 1 else 0)
             list.scrollToItem(discoveryIndex)
             restoreDiscoveryFocus = true
             focusRequested = true
@@ -135,6 +138,7 @@ internal fun CompactDetailContent(
     LazyColumn(modifier.fillMaxSize().testTag("compact-detail"), state = list,
         contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item(key = "heading") {
+          Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (item.playable) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.width(if (item.type == "episode") 112.dp else 68.dp)
                     .aspectRatio(if (item.type == "episode") 16f / 9f else 2f / 3f)
@@ -157,6 +161,17 @@ internal fun CompactDetailContent(
                 if (children.isNotEmpty()) Text("${children.size}회차", fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if ((!item.isSpoiler || spoilerUnlocked) &&
+                (detail.castMembers.isNotEmpty() || discoveryTargets.isNotEmpty() || frame?.relatedLoading == true || frame?.relatedError != null)) {
+                TvAction("출연진 · 관련 작품", Modifier.testTag("compact-detail-discovery-jump"), enabled = !busy) {
+                    focusedDiscovery = null
+                    jumpScope.launch {
+                        list.scrollToItem(discoveryIndex)
+                        if (television && discoveryTargets.isNotEmpty()) restoreDiscoveryFocus = true
+                    }
+                }
+            }
+          }
         }
         if (seasons.isNotEmpty()) item(key = "seasons") {
             LazyRow(state = seasonList, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.testTag("compact-seasons")) {

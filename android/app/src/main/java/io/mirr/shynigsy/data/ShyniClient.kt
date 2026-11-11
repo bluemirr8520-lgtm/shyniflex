@@ -1112,6 +1112,7 @@ class ShyniClient(
 
     /** Provider filmography is not a library: expose only explicit, authorized local View matches. */
     suspend fun actorWorks(actor: CastMember, parent: MediaItem, libraries: List<Library>,
+        allowLocalFallback: Boolean = false,
         onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks {
         val accountToken = token
         val grantKey = spoilerKey()
@@ -1146,14 +1147,24 @@ class ShyniClient(
             }
             var incomplete = false
             val tmdbCredits = if (tmdbId != null) {
-                val response = request("/people/tmdb/$tmdbId?navigation_context=view", responseLimit = 4L * 1024 * 1024,
-                    spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
+                val response = try {
+                    request("/people/tmdb/$tmdbId?navigation_context=view", responseLimit = 4L * 1024 * 1024,
+                        spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
+                } catch (error: ApiException) {
+                    // Older servers may not implement this endpoint. An explicit
+                    // local identity can still be checked against authorized Views.
+                    // Do not turn authentication, permission or server failures
+                    // into a potentially expensive full-library scan.
+                    if (ppkey == null || !allowLocalFallback || error.status !in setOf(400, 404, 405, 422, 501)) throw error
+                    requireCurrent()
+                    null
+                }
                 requireCurrent()
                 (response as? JSONObject)?.optJSONArray("local_credits")
-                    ?: throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
+                    ?: if (ppkey != null && allowLocalFallback) null else throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
             } else null
             // A server can expose both identities yet have no local TMDB credits.
-            val useTmdb = tmdbCredits != null && (tmdbCredits.length() > 0 || ppkey == null)
+            val useTmdb = tmdbCredits != null && (tmdbCredits.length() > 0 || ppkey == null || !allowLocalFallback)
             val creditRows: List<Pair<Library?, JSONObject>> = if (useTmdb) {
                 (0 until tmdbCredits!!.length()).mapNotNull { tmdbCredits.optJSONObject(it)?.let { row -> null to row } }
             } else {
@@ -1305,17 +1316,36 @@ class ShyniClient(
 
     /** Related means shared cast here, not an unsupported recommendation endpoint. */
     suspend fun relatedWorks(parent: MediaItem, castMembers: List<CastMember>, libraries: List<Library>): List<MediaItem> {
-        val actor = castMembers.firstOrNull { it.tmdbId?.let { id -> id > 0 } == true } ?: return emptyList()
         val currentShow = when (parent.type) {
             "show", "tv" -> parent.id
             "season", "episode" -> parent.showId?.takeIf { it > 0 } ?: return emptyList()
             "movie" -> null
             else -> return emptyList()
         }
-        return actorWorks(actor, parent, libraries).items.filterNot {
-            (parent.type == "movie" && it.type == "movie" && it.id == parent.id) ||
-                (currentShow != null && it.type == "show" && it.id == currentShow)
-        }.take(20)
+        // Use at most three distinct provider identities and stop as soon as one
+        // yields related works. A lead actor may have no local credits even when
+        // another cast member does; do not automatically run expensive ppkey scans.
+        val candidates = castMembers.filter { (it.tmdbId ?: 0) > 0 }
+            .distinctBy { it.tmdbId }.take(3)
+        var lastError: Exception? = null
+        for (actor in candidates) {
+            val works = try {
+                actorWorks(actor, parent, libraries).items
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (error is ApiException && error.status in setOf(401, 403)) throw error
+                lastError = error
+                continue
+            }
+            val related = works.filterNot {
+                (parent.type == "movie" && it.type == "movie" && it.id == parent.id) ||
+                    (currentShow != null && it.type == "show" && it.id == currentShow)
+            }.take(20)
+            if (related.isNotEmpty()) return related
+        }
+        if (lastError != null) throw lastError
+        return emptyList()
     }
 
     /** Count authorized episode identities, never physical file versions or partial history. */

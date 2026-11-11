@@ -179,6 +179,20 @@ class DetailDiscoveryUiTest {
         }
     }
 
+    @Test fun discoveryShortcutSkipsLongEpisodeListWithoutOpeningOrPlayingAnything() {
+        val show = parent.copy(type = "show", title = "합성 시리즈")
+        val episodes = (1..40).map { parent.copy(id = 1000 + it, episodeNumber = it, viewItemId = 2000 + it) }
+        val detail = mutableStateOf(MediaDetails(show, children = episodes, castMembers = listOf(actor)))
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(show, relatedItems = listOf(work), relatedLoaded = true))
+        var opened = 0
+        var played = 0
+        render(frame, detail = detail, onOpen = { opened++ }, onPlay = { _, _ -> played++ })
+        screen.onNodeWithTag("compact-episode-${compactMediaIdentity(episodes.first())}").assertExists()
+        screen.onNodeWithTag("compact-detail-discovery-jump").assertIsDisplayed().performClick()
+        screen.onNodeWithTag("detail-cast").assertIsDisplayed()
+        screen.runOnIdle { assertEquals(0, opened); assertEquals(0, played) }
+    }
+
     @Suppress("DEPRECATION")
     private fun render(frame: State<DetailDiscoveryState?>, unlocked: State<Boolean>? = null,
         detail: State<MediaDetails>? = null, onActor: (CastMember) -> Unit = {},
