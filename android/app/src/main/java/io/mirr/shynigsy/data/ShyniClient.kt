@@ -1322,7 +1322,11 @@ class ShyniClient(
                         async(start = CoroutineStart.UNDISPATCHED) {
                         slots.withPermit {
                             try {
-                                val result = withTimeout(12_000L) {
+                                // This budget also includes time waiting in OkHttp's
+                                // shared catalog queue. It must exceed the normal
+                                // 15-second connection timeout, or a healthy request
+                                // can be cancelled before its connection completes.
+                                val result = withTimeout(30_000L) {
                                     actorWorksInSession(actor.copy(tmdbId = null), parent, libraries, false, false, false,
                                         { _, _, _ -> }, accountToken, grantKey, capturedGrant, setOf(view.id), false,
                                         if (index == 0) ({ preferredQueued.complete(Unit); Unit }) else null)
@@ -1345,7 +1349,9 @@ class ShyniClient(
                     if (views.isNotEmpty()) { preferredQueued.await(); requireCurrent() }
                     val providerJob = if (tmdbId != null) async {
                         try {
-                            val result = withTimeout(8_000L) {
+                            // Provider work shares the same catalog queue as the
+                            // View requests, so allow time to enter that queue.
+                            val result = withTimeout(30_000L) {
                                 actorWorksInSession(actor.copy(ppkey = null), parent, libraries, false, false, false,
                                     { _, _, _ -> }, accountToken, grantKey, capturedGrant, null, false)
                             }

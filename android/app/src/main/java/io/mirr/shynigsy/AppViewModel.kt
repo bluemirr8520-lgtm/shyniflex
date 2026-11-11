@@ -952,7 +952,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 (key to current.copy(parent = parent)))
         }
         val previous = mutableState.value.detailDiscovery[key] ?: return
-        if (!previous.relatedLoaded && !previous.relatedLoading && previous.relatedError == null) {
+        // Related-work retries are queued behind an active actor lookup as
+        // well; they will be started when that foreground lookup finishes.
+        if (!previous.actorLoading && !previous.relatedLoaded && !previous.relatedLoading && previous.relatedError == null) {
             val seriesParent = parent.type in setOf("show", "tv", "season", "episode")
             if (detail.castMembers.none { (it.tmdbId ?: 0) > 0 || (seriesParent && hasActorLocalIdentity(it)) }) {
                 mutableState.update { state -> state.copy(detailDiscovery = state.detailDiscovery +
@@ -1072,6 +1074,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 actorLoading = false, actorLoaded = true, actorChecked = 0, actorTotal = null,
                 movieSearchAvailable = true, movieSearchRunning = false, movieSearchRetry = false)))
         }
+        client?.let { loadDetailDiscovery(it, detail) }
     }
 
     private fun selectDetailActor(actor: CastMember, searchMovies: Boolean = false, reconcile: (AppState) -> AppState) {
@@ -1089,6 +1092,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             (frame.actorLoading || (frame.actorLoaded && !frame.actorIncomplete))) return
         if (searchMovies && (frame.selectedActor?.key != selected.key || !frame.movieSearchAvailable || frame.actorLoading)) return
         val retained = if (searchMovies) frame.actorItems else emptyList()
+        // An explicit actor selection is foreground work. Do not let optional
+        // related-work searches occupy the same small catalog queue while it
+        // runs. Keep any partial cards and resume discovery after it finishes.
+        if (relatedWorksJob != null) {
+            relatedWorksRevision++
+            relatedWorksJob?.cancel()
+            relatedWorksJob = null
+            mutableState.update { state ->
+                val current = state.detailDiscovery[key] ?: return@update state
+                state.copy(detailDiscovery = state.detailDiscovery + (key to current.copy(relatedLoading = false)))
+            }
+        }
         actorWorksJob?.cancel()
         val requestRevision = ++actorWorksRevision
         val account = active.token
@@ -1164,6 +1179,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         state.copy(detailDiscovery = state.detailDiscovery + (key to latest.copy(
                             actorLoading = false, movieSearchRunning = false)))
                     }
+                    // Resume only while this same account, grant and detail
+                    // screen are still current. An error remains visible and is
+                    // retried only by the user; navigation never restarts work.
+                    val latest = mutableState.value.detailDiscovery[key]
+                    if (current() && (latest?.actorLoaded == true || latest?.actorError != null))
+                        loadDetailDiscovery(active, detail, reconcile)
                 }
             }
         }

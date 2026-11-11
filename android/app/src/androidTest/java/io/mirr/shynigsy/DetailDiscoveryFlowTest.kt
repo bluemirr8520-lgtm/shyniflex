@@ -138,6 +138,88 @@ class DetailDiscoveryFlowTest {
         }
     }
 
+    @Test fun selectedActorTakesPriorityAndInterruptedRelatedWorksResumes() = runBlocking {
+        withFixture { fixture ->
+            fixture.onMain { fixture.model.retryRelatedWorks() }
+            await(fixture.actorAEntered)
+            fixture.onMain {
+                assertTrue(fixture.model.state.value.detailDiscovery[detailDiscoveryKey(parent)]!!.relatedLoading)
+                fixture.model.selectDetailActor(actorB)
+            }
+            // The automatic request is still held at its synthetic gate.
+            // The explicit actor can complete before it is released.
+            waitUntil {
+                fixture.model.state.value.detailDiscovery[detailDiscoveryKey(parent)]?.let {
+                    it.selectedActor?.key == actorB.key && it.actorLoaded && it.actorItems.any { row -> row.id == 302 }
+                } == true
+            }
+            assertEquals(1L, fixture.releaseActorA.count)
+            fixture.releaseActorA.countDown()
+            waitUntil {
+                fixture.model.state.value.detailDiscovery[detailDiscoveryKey(parent)]?.let {
+                    it.relatedLoaded && !it.relatedLoading && it.relatedItems.any { row -> row.id == 301 }
+                } == true
+            }
+        }
+    }
+
+    @Test fun leavingWhileActorIsLoadingDoesNotRestartInterruptedRelatedWorks() = runBlocking {
+        withFixture { fixture ->
+            fixture.onMain { fixture.model.retryRelatedWorks() }
+            await(fixture.actorAEntered)
+            fixture.onMain { fixture.model.selectDetailActor(actorA) }
+            waitUntil { fixture.paths.count { it == "/people/tmdb/1" } >= 2 }
+            fixture.onMain { fixture.model.back() }
+            fixture.releaseActorA.countDown()
+            delay(250)
+            fixture.onMain {
+                assertTrue(fixture.model.state.value.detailStack.isEmpty())
+                assertTrue(fixture.model.state.value.detailDiscovery.isEmpty())
+            }
+            assertEquals(2, fixture.paths.count { it == "/people/tmdb/1" })
+        }
+    }
+
+    @Test fun accountChangeDoesNotRestartInterruptedRelatedWorks() = runBlocking {
+        withFixture { fixture ->
+            fixture.onMain { fixture.model.retryRelatedWorks() }
+            await(fixture.actorAEntered)
+            fixture.onMain { fixture.model.selectDetailActor(actorA) }
+            waitUntil { fixture.paths.count { it == "/people/tmdb/1" } >= 2 }
+            fixture.onMain { fixture.client.token = "other-synthetic-token" }
+            fixture.releaseActorA.countDown()
+            waitUntil {
+                fixture.model.state.value.detailDiscovery[detailDiscoveryKey(parent)]?.actorLoading == false
+            }
+            delay(250)
+            assertEquals(2, fixture.paths.count { it == "/people/tmdb/1" })
+            fixture.onMain {
+                val frame = fixture.model.state.value.detailDiscovery[detailDiscoveryKey(parent)]!!
+                assertTrue(frame.relatedItems.isEmpty())
+                assertTrue(frame.actorItems.isEmpty())
+            }
+        }
+    }
+
+    @Test fun relatedRetryWaitsForTheActiveActorLookup() = runBlocking {
+        withFixture { fixture ->
+            fixture.onMain { fixture.model.retryRelatedWorks() }
+            await(fixture.actorAEntered)
+            fixture.onMain { fixture.model.selectDetailActor(actorA) }
+            waitUntil { fixture.paths.count { it == "/people/tmdb/1" } >= 2 }
+            fixture.onMain { fixture.model.retryRelatedWorks() }
+            delay(250)
+            assertEquals(2, fixture.paths.count { it == "/people/tmdb/1" })
+            fixture.releaseActorA.countDown()
+            waitUntil {
+                fixture.model.state.value.detailDiscovery[detailDiscoveryKey(parent)]?.let {
+                    it.actorLoaded && it.relatedLoaded && !it.relatedLoading
+                } == true
+            }
+            assertEquals(3, fixture.paths.count { it == "/people/tmdb/1" })
+        }
+    }
+
     private suspend fun waitUntil(condition: () -> Boolean) = withContext(Dispatchers.IO) {
         withTimeout(8_000) { while (!condition()) delay(10) }
     }
@@ -148,6 +230,7 @@ class DetailDiscoveryFlowTest {
 
     private class Fixture(
         val model: AppViewModel,
+        val client: ShyniClient,
         val actorAEntered: CountDownLatch,
         val actorAExited: CountDownLatch,
         val releaseActorA: CountDownLatch,
@@ -208,7 +291,7 @@ class DetailDiscoveryFlowTest {
                     detailStack = listOf(MediaDetails(parent, castMembers = listOf(actorA, actorB))),
                     detailDiscovery = mapOf(detailDiscoveryKey(parent) to DetailDiscoveryState(parent, relatedLoaded = true)))
             }
-            block(Fixture(model, entered, exited, release, paths))
+            block(Fixture(model, client, entered, exited, release, paths))
             assertTrue("Every request must be served by the synthetic interceptor", unexpected.isEmpty())
         } finally {
             release.countDown()
