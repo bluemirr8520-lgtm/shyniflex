@@ -65,7 +65,7 @@ import androidx.lifecycle.findViewTreeLifecycleOwner
 import io.mirr.shynigsy.TvQrLoginPhase
 import io.mirr.shynigsy.TvQrLoginState
 
-/** TV form only; a QR is created by an explicit remote action after a server is entered. */
+/** TV QR login needs no server address; the signed-in phone supplies it securely. */
 @Composable
 internal fun TvQrLoginScreen(
     initialServer: String,
@@ -97,13 +97,14 @@ internal fun TvQrLoginScreen(
         lifecycle?.addObserver(observer)
         onDispose { lifecycle?.removeObserver(observer); cancel() }
     }
-    LaunchedEffect(busy, serverPlaced) {
-        if (!busy && !placedInitialFocus && serverPlaced) {
+    LaunchedEffect(busy, serverPlaced, qrMode) {
+        if (!qrMode && !busy && !placedInitialFocus && serverPlaced) {
             withFrameNanos { }
             serverFocus.requestFocus()
             placedInitialFocus = true
         }
     }
+    LaunchedEffect(qrMode) { if (qrMode && qrState.phase == TvQrLoginPhase.IDLE) onStartQr("") }
     fun chooseMode(wantedQr: Boolean) {
         if (qrMode != wantedQr) {
             cancel()
@@ -113,10 +114,10 @@ internal fun TvQrLoginScreen(
         }
     }
     fun startQr() {
-        if (!busy && server.isNotBlank() && qrState.phase != TvQrLoginPhase.CREATING) {
+        if (!busy && qrState.phase != TvQrLoginPhase.CREATING) {
             password = ""
             focus.clearFocus()
-            onStartQr(server.trim())
+            onStartQr("")
         }
     }
     fun submitLogin() {
@@ -174,10 +175,10 @@ internal fun TvQrLoginScreen(
     }
     val qrActions: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("서버 주소를 입력한 뒤 휴대폰으로 연결하세요.", style = MaterialTheme.typography.bodyMedium,
+            Text("휴대폰과 TV를 같은 네트워크에 연결한 뒤, 휴대폰 앱에서 TV QR을 스캔하세요.", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = { startQr() },
-                enabled = !busy && server.isNotBlank() && qrState.phase != TvQrLoginPhase.CREATING,
+                enabled = !busy && qrState.phase != TvQrLoginPhase.CREATING,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).tvOnlyFocus().testTag("tv-login-qr-start")) {
                 Text(if (qrState.phase == TvQrLoginPhase.IDLE) "QR 코드 만들기" else "새 QR 코드 만들기")
             }
@@ -201,7 +202,7 @@ internal fun TvQrLoginScreen(
             heading()
             if (qrMode) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(36.dp)) {
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    serverField(); qrActions(); errorMessage()
+                    qrActions(); errorMessage()
                 }
                 TvQrLoginPresentation(qrState, Modifier.weight(1f).verticalScroll(rememberScrollState()), wideQrSize)
             } else Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -211,12 +212,12 @@ internal fun TvQrLoginScreen(
         } else LazyColumn(Modifier.fillMaxSize().testTag("tv-login-scroll"),
             contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item(key = "heading") { heading() }
-            item(key = "server") { serverField() }
             if (qrMode) {
                 item(key = "qr-actions") { qrActions() }
                 item(key = "qr-code") { TvQrLoginPresentation(qrState, Modifier.fillMaxWidth()) }
                 item(key = "qr-error") { errorMessage() }
             } else {
+                item(key = "server") { serverField() }
                 item(key = "username") { userField() }
                 item(key = "password") { passwordField() }
                 item(key = "manual-error") { errorMessage() }
@@ -233,9 +234,10 @@ private fun TvQrLoginPresentation(state: TvQrLoginState, modifier: Modifier = Mo
         when (state.phase) {
             TvQrLoginPhase.WAITING -> {
                 state.qrUrl?.let { TvLoginQrCode(it, Modifier.size(qrSize)) }
-                Text("휴대폰 shyniflex 앱으로 QR 코드를 열어\n로그인한 뒤 TV 연결을 승인하세요.",
+                Text(state.message ?: "휴대폰 shyniflex 앱에서 더보기 → TV 로그인으로\nQR을 스캔한 뒤 연결을 승인하세요.",
                     style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-                Text("남은 시간 ${state.remainingSeconds.coerceAtLeast(0) / 60}분 ${state.remainingSeconds.coerceAtLeast(0) % 60}초",
+                Text(if (state.qrUrl?.startsWith("shyniflex://tv-local?") == true) "QR 코드는 2분 동안 유효합니다."
+                    else "남은 시간 ${state.remainingSeconds.coerceAtLeast(0) / 60}분 ${state.remainingSeconds.coerceAtLeast(0) % 60}초",
                     style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.testTag("tv-login-qr-countdown"))
             }
@@ -252,7 +254,7 @@ private fun TvQrLoginPresentation(state: TvQrLoginState, modifier: Modifier = Mo
                     Text(when (state.phase) {
                         TvQrLoginPhase.EXPIRED -> "QR 코드가 만료되었습니다.\n새로 만들어 주세요."
                         TvQrLoginPhase.ERROR -> state.message ?: "연결하지 못했습니다.\n새로 만들거나 직접 입력해 주세요."
-                        else -> "서버 주소를 입력한 뒤\nQR 코드를 만들어 주세요."
+                        else -> "휴대폰으로 스캔할\nQR 코드를 만들어 주세요."
                     }, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                         modifier = Modifier.testTag("tv-login-qr-status"))

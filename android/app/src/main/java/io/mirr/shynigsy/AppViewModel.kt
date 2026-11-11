@@ -373,6 +373,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The relay job never becomes the ordinary home-loading job. */
     fun startTvQrLogin(server: String) {
+        if (server.isBlank()) { startLocalTvQrLogin(); return }
         cancelTvQrLogin()
         if (mutableState.value.loggedIn || mutableState.value.busy || mutableState.value.totpChallenge != null) return
         val address = server.trim().trimEnd('/')
@@ -419,6 +420,86 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         message = "QR 로그인을 완료하지 못했습니다. 새 코드로 다시 시도하세요.")) }
             } finally {
                 if (generation == tvQrLoginRevision) tvQrLoginJob = null
+            }
+        }
+    }
+
+    /** Bootstrap the trusted server over an authenticated, encrypted one-use LAN connection. */
+    private fun startLocalTvQrLogin() {
+        cancelTvQrLogin()
+        if (mutableState.value.loggedIn || mutableState.value.busy || mutableState.value.totpChallenge != null) return
+        val generation = ++tvQrLoginRevision
+        mutableState.update { it.copy(error = null, tvQrLogin = TvQrLoginState(phase = TvQrLoginPhase.CREATING)) }
+        fun current(): Boolean = generation == tvQrLoginRevision && !mutableState.value.loggedIn &&
+            mutableState.value.totpChallenge == null
+        tvQrLoginJob = viewModelScope.launch {
+            try {
+                val accepted = withContext(Dispatchers.IO) {
+                    LocalTvPairing.create(getApplication()).use { local ->
+                        if (current()) mutableState.update { it.copy(tvQrLogin = TvQrLoginState(
+                            phase = TvQrLoginPhase.WAITING, qrUrl = local.qrUrl, remainingSeconds = 120)) }
+                        local.accept { address, sendLink ->
+                            currentCoroutineContext().ensureActive()
+                            if (!current()) throw CancellationException()
+                            val active = ShyniClient(address, deviceId = deviceId)
+                            mutableState.update { it.copy(server = address) }
+                            val result = awaitTvPairing(active, deviceName,
+                                qrUrlForNonce = { nonce -> tvLoginQrUrl(address, nonce).also(sendLink) },
+                                onState = { status -> if (current()) mutableState.update { it.copy(tvQrLogin =
+                                    if (status.phase == TvQrLoginPhase.WAITING) status.copy(qrUrl = null,
+                                        message = "휴대폰에서 TV 연결을 승인해 주세요.") else status) } })
+                            currentCoroutineContext().ensureActive()
+                            if (!current()) throw CancellationException()
+                            active to result
+                        }
+                    }
+                }
+                if (!current()) return@launch
+                tvQrLoginJob = null
+                tvQrLoginRevision++
+                mutableState.update { it.copy(tvQrLogin = TvQrLoginState()) }
+                val (active, result) = accepted
+                active.token = result.token
+                client = active
+                launchRequest { acceptLogin(active, result) }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                if (current() && mutableState.value.tvQrLogin.phase !in setOf(TvQrLoginPhase.ERROR, TvQrLoginPhase.EXPIRED))
+                    mutableState.update { it.copy(tvQrLogin = if (error is LocalPairingExpired)
+                        TvQrLoginState(phase = TvQrLoginPhase.EXPIRED) else TvQrLoginState(phase = TvQrLoginPhase.ERROR,
+                            message = "TV와 휴대폰을 같은 네트워크에 연결하고 다시 시도하세요.")) }
+            } finally {
+                if (generation == tvQrLoginRevision) tvQrLoginJob = null
+            }
+        }
+    }
+
+    /** A scan exchanges only the current server origin; approval still needs an explicit tap. */
+    fun receiveLocalTvQr(value: String) {
+        val local = parseLocalTvQr(value) ?: return
+        val active = client ?: return
+        val accountToken = active.token ?: return
+        if (!mutableState.value.loggedIn) return
+        dismissTvLoginApproval()
+        val generation = ++tvApprovalRevision
+        tvApprovalJob = viewModelScope.launch {
+            try {
+                val link = connectLocalTv(local, active.server)
+                currentCoroutineContext().ensureActive()
+                if (generation == tvApprovalRevision && active === client && active.token == accountToken && mutableState.value.loggedIn) {
+                    tvApprovalJob = null
+                    receiveTvLoginLink(link)
+                }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) {
+                if (generation == tvApprovalRevision && active === client && mutableState.value.loggedIn) {
+                    android.widget.Toast.makeText(getApplication(), "TV 연결에 실패했습니다. 같은 네트워크인지 확인하고 새 QR을 스캔하세요.",
+                        android.widget.Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                local.secret.fill(0)
+                if (generation == tvApprovalRevision) tvApprovalJob = null
             }
         }
     }

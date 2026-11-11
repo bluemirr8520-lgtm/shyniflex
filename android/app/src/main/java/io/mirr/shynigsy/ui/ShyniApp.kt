@@ -156,6 +156,7 @@ fun ShyniApp(
 ) {
     val state by viewModel.state.collectAsState()
     val tv = LocalContext.current.isTelevision()
+    val scanTvQr = rememberTvQrPhotoScanner(viewModel::receiveLocalTvQr)
     val tvScreens = rememberSaveableStateHolder()
     var logoutConfirm by rememberSaveable { mutableStateOf(false) }
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
@@ -305,7 +306,8 @@ fun ShyniApp(
                         if (tv) TvSidebarDrawer(screenKey = screenKey, sidebar = sidebar) {
                             Box(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 27.dp)) { content() }
                         }
-                        else content()
+                        else MobilePullToRefresh(screenKey = screenKey, busy = state.busy,
+                            onRefresh = viewModel::refresh) { content() }
                     }
 
                 }
@@ -324,6 +326,7 @@ fun ShyniApp(
             onRefresh = viewModel::refresh,
             onAppearance = { appearanceOpen = true },
             onUpdate = onUpdate,
+            onTvQrScan = scanTvQr,
             onLogout = { logoutConfirm = true },
             onSpoilerAccess = {
                 libraryPickerOpen = false

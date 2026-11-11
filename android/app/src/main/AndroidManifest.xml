@@ -13,6 +13,10 @@
             android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths" />
         </provider>
+        <provider android:name="io.mirr.shynigsy.TvQrFileProvider" android:authorities="${applicationId}.tvqr"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/tv_qr_paths" />
+        </provider>
         <activity android:name="io.mirr.shynigsy.player.NativePlayerActivity" android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize"
             android:screenOrientation="sensorLandscape" />

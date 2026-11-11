@@ -26,12 +26,13 @@ import com.google.zxing.common.BitMatrix
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import io.mirr.shynigsy.data.parseTvLoginLink
+import io.mirr.shynigsy.data.parseLocalTvQr
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /** The validated approval URL contains a public nonce, never the TV-only claim secret. */
 internal fun encodeTvLoginQr(url: String): BitMatrix {
-    require(parseTvLoginLink(url) != null) { "Invalid TV approval URL" }
+    require(parseTvLoginLink(url) != null || parseLocalTvQr(url) != null) { "Invalid TV approval URL" }
     return QRCodeWriter().encode(url, BarcodeFormat.QR_CODE, 1, 1, mapOf(
         EncodeHintType.CHARACTER_SET to "UTF-8",
         EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,

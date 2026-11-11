@@ -16,6 +16,7 @@ import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -42,6 +43,7 @@ internal fun MobileMoreMenu(
     onRefresh: () -> Unit,
     onAppearance: () -> Unit,
     onUpdate: () -> Unit,
+    onTvQrScan: () -> Unit = {},
     onLogout: () -> Unit,
     onSpoilerAccess: () -> Unit,
 ) {
@@ -78,6 +80,11 @@ internal fun MobileMoreMenu(
             item(key = "update") {
                 MobileMoreAction("업데이트", Icons.Rounded.SystemUpdate, "mobile-more-update") {
                     onDismiss(); onUpdate()
+                }
+            }
+            item(key = "tv-login") {
+                MobileMoreAction("TV 로그인", Icons.Rounded.QrCodeScanner, "mobile-more-tv-login") {
+                    onDismiss(); onTvQrScan()
                 }
             }
             item(key = "account") {

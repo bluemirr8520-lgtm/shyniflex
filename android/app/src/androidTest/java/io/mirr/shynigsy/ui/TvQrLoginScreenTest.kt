@@ -40,16 +40,11 @@ class TvQrLoginScreenTest {
             "io.mirr.shyniflex.spoilerqa", InstrumentationRegistry.getInstrumentation().targetContext.packageName)
     }
 
-    @Test fun firstLaunchStaysBlankAndQrRequiresAnExplicitRemoteAction() {
+    @Test fun firstLaunchStartsQrWithoutAskingForAServerAddress() {
         val fixture = Fixture()
         render(fixture, initialServer = "")
-        screen.onNodeWithTag("login_server").assert(SemanticsMatcher.expectValue(
-            SemanticsProperties.EditableText, AnnotatedString("")))
-        screen.onNodeWithTag("tv-login-qr-start").assertIsNotEnabled()
-        screen.runOnIdle { assertTrue(fixture.starts.isEmpty()) }
-        screen.onNodeWithTag("login_server").performTextInput(SERVER)
-        reveal("tv-login-qr-start").assertIsEnabled().performClick()
-        screen.runOnIdle { assertEquals(listOf(SERVER), fixture.starts) }
+        screen.onNodeWithTag("login_server").assertDoesNotExist()
+        screen.runOnIdle { assertEquals(listOf(""), fixture.starts) }
     }
 
     @Test fun manualModeCancelsPairingAndSubmitsOnlyTheEnteredCredentials() {
@@ -67,10 +62,11 @@ class TvQrLoginScreenTest {
         }
     }
 
-    @Test fun changingTheServerDiscardsTheOldApprovalCode() {
+    @Test fun manualModeDiscardsTheOldApprovalCodeBeforeChangingServer() {
         val fixture = Fixture().apply { state = waiting() }
         render(fixture)
         waitForQr()
+        reveal("tv-login-mode-manual").performClick()
         reveal("login_server").performTextReplacement("https://replacement.example.test")
         screen.onNodeWithTag("tv-login-qr-code").assertDoesNotExist()
         screen.runOnIdle { assertTrue(fixture.cancels >= 1); assertTrue(fixture.starts.isEmpty()) }
@@ -83,7 +79,7 @@ class TvQrLoginScreenTest {
         screen.runOnIdle { fixture.state = waiting().copy(phase = TvQrLoginPhase.EXPIRED, remainingSeconds = 0) }
         screen.onNodeWithTag("tv-login-qr-code").assertDoesNotExist()
         reveal("tv-login-qr-start").assertIsEnabled().performClick()
-        screen.runOnIdle { assertEquals(listOf(SERVER), fixture.starts) }
+        screen.runOnIdle { assertEquals(listOf(""), fixture.starts) }
     }
 
     @Test fun leavingTheLoginScreenCancelsItsOutstandingApproval() {
