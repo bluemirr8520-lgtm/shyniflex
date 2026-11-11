@@ -1244,7 +1244,7 @@ class ShyniClient(
         allowLocalFallback: Boolean, scanMovieDetails: Boolean, includeExtraMovieScan: Boolean,
         onProgress: (List<MediaItem>, Int, Int) -> Unit, accountToken: String?, grantKey: String,
         capturedGrant: SpoilerAccessRegistry.Grant?, searchViewIds: Set<Int>?, parallelLocal: Boolean,
-        onRequestEnqueued: (() -> Unit)? = null, diagnostic: ActorDiagnostics? = null): ActorWorks {
+        onRequestEnqueued: (() -> Unit)? = null): ActorWorks {
         if (accountToken.isNullOrBlank()) throw ApiException("로그인이 필요합니다.", 401)
         val scopes = linkedMapOf<Int, Library>()
         for (library in libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }) {
@@ -1320,9 +1320,7 @@ class ShyniClient(
                     val viewJobs = views.mapIndexed { index, view ->
                         if (index == 1) { preferredQueued.await(); requireCurrent() }
                         async(start = CoroutineStart.UNDISPATCHED) {
-                        val trace = ActorDiagnostics(ActorDiagnostics.Kind.VIEW)
                         slots.withPermit {
-                            trace.event(ActorDiagnostics.Event.SLOT)
                             try {
                                 // This budget also includes time waiting in OkHttp's
                                 // shared catalog queue. It must exceed the normal
@@ -1331,18 +1329,14 @@ class ShyniClient(
                                 val result = withTimeout(30_000L) {
                                     actorWorksInSession(actor.copy(tmdbId = null), parent, libraries, false, false, false,
                                         { _, _, _ -> }, accountToken, grantKey, capturedGrant, setOf(view.id), false,
-                                        if (index == 0) ({ preferredQueued.complete(Unit); Unit }) else null, trace)
+                                        if (index == 0) ({ preferredQueued.complete(Unit); Unit }) else null)
                                 }
-                                trace.event(ActorDiagnostics.Event.RESULT, count = result.items.size, more = result.incomplete)
                                 publish(result, true)
                             } catch (_: TimeoutCancellationException) {
-                                trace.event(ActorDiagnostics.Event.TIMEOUT)
                                 requireCurrent(); publish(null, true, failed = true)
                             } catch (cancelled: CancellationException) {
-                                trace.event(ActorDiagnostics.Event.CANCELLED)
                                 throw cancelled
                             } catch (error: Exception) {
-                                trace.event(ActorDiagnostics.Event.ERROR, status = (error as? ApiException)?.status ?: 0)
                                 requireCurrent()
                                 if (error is ApiException && (error.status == 401 ||
                                         (error.status == 403 && view.id == parent.libraryId))) throw error
@@ -1354,24 +1348,19 @@ class ShyniClient(
                     } }
                     if (views.isNotEmpty()) { preferredQueued.await(); requireCurrent() }
                     val providerJob = if (tmdbId != null) async {
-                        val trace = ActorDiagnostics(ActorDiagnostics.Kind.PROVIDER)
                         try {
                             // Provider work shares the same catalog queue as the
                             // View requests, so allow time to enter that queue.
                             val result = withTimeout(30_000L) {
                                 actorWorksInSession(actor.copy(ppkey = null), parent, libraries, false, false, false,
-                                    { _, _, _ -> }, accountToken, grantKey, capturedGrant, null, false, diagnostic = trace)
+                                    { _, _, _ -> }, accountToken, grantKey, capturedGrant, null, false)
                             }
-                            trace.event(ActorDiagnostics.Event.RESULT, count = result.items.size, more = result.incomplete)
                             publish(result, false)
                         } catch (_: TimeoutCancellationException) {
-                            trace.event(ActorDiagnostics.Event.TIMEOUT)
                             requireCurrent(); publish(null, false, failed = true)
                         } catch (cancelled: CancellationException) {
-                            trace.event(ActorDiagnostics.Event.CANCELLED)
                             throw cancelled
                         } catch (error: Exception) {
-                            trace.event(ActorDiagnostics.Event.ERROR, status = (error as? ApiException)?.status ?: 0)
                             requireCurrent()
                             if (error is ApiException && error.status in setOf(401, 403)) throw error
                             // Older servers may not support provider lookups; TV
@@ -1393,8 +1382,7 @@ class ShyniClient(
             val tmdbCredits = if (tmdbId != null) {
                 val response = try {
                     request("/people/tmdb/$tmdbId?navigation_context=view", responseLimit = 4L * 1024 * 1024,
-                        spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token, expectedToken = accountToken,
-                        diagnostic = diagnostic)
+                        spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token, expectedToken = accountToken)
                 } catch (error: ApiException) {
                     // Older servers may not implement this endpoint. An explicit
                     // local identity can still be checked against authorized Views.
@@ -1405,10 +1393,8 @@ class ShyniClient(
                     null
                 }
                 requireCurrent()
-                val credits = (response as? JSONObject)?.optJSONArray("local_credits")
-                if (response != null && credits == null) diagnostic?.event(ActorDiagnostics.Event.BAD_SHAPE)
-                (credits ?: if (ppkey != null && allowLocalFallback) null else throw ApiException("출연작 응답 형식이 올바르지 않습니다."))
-                    .also { diagnostic?.event(ActorDiagnostics.Event.ROWS, count = it?.length() ?: -1) }
+                (response as? JSONObject)?.optJSONArray("local_credits")
+                    ?: if (ppkey != null && allowLocalFallback) null else throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
             } else null
             // A server can expose both identities yet have no local TMDB credits.
             var useTmdb = tmdbCredits != null && (tmdbCredits.length() > 0 || ppkey == null || !allowLocalFallback)
@@ -1435,11 +1421,10 @@ class ShyniClient(
                                 val response = request(path,
                                     responseLimit = 32L * 1024 * 1024, spoiler = capturedGrant != null,
                                     spoilerToken = capturedGrant?.token, expectedToken = accountToken,
-                                    onEnqueued = onRequestEnqueued, diagnostic = diagnostic)
+                                    onEnqueued = onRequestEnqueued)
                                 requireCurrent()
                                 if (response !is JSONArray && (response !is JSONObject ||
                                         (response.optJSONArray("items") == null && response.optJSONArray("results") == null))) {
-                                    diagnostic?.event(ActorDiagnostics.Event.BAD_SHAPE)
                                     throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
                                 }
                                 val found = rows(response)
@@ -1448,12 +1433,10 @@ class ShyniClient(
                                         (json.exactPositiveInt(it) ?: 0) > found.size
                                     }
                                 } ?: false
-                                diagnostic?.event(ActorDiagnostics.Event.ROWS, count = found.size, more = partial)
                                 ViewBatch(found.map { row -> view to row }, partial)
                             } catch (error: CancellationException) {
                                 throw error
                             } catch (error: Exception) {
-                                diagnostic?.event(ActorDiagnostics.Event.ERROR, status = (error as? ApiException)?.status ?: 0)
                                 requireCurrent()
                                 if (error is ApiException && (error.status == 401 ||
                                         (searchViewIds != null && error.status == 403 && view.id == parent.libraryId))) throw error
@@ -2602,7 +2585,7 @@ class ShyniClient(
     private suspend fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true, method: String = "POST", responseLimit: Long? = null,
         spoiler: Boolean = false, spoilerToken: String? = null, expectContinueResponse: Boolean = false,
         singleAttempt: Boolean = false, lane: ShyniRequestLane? = null, expectedToken: String? = null,
-        onEnqueued: (() -> Unit)? = null, diagnostic: ActorDiagnostics? = null): Any = withContext(Dispatchers.Default) {
+        onEnqueued: (() -> Unit)? = null): Any = withContext(Dispatchers.Default) {
         val url = resolve(path)
         if (!sameOrigin(url)) throw ApiException("다른 서버로 인증 정보를 전달할 수 없습니다.")
         val builder = Request.Builder().url(url).header("Accept", "application/json")
@@ -2618,27 +2601,16 @@ class ShyniClient(
             builder.header("X-Shyni-Spoiler", grant)
         }
         body?.let { builder.method(method, it.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
-        val selectedClient = requestLanes.client(url.encodedPath, body != null, method, lane, singleAttempt)
-        // An application interceptor runs only after OkHttp dispatches the call.
-        // The original lane dispatcher and its concurrency limits stay unchanged.
-        val requestClient = if (diagnostic == null) selectedClient else selectedClient.newBuilder()
-            .addInterceptor { chain ->
-                diagnostic.event(ActorDiagnostics.Event.RUNNING)
-                chain.proceed(chain.request())
-            }.build()
-        val call = requestClient.newCall(builder.build())
+        val call = requestLanes.client(url.encodedPath, body != null, method, lane, singleAttempt).newCall(builder.build())
         suspendCancellableCoroutine { continuation ->
             continuation.invokeOnCancellation { call.cancel() }
-            diagnostic?.event(ActorDiagnostics.Event.ENQUEUED)
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    diagnostic?.event(ActorDiagnostics.Event.CALL_FAILURE)
                     if (continuation.isActive) continuation.resumeWithException(ApiException("서버 연결에 실패했습니다. 주소와 네트워크를 확인하세요.").apply { initCause(e) })
                 }
                 override fun onResponse(call: Call, response: Response) {
                     try {
                         val result = response.use {
-                            diagnostic?.event(ActorDiagnostics.Event.HTTP, status = it.code)
                             val responseBody = it.body
                             val text = if (responseLimit == null) responseBody?.string().orEmpty() else {
                                 if (responseBody != null && responseBody.contentLength() > responseLimit) throw ApiException("서버 응답이 너무 큽니다.")
@@ -2651,7 +2623,6 @@ class ShyniClient(
                                 buffer.readUtf8().removePrefix("\uFEFF")
                             }
                             val json = runCatching { JSONTokener(text).nextValue() }.getOrNull()
-                            if (json == null && text.isNotBlank()) diagnostic?.event(ActorDiagnostics.Event.INVALID_JSON)
                             if (!it.isSuccessful) throw ApiException(errorMessage(json, it.code), it.code)
                             if (expectContinueResponse && json == null) throw ContinueWatchingResponseException()
                             // Current Shyni web servers may issue an HttpOnly session
