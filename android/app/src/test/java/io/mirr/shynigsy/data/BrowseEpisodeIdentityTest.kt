@@ -52,7 +52,7 @@ class BrowseEpisodeIdentityTest {
         assertEquals(listOf(70, 80), details.children.map { it.viewItemId })
         assertEquals(listOf(0, 1), details.children.map { it.seasonNumber })
         assertTrue(details.children.all { it.libraryId == 9 && it.showId == 5 && it.type == "season" })
-        assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+        assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
         assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
         assertEquals(2, server.requestCount)
     }
@@ -65,7 +65,7 @@ class BrowseEpisodeIdentityTest {
                 val details = client.details(show)
                 assertEquals(show, details.item)
                 assertTrue(details.children.isEmpty())
-                assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+                assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
                 assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
             }
         }
@@ -82,7 +82,7 @@ class BrowseEpisodeIdentityTest {
         for (status in listOf(401, 403)) {
             identity(status)
             apiFailure(status) { client.details(show) }
-            assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+            assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
         }
         assertEquals(2, server.requestCount)
     }
@@ -119,7 +119,7 @@ class BrowseEpisodeIdentityTest {
         identity(403)
         apiFailure(403) { client.details(show) }
         assertEquals(2, server.requestCount)
-        assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+        assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
         assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
     }
 

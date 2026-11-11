@@ -267,7 +267,7 @@ class ShyniClientTest {
         assertEquals(502, detail.item.viewItemId)
         assertEquals(42000L, detail.item.resumeMs)
         assertFalse(detail.item.watched)
-        assertEquals("/libraries/8/movies/23", server.takeRequest().path)
+        assertEquals("/libraries/8/movies/23?fields=full", server.takeRequest().path)
         assertEquals("/playback/progress?item_ids=23&library_view_id=8", server.takeRequest().path)
     }
 
@@ -302,7 +302,7 @@ class ShyniClientTest {
         assertEquals("시리즈", fresh.showTitle)
         assertEquals(server.url("/show-backdrop.jpg").toString(), fresh.backdrop)
         assertEquals(65000L, fresh.resumeMs)
-        assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+        assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
         assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
         assertEquals("/libraries/9/shows/5/seasons/7/episodes?limit=100&offset=0", server.takeRequest().path)
         assertEquals("/playback/progress?item_ids=24&library_view_id=9", server.takeRequest().path)
@@ -317,7 +317,7 @@ class ShyniClientTest {
         assertEquals("시리즈 소개", fresh.summary)
         assertEquals(server.url("/show-backdrop.jpg").toString(), fresh.backdrop)
         assertEquals(2, server.requestCount)
-        assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+        assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
         assertEquals("/playback/progress?item_ids=24&library_view_id=9", server.takeRequest().path)
     }
 
@@ -332,7 +332,7 @@ class ShyniClientTest {
         assertEquals("Show", details.children[0].showTitle)
         assertEquals("season", details.children[1].type)
         assertEquals("서버가 지정한 작품명", details.children[1].showTitle)
-        assertEquals("/libraries/9/shows/5", server.takeRequest().path)
+        assertEquals("/libraries/9/shows/5?fields=full", server.takeRequest().path)
         assertEquals("/libraries/9/shows/5/seasons?platform=mobile", server.takeRequest().path)
     }
 

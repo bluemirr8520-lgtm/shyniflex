@@ -90,8 +90,49 @@ class DetailDiscoveryTest {
         assertFalse(result.castMembers.last().canLoadWorks)
         assertEquals(server.url("/portrait/1").toString(), result.castMembers.first().portrait)
         assertEquals(listOf("/libraries/8/movies/11", "/playback/progress"), requests.map { it.requestUrl!!.encodedPath })
-        assertTrue(requests.all { it.requestUrl!!.queryParameter("fields") == null })
+        assertEquals("full", requests.first().requestUrl!!.queryParameter("fields"))
+        assertNull(requests.last().requestUrl!!.queryParameter("fields"))
         assertEquals(2, server.requestCount)
+    }
+
+    @Test fun fullShowDetailsExposeServerLocalPpkeyCastWithoutAnotherRequest() = runBlocking {
+        reply = { request -> when (request.requestUrl!!.encodedPath) {
+            "/libraries/9/shows/21" -> {
+                val body = JSONObject().put("id", 21).put("title", "Synthetic show")
+                if (request.requestUrl!!.queryParameter("fields") == "full") {
+                    body.put("extra", JSONObject().put("actors", JSONArray().put(
+                        JSONObject().put("name", "Synthetic actor").put("ppkey", "local-actor-id"))))
+                }
+                MockResponse().setBody(body.toString())
+            }
+            "/libraries/9/shows/21/seasons" -> MockResponse().setBody("[]")
+            else -> MockResponse().setResponseCode(404)
+        } }
+        val detail = client.details(MediaItem(21, 9, "Synthetic show", "show"))
+        assertEquals("local-actor-id", detail.castMembers.single().ppkey)
+        assertEquals(listOf("/libraries/9/shows/21", "/libraries/9/shows/21/seasons"),
+            requests.map { it.requestUrl!!.encodedPath })
+        assertEquals("full", requests.first().requestUrl!!.queryParameter("fields"))
+    }
+
+    @Test fun serverWithoutFieldsOptionFallsBackToTheSameViewWithoutEscalating() = runBlocking {
+        reply = { request -> if (request.requestUrl!!.queryParameter("fields") == "full")
+            MockResponse().setResponseCode(422).setBody("{}")
+        else MockResponse().setBody(section(person("Synthetic actor")).put("id", 11)
+            .put("title", movie.title).toString()) }
+        val detail = client.details(movie)
+        assertEquals("Synthetic actor", detail.castMembers.single().name)
+        assertEquals(listOf("full", null), requests.filter { it.requestUrl!!.encodedPath == "/libraries/8/movies/11" }
+            .map { it.requestUrl!!.queryParameter("fields") })
+        assertTrue(requests.all { it.requestUrl!!.queryParameter("admin") == null })
+    }
+
+    @Test fun forbiddenFullDetailsNeverRetryWithWeakerRequest() = runBlocking {
+        reply = { MockResponse().setResponseCode(403).setBody("{}") }
+        val error = runCatching { client.details(movie) }.exceptionOrNull()
+        assertTrue(error is ApiException && error.status == 403)
+        assertEquals(1, requests.size)
+        assertEquals("full", requests.single().requestUrl!!.queryParameter("fields"))
     }
 
     @Test fun showAndEpisodeReuseExistingShowMetadataAndNeverAddACastRequest() = runBlocking {
@@ -106,6 +147,8 @@ class DetailDiscoveryTest {
         assertEquals("Synthetic show actor", show.castMembers.single().name)
         assertEquals(show.castMembers, episode.castMembers)
         assertEquals(2, requests.count { it.requestUrl!!.encodedPath == "/libraries/9/shows/21" })
+        assertTrue(requests.filter { it.requestUrl!!.encodedPath == "/libraries/9/shows/21" }
+            .all { it.requestUrl!!.queryParameter("fields") == "full" })
         assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/libraries/9/shows/21/seasons" })
         assertEquals(1, requests.count { it.requestUrl!!.encodedPath == "/playback/progress" })
         assertEquals(4, server.requestCount)
@@ -194,7 +237,7 @@ class DetailDiscoveryTest {
         val movieOnly = client.actorWorks(localActor, movie, listOf(movies))
         assertTrue(movieOnly.items.isEmpty())
         assertFalse(movieOnly.incomplete)
-        assertEquals(6, server.requestCount)
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun ppkeySearchesMoviesAcrossViewsAndVerifiesTheFullCastWithoutMatchingNamesAlone() = runBlocking {
@@ -329,18 +372,20 @@ class DetailDiscoveryTest {
         assertEquals(listOf("/people/tmdb/71"), requests.map { it.requestUrl!!.encodedPath })
     }
 
-    @Test fun ppkeyDoesNotTrustAnotherViewWhenTheServerIgnoresItsFilter() = runBlocking {
+    @Test fun ppkeyTrustsFilteredTvResultsAcrossViewsWithoutFetchingRepresentativeDetails() = runBlocking {
         reply = { request -> when (request.requestUrl!!.encodedPath) {
             "/libraries/9/shows" -> MockResponse().setBody("""[{"id":21,"title":"Known show"}]""")
-            "/libraries/10/shows" -> MockResponse().setBody("""[{"id":24,"title":"Unrelated"},{"id":25,"title":"Same key, different name"}]""")
-            "/libraries/10/shows/24" -> MockResponse().setBody(section(person("Someone else", "actor_ppkey", "other")).toString())
-            "/libraries/10/shows/25" -> MockResponse().setBody(section(person("Someone else", "actor_ppkey", "abc")).toString())
+            // Server filters merged members by ppkey; representative details may
+            // omit the particular merged member that caused this match.
+            "/libraries/10/shows" -> MockResponse().setBody("""[{"id":24,"title":"Merged show"}]""")
             else -> MockResponse().setResponseCode(404)
         } }
         val result = client.actorWorks(CastMember("Actor", ppkey = "abc"),
             MediaItem(21, 9, "Show", "show"), listOf(tv, Library(10, "More", "tv")))
-        assertEquals(listOf(21), result.items.map { it.id })
-        assertTrue(result.incomplete)
+        assertEquals(listOf(21, 24), result.items.map { it.id })
+        assertFalse(result.incomplete)
+        assertTrue(requests.all { it.requestUrl!!.queryParameter("actor_ppkey") == "abc" })
+        assertTrue(requests.none { it.requestUrl!!.encodedPath == "/libraries/10/shows/24" })
     }
 
     @Test fun ppkeyIncludesUnlockedPrivateViewsButMarksAFailedViewIncomplete() = runBlocking {
@@ -396,7 +441,7 @@ class DetailDiscoveryTest {
     }
 
     @Test fun ppkeyAuthenticationFailureIsNotMisreportedAsPartialResults() = runBlocking {
-        for (failedPath in listOf("/libraries/10/shows", "/libraries/10/shows/24")) {
+        for (failedPath in listOf("/libraries/10/shows")) {
             reply = { request -> when (request.requestUrl!!.encodedPath) {
                 failedPath -> MockResponse().setResponseCode(401).setBody("{}")
                 "/libraries/9/shows" -> MockResponse().setBody("""[{"id":21,"title":"Known"}]""")

@@ -870,7 +870,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val previous = mutableState.value.detailDiscovery[key] ?: return
         if (!previous.relatedLoaded && !previous.relatedLoading && previous.relatedError == null) {
-            if (detail.castMembers.none { (it.tmdbId ?: 0) > 0 }) {
+            val seriesParent = parent.type in setOf("show", "tv", "season", "episode")
+            if (detail.castMembers.none { (it.tmdbId ?: 0) > 0 || (seriesParent && hasActorLocalIdentity(it)) }) {
                 mutableState.update { state -> state.copy(detailDiscovery = state.detailDiscovery +
                     (key to (state.detailDiscovery[key] ?: previous).copy(relatedLoaded = true))) }
             } else {

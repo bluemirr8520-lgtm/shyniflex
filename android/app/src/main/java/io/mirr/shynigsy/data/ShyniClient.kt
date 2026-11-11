@@ -1010,9 +1010,20 @@ class ShyniClient(
         }
     }
 
+    /** The web detail requests full metadata so its local cast identities are present.
+     * Older servers may reject the optional fields parameter; retry only those
+     * validation errors with the previous request while retaining the same View
+     * and spoiler authorization. Never retry authentication/permission errors. */
+    private suspend fun detailWithCredits(path: String, spoiler: Boolean, responseLimit: Long? = null): JSONObject = try {
+        request("$path?fields=full", responseLimit = responseLimit, spoiler = spoiler).objectValue()
+    } catch (error: ApiException) {
+        if (error.isEpisodeIdentityFailure() || (error.status != 400 && error.status != 422)) throw error
+        request(path, responseLimit = responseLimit, spoiler = spoiler).objectValue()
+    }
+
     suspend fun details(item: MediaItem): MediaDetails = withContext(Dispatchers.Default) { when (item.type) {
         "movie" -> {
-            val response = request("/libraries/${item.libraryId}/movies/${item.id}", spoiler = item.isSpoiler).objectValue()
+            val response = detailWithCredits("/libraries/${item.libraryId}/movies/${item.id}", spoiler = item.isSpoiler)
             MediaDetails(withProgress(parseMedia(response, item.libraryId, "movie", item)),
                 castMembers = parseCastMembers(response))
         }
@@ -1027,7 +1038,7 @@ class ShyniClient(
             // authorized season list. Keep the original card's numeric identity.
             var cast = emptyList<CastMember>()
             val fresh = try {
-                val response = request("/libraries/${item.libraryId}/shows/${item.id}", spoiler = item.isSpoiler).objectValue()
+                val response = detailWithCredits("/libraries/${item.libraryId}/shows/${item.id}", spoiler = item.isSpoiler)
                 cast = parseCastMembers(response)
                 parseMedia(response, item.libraryId, "show", item)
             } catch (error: ApiException) {
@@ -1093,13 +1104,29 @@ class ShyniClient(
                 neutralRows.addAll(rowSequence(section, "items").take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100))
             }
         }
-        val parsed = if (hasNeutralCast) neutralRows.take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100).mapNotNull { member(it, true) }
-            else {
-                val extra = detail.optJSONObject("extra") ?: detail.stringOrNull("extra")?.let {
-                    runCatching { JSONObject(it) }.getOrNull()
-                }
-                extra?.let { rowSequence(it, "actors").take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100).mapNotNull { row -> member(row, false) }.toList() }.orEmpty()
+        val extra = detail.optJSONObject("extra") ?: detail.stringOrNull("extra")?.let {
+            runCatching { JSONObject(it) }.getOrNull()
+        }
+        val extraActors = extra?.let { rowSequence(it, "actors")
+            .take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100)
+            .mapNotNull { row -> member(row, false) }.toList() }.orEmpty()
+        val parsed = if (hasNeutralCast) {
+            val neutral = neutralRows.take(if (limit == Int.MAX_VALUE) Int.MAX_VALUE else 100)
+                .mapNotNull { member(it, true) }
+            // Server-neutral cards expose an open_person TMDB identity, while
+            // fields=full may preserve the same actor's ppkey only in extra.
+            // Join on explicit IDs, never names; a conflicting mapping stays
+            // unlinked rather than attributing another person's local works.
+            val links = (neutral + extraActors).filter { it.tmdbId != null && !it.ppkey.isNullOrBlank() }
+            val ppkeysByTmdb = links.groupBy { it.tmdbId!! }.mapValues { (_, people) -> people.mapNotNull { it.ppkey }.toSet() }
+            val tmdbsByPpkey = links.groupBy { it.ppkey!! }.mapValues { (_, people) -> people.mapNotNull { it.tmdbId }.toSet() }
+            neutral.map { person ->
+                val tmdb = person.tmdbId
+                val candidate = tmdb?.let { ppkeysByTmdb[it]?.singleOrNull() }
+                if (person.ppkey == null && candidate != null && tmdbsByPpkey[candidate] == setOf(tmdb))
+                    person.copy(ppkey = candidate) else person
             }
+        } else extraActors
         val members = linkedMapOf<String, CastMember>()
         for (person in parsed) {
             val previous = members[person.key]
@@ -1164,13 +1191,11 @@ class ShyniClient(
                     ?: if (ppkey != null && allowLocalFallback) null else throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
             } else null
             // A server can expose both identities yet have no local TMDB credits.
-            val useTmdb = tmdbCredits != null && (tmdbCredits.length() > 0 || ppkey == null || !allowLocalFallback)
-            val creditRows: List<Pair<Library?, JSONObject>> = if (useTmdb) {
-                (0 until tmdbCredits!!.length()).mapNotNull { tmdbCredits.optJSONObject(it)?.let { row -> null to row } }
-            } else {
+            var useTmdb = tmdbCredits != null && (tmdbCredits.length() > 0 || ppkey == null || !allowLocalFallback)
+            suspend fun localCreditRows(tvOnly: Boolean = false): List<Pair<Library?, JSONObject>> {
                 // Movie Views do not expose an actor_ppkey filter. Enumerate those
                 // Views and verify each movie against its detail cast below.
-                val views = scopes.values.filter { !it.isSpoiler || capturedGrant != null }
+                val views = scopes.values.filter { (!tvOnly || it.type == "tv") && (!it.isSpoiler || capturedGrant != null) }
                 if (views.isEmpty()) throw ApiException("이 출연진의 보유 작품 조회는 지원되지 않습니다.")
                 val slots = Semaphore(2)
                 data class ViewBatch(val rows: List<Pair<Library, JSONObject>>, val incomplete: Boolean)
@@ -1208,11 +1233,15 @@ class ShyniClient(
                     } }.awaitAll()
                 }
                 incomplete = batches.any { it == null || it.incomplete }
-                batches.filterNotNull().flatMap { it.rows }
+                return batches.filterNotNull().flatMap { it.rows }
             }
+            val creditRows: List<Pair<Library?, JSONObject>> = if (useTmdb) {
+                (0 until tmdbCredits!!.length()).mapNotNull { tmdbCredits.optJSONObject(it)?.let { row -> null to row } }
+            } else localCreditRows()
             data class Identity(val libraryId: Int, val type: String, val id: Int, val viewItemId: Int?)
             val matched = linkedMapOf<Identity, MediaItem>()
-            for ((queriedView, row) in creditRows) {
+            fun collectAuthorizedRows(rows: List<Pair<Library?, JSONObject>>) {
+              for ((queriedView, row) in rows) {
                 if (row.optBoolean("remote") || row.stringOrNull("federated_id") != null) continue
                 if (row.stringOrNull("context_kind")?.let { it != "view" } == true) continue
                 val libraryId = queriedView?.id ?: row.exactPositiveInt("library_view_id") ?: continue
@@ -1244,12 +1273,38 @@ class ShyniClient(
                 val identity = Identity(libraryId, type, metadataId, item.viewItemId)
                 val previous = matched[identity]
                 if (previous == null || (item.isSpoiler && !previous.isSpoiler)) matched[identity] = item
+              }
             }
+            collectAuthorizedRows(creditRows)
             requireCurrent()
             var visible = matched.values.filter { !it.isSpoiler || capturedGrant != null }
+            val currentShowId = when (parent.type) {
+                "show", "tv" -> parent.id
+                "season", "episode" -> parent.showId?.takeIf { it > 0 }
+                else -> null
+            }
+            val providerOnlyCurrentShow = currentShowId != null && visible.isNotEmpty() &&
+                visible.all { it.type == "show" && it.id == currentShowId }
+            var retainedProviderWorks = emptyList<MediaItem>()
+            // A non-empty provider response may contain only remote, inaccessible,
+            // malformed or locked rows, or just the current TV show. Only the
+            // user's explicit actor selection may perform the local search,
+            // using the credentials and spoiler grant captured for this request.
+            if (useTmdb && (visible.isEmpty() || providerOnlyCurrentShow) && ppkey != null && allowLocalFallback) {
+                requireCurrent()
+                retainedProviderWorks = visible
+                useTmdb = false
+                matched.clear()
+                collectAuthorizedRows(localCreditRows(tvOnly = providerOnlyCurrentShow))
+                requireCurrent()
+                visible = matched.values.filter { !it.isSpoiler || capturedGrant != null }
+            }
             if (!useTmdb) {
-                // A ppkey's scope across Views is undocumented. Check movie details
-                // and show results from other Views; a name alone is not an identity.
+                // Each TV View search used the server's actor_ppkey filter, which
+                // considers all merged show members before returning its card.
+                // A representative detail can omit the matching member, so do not
+                // re-filter those authoritative show results. Movie Views have no
+                // such filter and still need identity verification below.
                 val slots = Semaphore(2)
                 data class CastCheck(val matches: Boolean, val uncertain: Boolean = false, val failed: Boolean = false)
                 val candidates = visible.sortedBy { if (it.type == "show") 0 else 1 }
@@ -1262,7 +1317,7 @@ class ShyniClient(
                 for (chunk in candidates.chunked(4)) {
                     val checked = coroutineScope { chunk.map { item -> async {
                         slots.withPermit {
-                            if (item.type == "show" && item.libraryId == parentLibrary.id && parentLibrary.type == "tv")
+                            if (item.type == "show")
                                 CastCheck(true) else try {
                                 requireCurrent()
                                 val kind = if (item.type == "movie") "movies" else "shows"
@@ -1309,6 +1364,23 @@ class ShyniClient(
                 }
                 visible = confirmed
             }
+            if (retainedProviderWorks.isNotEmpty()) {
+                // Both routes may identify the same View work, sometimes with a
+                // view_item_id on only one response. Prefer that richer identity.
+                val merged = mutableListOf<MediaItem>()
+                for (item in retainedProviderWorks + visible) {
+                    val index = merged.indexOfFirst { previous ->
+                        previous.libraryId == item.libraryId && previous.type == item.type && previous.id == item.id &&
+                            (previous.viewItemId == item.viewItemId || previous.viewItemId == null || item.viewItemId == null)
+                    }
+                    if (index < 0) merged.add(item) else {
+                        val previous = merged[index]
+                        val richer = if (previous.viewItemId == null && item.viewItemId != null) item else previous
+                        merged[index] = richer.copy(isSpoiler = previous.isSpoiler || item.isSpoiler)
+                    }
+                }
+                visible = merged
+            }
             requireCurrent()
             ActorWorks(visible, incomplete = incomplete)
         }
@@ -1322,27 +1394,63 @@ class ShyniClient(
             "movie" -> null
             else -> return emptyList()
         }
-        // Use at most three distinct provider identities and stop as soon as one
-        // yields related works. A lead actor may have no local credits even when
-        // another cast member does; do not automatically run expensive ppkey scans.
-        val candidates = castMembers.filter { (it.tmdbId ?: 0) > 0 }
-            .distinctBy { it.tmdbId }.take(3)
+        fun localKey(actor: CastMember): String? = actor.ppkey?.trim()?.takeIf {
+            it.isNotEmpty() && it.length <= 200 && it.none { character -> character.isISOControl() }
+        }
+        // TV Views support a server-side actor filter. Never auto-scan movies,
+        // which would otherwise require reading each movie's detail separately.
+        // Preserve the stricter privacy flag even if a malformed catalogue
+        // contains duplicate IDs with conflicting media types.
+        val privateViewIds = libraries.filter { it.isSpoiler }.map { it.id }.toSet()
+        val tvViews = if (currentShow != null) libraries.filter { it.type == "tv" }.map {
+            if (it.id in privateViewIds) it.copy(isSpoiler = true) else it
+        } else emptyList()
+        val candidates = castMembers.filter { (it.tmdbId ?: 0) > 0 || (currentShow != null && localKey(it) != null) }
+            .distinctBy { it.key }.take(3)
+        val checkedLocalKeys = mutableSetOf<String>()
         var lastError: Exception? = null
         for (actor in candidates) {
-            val works = try {
-                actorWorks(actor, parent, libraries).items
+            var unsupportedProvider: ApiException? = null
+            fun otherWorks(works: List<MediaItem>): List<MediaItem> = works.filterNot {
+                (parent.type == "movie" && it.type == "movie" && it.id == parent.id) ||
+                    (currentShow != null && it.type == "show" && it.id == currentShow)
+            }.take(20)
+            if ((actor.tmdbId ?: 0) > 0) {
+                try {
+                    val works = otherWorks(actorWorks(actor, parent, libraries).items)
+                    if (works.isNotEmpty()) return works
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (error is ApiException && error.status in setOf(401, 403)) throw error
+                    // Only an unsupported provider endpoint may fall back to a
+                    // different identity; do not hide a server/network failure.
+                    if (error !is ApiException || error.status !in setOf(400, 404, 405, 422, 501)) {
+                        lastError = error
+                        continue
+                    }
+                    unsupportedProvider = error
+                }
+            }
+            val ppkey = localKey(actor)
+            if (currentShow == null || ppkey == null) {
+                if (unsupportedProvider != null) lastError = unsupportedProvider
+                continue
+            }
+            if (!checkedLocalKeys.add(ppkey)) continue
+            try {
+                // Passing TV Views only rules out the expensive movie scan in
+                // actorWorks; the server applies actor_ppkey in each View.
+                val result = actorWorks(actor.copy(tmdbId = null), parent, tvViews)
+                val works = otherWorks(result.items)
+                if (works.isNotEmpty()) return works
+                if (result.incomplete) lastError = ApiException("관련 작품을 모두 확인하지 못했습니다.")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 if (error is ApiException && error.status in setOf(401, 403)) throw error
                 lastError = error
-                continue
             }
-            val related = works.filterNot {
-                (parent.type == "movie" && it.type == "movie" && it.id == parent.id) ||
-                    (currentShow != null && it.type == "show" && it.id == currentShow)
-            }.take(20)
-            if (related.isNotEmpty()) return related
         }
         if (lastError != null) throw lastError
         return emptyList()
@@ -1403,7 +1511,7 @@ class ShyniClient(
         // documented metadata/season routes, and keep playback identity intact.
         val showId = item.showId ?: return item
         return try {
-            val response = request("/libraries/${item.libraryId}/shows/$showId", responseLimit = 4L * 1024 * 1024, spoiler = item.isSpoiler).objectValue()
+            val response = detailWithCredits("/libraries/${item.libraryId}/shows/$showId", responseLimit = 4L * 1024 * 1024, spoiler = item.isSpoiler)
             val show = parseMedia(response, item.libraryId, "show")
             onShowMetadata(response)
             var result = item.copy(
