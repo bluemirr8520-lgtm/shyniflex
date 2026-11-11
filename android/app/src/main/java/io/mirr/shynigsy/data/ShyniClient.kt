@@ -7,6 +7,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.async
@@ -1235,10 +1236,16 @@ class ShyniClient(
         allowLocalFallback: Boolean = false,
         scanMovieDetails: Boolean = false,
         includeExtraMovieScan: Boolean = false,
-        onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks {
-        val accountToken = token
-        val grantKey = spoilerKey()
-        val capturedGrant = spoilerGrant()
+        onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks =
+        actorWorksInSession(actor, parent, libraries, allowLocalFallback, scanMovieDetails,
+            includeExtraMovieScan, onProgress, token, spoilerKey(), spoilerGrant(), null, true)
+
+    private suspend fun actorWorksInSession(actor: CastMember, parent: MediaItem, libraries: List<Library>,
+        allowLocalFallback: Boolean, scanMovieDetails: Boolean, includeExtraMovieScan: Boolean,
+        onProgress: (List<MediaItem>, Int, Int) -> Unit, accountToken: String?, grantKey: String,
+        capturedGrant: SpoilerAccessRegistry.Grant?, searchViewIds: Set<Int>?, parallelLocal: Boolean,
+        onRequestEnqueued: (() -> Unit)? = null): ActorWorks {
+        if (accountToken.isNullOrBlank()) throw ApiException("로그인이 필요합니다.", 401)
         val scopes = linkedMapOf<Int, Library>()
         for (library in libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }) {
             val previous = scopes[library.id]
@@ -1271,11 +1278,105 @@ class ShyniClient(
             // scanning is deliberately opted into by the user in the UI.
             val movieSearchAvailable = ppkey != null && (tmdbId == null || allowLocalFallback) && !scanMovieDetails &&
                 scopes.values.any { it.type == "movie" && (!it.isSpoiler || capturedGrant != null) }
+            if (parallelLocal && allowLocalFallback && !scanMovieDetails && ppkey != null) {
+                // Each TV View is an independent, server-filtered result. Publish
+                // it immediately, while the optional provider lookup runs beside
+                // it. All children use this request's original account and grant.
+                val views = scopes.values.filter { it.type == "tv" && (searchViewIds == null || it.id in searchViewIds) && (!it.isSpoiler || capturedGrant != null) }
+                    .sortedBy { if (it.id == parent.libraryId) 0 else 1 }
+                val merged = mutableListOf<MediaItem>()
+                val mutex = Mutex()
+                var completedViews = 0
+                var incomplete = false
+                suspend fun publish(result: ActorWorks?, viewFinished: Boolean, failed: Boolean = false) {
+                    mutex.withLock {
+                        requireCurrent()
+                        if (viewFinished) completedViews++
+                        if (failed || result?.incomplete == true) incomplete = true
+                        for (item in result?.items.orEmpty()) {
+                            val index = merged.indexOfFirst { previous ->
+                                previous.libraryId == item.libraryId && previous.type == item.type &&
+                                    if (previous.viewItemId != null && item.viewItemId != null)
+                                        previous.viewItemId == item.viewItemId
+                                    else previous.id == item.id
+                            }
+                            if (index < 0) merged.add(item) else {
+                                val previous = merged[index]
+                                // A filtered View card supplies the current representative.
+                                val richer = if (viewFinished || (previous.viewItemId == null && item.viewItemId != null)) item else previous
+                                merged[index] = richer.copy(isSpoiler = previous.isSpoiler || item.isSpoiler)
+                            }
+                        }
+                        requireCurrent()
+                        onProgress(merged.filter { !it.isSpoiler || capturedGrant != null }.toList(), completedViews, views.size)
+                    }
+                }
+                coroutineScope {
+                    val slots = Semaphore(2)
+                    // The shared catalog lane has two HTTP slots. Queue the
+                    // preferred View before allowing other View/provider work
+                    // to contend for them, without waiting for its response.
+                    val preferredQueued = CompletableDeferred<Unit>()
+                    val viewJobs = views.mapIndexed { index, view ->
+                        if (index == 1) { preferredQueued.await(); requireCurrent() }
+                        async(start = CoroutineStart.UNDISPATCHED) {
+                        slots.withPermit {
+                            try {
+                                val result = withTimeout(12_000L) {
+                                    actorWorksInSession(actor.copy(tmdbId = null), parent, libraries, false, false, false,
+                                        { _, _, _ -> }, accountToken, grantKey, capturedGrant, setOf(view.id), false,
+                                        if (index == 0) ({ preferredQueued.complete(Unit); Unit }) else null)
+                                }
+                                publish(result, true)
+                            } catch (_: TimeoutCancellationException) {
+                                requireCurrent(); publish(null, true, failed = true)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                requireCurrent()
+                                if (error is ApiException && (error.status == 401 ||
+                                        (error.status == 403 && view.id == parent.libraryId))) throw error
+                                publish(null, true, failed = true)
+                            } finally {
+                                if (index == 0) preferredQueued.complete(Unit)
+                            }
+                        }
+                    } }
+                    if (views.isNotEmpty()) { preferredQueued.await(); requireCurrent() }
+                    val providerJob = if (tmdbId != null) async {
+                        try {
+                            val result = withTimeout(8_000L) {
+                                actorWorksInSession(actor.copy(ppkey = null), parent, libraries, false, false, false,
+                                    { _, _, _ -> }, accountToken, grantKey, capturedGrant, null, false)
+                            }
+                            publish(result, false)
+                        } catch (_: TimeoutCancellationException) {
+                            requireCurrent(); publish(null, false, failed = true)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            requireCurrent()
+                            if (error is ApiException && error.status in setOf(401, 403)) throw error
+                            // Older servers may not support provider lookups; TV
+                            // results still come from the local identity filter.
+                            if (error !is ApiException || error.status !in setOf(400, 404, 405, 422, 501))
+                                publish(null, false, failed = true)
+                        }
+                    } else null
+                    viewJobs.awaitAll()
+                    providerJob?.await()
+                }
+                requireCurrent()
+                val result = merged.filter { !it.isSpoiler || capturedGrant != null }
+                return@withContext ActorWorks(result, tvLibrariesOnly = result.isNotEmpty() &&
+                    result.all { it.type == "show" || it.type == "tv" }, incomplete = incomplete,
+                    movieSearchAvailable = movieSearchAvailable)
+            }
             var incomplete = false
             val tmdbCredits = if (tmdbId != null) {
                 val response = try {
                     request("/people/tmdb/$tmdbId?navigation_context=view", responseLimit = 4L * 1024 * 1024,
-                        spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token)
+                        spoiler = capturedGrant != null, spoilerToken = capturedGrant?.token, expectedToken = accountToken)
                 } catch (error: ApiException) {
                     // Older servers may not implement this endpoint. An explicit
                     // local identity can still be checked against authorized Views.
@@ -1294,7 +1395,8 @@ class ShyniClient(
             suspend fun localCreditRows(tvOnly: Boolean = false): List<Pair<Library?, JSONObject>> {
                 // Movie Views do not expose an actor_ppkey filter. Enumerate those
                 // Views and verify each movie against its detail cast below.
-                val views = scopes.values.filter { (!(tvOnly || !scanMovieDetails) || it.type == "tv") &&
+                val views = scopes.values.filter { (searchViewIds == null || it.id in searchViewIds) &&
+                    (!(tvOnly || !scanMovieDetails) || it.type == "tv") &&
                     (!it.isSpoiler || capturedGrant != null) }
                 if (views.isEmpty()) {
                     if (!scanMovieDetails && movieSearchAvailable) return emptyList()
@@ -1312,7 +1414,8 @@ class ShyniClient(
                                     else "/libraries/${view.id}/movies?sort=title"
                                 val response = request(path,
                                     responseLimit = 32L * 1024 * 1024, spoiler = capturedGrant != null,
-                                    spoilerToken = capturedGrant?.token)
+                                    spoilerToken = capturedGrant?.token, expectedToken = accountToken,
+                                    onEnqueued = onRequestEnqueued)
                                 requireCurrent()
                                 if (response !is JSONArray && (response !is JSONObject ||
                                         (response.optJSONArray("items") == null && response.optJSONArray("results") == null))) {
@@ -1329,7 +1432,8 @@ class ShyniClient(
                                 throw error
                             } catch (error: Exception) {
                                 requireCurrent()
-                                if (error is ApiException && error.status == 401) throw error
+                                if (error is ApiException && (error.status == 401 ||
+                                        (searchViewIds != null && error.status == 403 && view.id == parent.libraryId))) throw error
                                 null
                             }
                         }
@@ -1428,7 +1532,7 @@ class ShyniClient(
                                 val detailPath = "/libraries/${item.libraryId}/$kind/${item.id}"
                                 suspend fun fetchDetail(path: String) = request(path,
                                     responseLimit = 4L * 1024 * 1024, spoiler = capturedGrant != null,
-                                    spoilerToken = capturedGrant?.token).objectValue()
+                                    spoilerToken = capturedGrant?.token, expectedToken = accountToken).objectValue()
                                 val detail = if (item.type == "movie") try {
                                     fetchDetail("$detailPath?fields=full")
                                 } catch (error: ApiException) {
@@ -1493,7 +1597,12 @@ class ShyniClient(
     }
 
     /** Related means shared cast here, not an unsupported recommendation endpoint. */
-    suspend fun relatedWorks(parent: MediaItem, castMembers: List<CastMember>, libraries: List<Library>): List<MediaItem> {
+    suspend fun relatedWorks(parent: MediaItem, castMembers: List<CastMember>, libraries: List<Library>,
+        onIncomplete: () -> Unit = {},
+        onProgress: (List<MediaItem>) -> Unit = {}): List<MediaItem> {
+        val accountToken = token
+        val grantKey = spoilerKey()
+        val capturedGrant = spoilerGrant()
         val currentShow = when (parent.type) {
             "show", "tv" -> parent.id
             "season", "episode" -> parent.showId?.takeIf { it > 0 } ?: return emptyList()
@@ -1516,41 +1625,52 @@ class ShyniClient(
         val checkedLocalKeys = mutableSetOf<String>()
         var lastError: Exception? = null
         for (actor in candidates) {
-            var unsupportedProvider: ApiException? = null
+            var providerFailure: Exception? = null
             fun otherWorks(works: List<MediaItem>): List<MediaItem> = works.filterNot {
                 (parent.type == "movie" && it.type == "movie" && it.id == parent.id) ||
                     (currentShow != null && it.type == "show" && it.id == currentShow)
             }.take(20)
             if ((actor.tmdbId ?: 0) > 0) {
                 try {
-                    val works = otherWorks(actorWorks(actor, parent, libraries).items)
+                    val works = otherWorks(withTimeout(4_000L) {
+                        actorWorksInSession(actor, parent, libraries, false, false, false, { _, _, _ -> },
+                            accountToken, grantKey, capturedGrant, null, false).items
+                    })
                     if (works.isNotEmpty()) return works
+                } catch (_: TimeoutCancellationException) {
+                    currentCoroutineContext().ensureActive()
+                    providerFailure = ApiException("관련 작품 조회 시간이 초과됐습니다.")
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
                     if (error is ApiException && error.status in setOf(401, 403)) throw error
-                    // Only an unsupported provider endpoint may fall back to a
-                    // different identity; do not hide a server/network failure.
-                    if (error !is ApiException || error.status !in setOf(400, 404, 405, 422, 501)) {
-                        lastError = error
-                        continue
-                    }
-                    unsupportedProvider = error
+                    providerFailure = error
                 }
             }
             val ppkey = localKey(actor)
             if (currentShow == null || ppkey == null) {
-                if (unsupportedProvider != null) lastError = unsupportedProvider
+                if (providerFailure != null) lastError = providerFailure
                 continue
             }
             if (!checkedLocalKeys.add(ppkey)) continue
             try {
-                // Passing TV Views only rules out the expensive movie scan in
-                // actorWorks; the server applies actor_ppkey in each View.
-                val result = actorWorks(actor.copy(tmdbId = null), parent, tvViews)
+                // The current View starts first, but all authorized TV Views
+                // run concurrently and publish independently; no movie scan.
+                val result = actorWorksInSession(
+                    actor.copy(tmdbId = null), parent, tvViews, true, false, false, { items, _, _ ->
+                        val partial = otherWorks(items)
+                        if (partial.isNotEmpty()) onProgress(partial)
+                    },
+                    accountToken, grantKey, capturedGrant, null, true)
                 val works = otherWorks(result.items)
-                if (works.isNotEmpty()) return works
+                if (works.isNotEmpty()) {
+                    if (result.incomplete) onIncomplete()
+                    return works
+                }
                 if (result.incomplete) lastError = ApiException("관련 작품을 모두 확인하지 못했습니다.")
+                else if (providerFailure != null &&
+                    (providerFailure !is ApiException || providerFailure.status !in setOf(400, 404, 405, 422, 501)))
+                    lastError = providerFailure
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -2458,13 +2578,15 @@ class ShyniClient(
 
     private suspend fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true, method: String = "POST", responseLimit: Long? = null,
         spoiler: Boolean = false, spoilerToken: String? = null, expectContinueResponse: Boolean = false,
-        singleAttempt: Boolean = false, lane: ShyniRequestLane? = null): Any = withContext(Dispatchers.Default) {
+        singleAttempt: Boolean = false, lane: ShyniRequestLane? = null, expectedToken: String? = null,
+        onEnqueued: (() -> Unit)? = null): Any = withContext(Dispatchers.Default) {
         val url = resolve(path)
         if (!sameOrigin(url)) throw ApiException("다른 서버로 인증 정보를 전달할 수 없습니다.")
         val builder = Request.Builder().url(url).header("Accept", "application/json")
             .header("X-Device-Id", deviceId)
         if (authenticated) {
             val currentToken = token?.takeIf { it.isNotBlank() } ?: throw ApiException("로그인이 필요합니다.", 401)
+            if (expectedToken != null && currentToken != expectedToken) throw ApiException("로그인 정보가 변경되었습니다. 다시 여세요.", 401)
             sessionHeaders(currentToken).forEach { (name, value) -> builder.header(name, value) }
         }
         if (spoiler) {
@@ -2517,6 +2639,7 @@ class ShyniClient(
                     }
                 }
             })
+            onEnqueued?.invoke()
         }
     }
 

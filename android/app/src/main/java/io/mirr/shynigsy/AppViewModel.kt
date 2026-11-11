@@ -887,7 +887,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 relatedWorksJob = viewModelScope.launch {
                     fun current() = requestRevision == relatedWorksRevision && discoveryCurrent(active, account, grant, parent)
                     try {
-                        val result = withTimeoutOrNull(20_000) { active.relatedWorks(parent, detail.castMembers, libraries) }
+                        var partialResult = false
+                        val result = withTimeoutOrNull(20_000) {
+                            active.relatedWorks(parent, detail.castMembers, libraries,
+                                onIncomplete = { partialResult = true }) { partial ->
+                                if (current()) mutableState.update { state ->
+                                    if (!current()) return@update state
+                                    val frame = state.detailDiscovery[key] ?: return@update state
+                                    val rows = visibleDetailWorks(retainKnownDetailWatchState(partial, state), state.libraries,
+                                        state.spoilerUnlocked && active.spoilerUnlocked).map(::collectionWatchState)
+                                    reconcile(state.copy(detailDiscovery = state.detailDiscovery +
+                                        (key to frame.copy(relatedItems = rows))))
+                                }
+                            }
+                        }
                             ?: throw ApiException("관련 작품을 불러오지 못했습니다.")
                         if (!current()) return@launch
                         mutableState.update { state ->
@@ -895,17 +908,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             val rows = visibleDetailWorks(retainKnownDetailWatchState(result, state), state.libraries,
                                 state.spoilerUnlocked && active.spoilerUnlocked).map(::collectionWatchState)
                             reconcile(state.copy(detailDiscovery = state.detailDiscovery +
-                                (key to frame.copy(relatedItems = rows, relatedLoading = false, relatedLoaded = true, relatedError = null))))
+                                (key to frame.copy(relatedItems = rows, relatedLoading = false, relatedLoaded = true,
+                                    relatedError = if (partialResult) "일부 관련 작품을 불러오지 못했습니다." else null))))
                         }
                     } catch (cancel: CancellationException) {
                         throw cancel
                     } catch (error: Exception) {
                         if (current()) {
-                            if (error is ApiException && error.status == 401) launchRequest { throw error }
-                            else mutableState.update { state ->
+                            if (error is ApiException && error.status == 401) {
+                                mutableState.update { state ->
+                                    val frame = state.detailDiscovery[key] ?: return@update state
+                                    state.copy(detailDiscovery = state.detailDiscovery +
+                                        (key to frame.copy(relatedItems = emptyList(), relatedLoading = false)))
+                                }
+                                launchRequest { throw error }
+                            } else mutableState.update { state ->
                                 val frame = state.detailDiscovery[key] ?: return@update state
-                                state.copy(detailDiscovery = state.detailDiscovery + (key to frame.copy(relatedItems = emptyList(),
-                                    relatedError = "관련 작품을 불러오지 못했습니다.", relatedLoading = false)))
+                                val keepPartial = error !is ApiException || error.status !in setOf(401, 403)
+                                state.copy(detailDiscovery = state.detailDiscovery + (key to frame.copy(
+                                    relatedItems = if (keepPartial) frame.relatedItems else emptyList(),
+                                    relatedError = if (keepPartial && frame.relatedItems.isNotEmpty())
+                                        "일부 관련 작품을 불러오지 못했습니다." else "관련 작품을 불러오지 못했습니다.", relatedLoading = false)))
                             }
                         }
                     } finally {

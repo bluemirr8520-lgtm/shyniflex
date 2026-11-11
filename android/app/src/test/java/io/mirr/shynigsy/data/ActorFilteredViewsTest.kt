@@ -148,17 +148,22 @@ class ActorFilteredViewsTest {
         assertEquals(listOf("/people/tmdb/77"), requests.map { it.requestUrl!!.encodedPath })
     }
 
-    @Test fun changedLoginNeverStartsLocalFallback() = runBlocking {
+    @Test fun changedLoginRejectsResultsFromParallelLookup() = runBlocking {
         changeTokenOnCredits = true
         val actor = CastMember("Synthetic actor", tmdbId = 77, ppkey = "actor-1")
         val parent = MediaItem(11, 9, "Current TV", "show", viewItemId = 101)
 
+        val staleUpdates = java.util.concurrent.atomic.AtomicInteger()
         val error = runCatching {
-            client.actorWorks(actor, parent, listOf(Library(9, "Current TV", "tv")), allowLocalFallback = true)
+            client.actorWorks(actor, parent, listOf(Library(9, "Current TV", "tv")), allowLocalFallback = true) { _, _, _ ->
+                if (client.token != "synthetic-account") staleUpdates.incrementAndGet()
+            }
         }.exceptionOrNull()
 
         assertTrue(error is ApiException && error.status == 401)
-        assertEquals(listOf("/people/tmdb/77"), requests.map { it.requestUrl!!.encodedPath })
+        assertEquals(0, staleUpdates.get())
+        assertTrue(requests.any { it.requestUrl!!.encodedPath == "/people/tmdb/77" })
+        assertTrue(requests.all { it.getHeader("Authorization") == "Bearer synthetic-account" })
     }
 
     private fun cast(ppkey: String): String = """{"metadata_sections":[{"presentation":"person_row",

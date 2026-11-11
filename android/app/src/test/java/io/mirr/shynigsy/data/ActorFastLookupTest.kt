@@ -1,6 +1,10 @@
 package io.mirr.shynigsy.data
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -12,6 +16,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class ActorFastLookupTest {
     private lateinit var server: MockWebServer
@@ -71,10 +77,11 @@ class ActorFastLookupTest {
         val result = client.actorWorks(actor.copy(tmdbId = 77), show, listOf(tv, movies),
             allowLocalFallback = true, scanMovieDetails = false)
 
-        assertEquals(setOf(11, 31), result.items.map { it.id }.toSet())
+        assertEquals(setOf(11, 21, 31), result.items.map { it.id }.toSet())
         assertFalse(result.tvLibrariesOnly)
         assertTrue(result.movieSearchAvailable)
-        assertEquals(listOf("/people/tmdb/77"), requests.map { it.requestUrl!!.encodedPath })
+        assertEquals(setOf("/people/tmdb/77", "/libraries/9/shows"), requests.map { it.requestUrl!!.encodedPath }.toSet())
+        assertFalse(requests.any { it.requestUrl!!.encodedPath.contains("/movies") })
     }
 
     @Test fun movieParentRemainsAuthorizedWhenMovieSearchIsDeferred() = runBlocking {
@@ -113,6 +120,48 @@ class ActorFastLookupTest {
         assertFalse(result.movieSearchAvailable)
         assertTrue(requests.any { it.requestUrl!!.encodedPath == "/libraries/8/movies" })
         assertTrue(requests.any { it.requestUrl!!.encodedPath == "/libraries/8/movies/31" })
+    }
+
+    @Test fun actorLookupWithNoAccountDoesNotSendRequests() = runBlocking {
+        client.token = null
+        val failure = runCatching { client.actorWorks(actor, show, listOf(tv, movies), allowLocalFallback = true) }.exceptionOrNull()
+        assertTrue(failure is ApiException && failure.status == 401)
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test fun accountChangeDuringExplicitMovieDetailRejectsResults() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests += request
+                return when (request.requestUrl!!.encodedPath) {
+                    "/libraries/9/shows" -> MockResponse().setBody("[]")
+                    "/libraries/8/movies" -> MockResponse().setBody("""[{"id":31,"title":"Matched movie"}]""")
+                    "/libraries/8/movies/31" -> {
+                        entered.countDown()
+                        release.await(5, TimeUnit.SECONDS)
+                        MockResponse().setBody(cast("actor-1"))
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        val updates = CopyOnWriteArrayList<List<MediaItem>>()
+        val work = async(Dispatchers.Default) {
+            runCatching { client.actorWorks(actor, show, listOf(tv, movies), allowLocalFallback = true,
+                scanMovieDetails = true, includeExtraMovieScan = true) { items, _, _ -> updates += items } }
+        }
+        try {
+            assertTrue(withContext(Dispatchers.IO) { entered.await(3, TimeUnit.SECONDS) })
+            client.token = "different-synthetic-account"
+            val count = updates.size
+            release.countDown()
+            val failure = withTimeout(5_000L) { work.await() }.exceptionOrNull()
+            assertTrue(failure is ApiException && failure.status == 401)
+            assertEquals(count, updates.size)
+            assertTrue(requests.all { it.getHeader("Authorization") == "Bearer synthetic-account" })
+        } finally { release.countDown() }
     }
 
     private fun cast(ppkey: String): String = """{"metadata_sections":[{"presentation":"person_row",
