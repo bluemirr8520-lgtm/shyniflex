@@ -61,7 +61,8 @@ internal fun CinemaHomeBackdrop(
         // retaining the separate fades that protect the title and page color.
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (hero != null) .07f else .38f)))
         Box(Modifier.fillMaxSize().continueSectionBackdropFade(
-            heroHeight, MaterialTheme.colorScheme.background, wide, cinematic = hero != null))
+            heroHeight, MaterialTheme.colorScheme.background, wide, cinematic = hero != null,
+            brightenArtwork = hero != null))
         // This is after the page-color fade: even a white custom page cannot wash out gold actions.
         if (hero != null) {
             // Fade the extra title protection through the hero's lower edge so

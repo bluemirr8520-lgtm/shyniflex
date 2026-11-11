@@ -56,8 +56,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -169,6 +171,7 @@ internal fun ContinueWatchingSection(
     val background = MaterialTheme.colorScheme.background
     val foreground = MaterialTheme.colorScheme.onSurface
     val accent = MaterialTheme.colorScheme.primary
+    val artworkTextShadow = Shadow(color = Color.Black.copy(alpha = .9f), offset = Offset(0f, 2f), blurRadius = 5f)
     val screenHeight = LocalConfiguration.current.screenHeightDp
 
     BoxWithConstraints(modifier.fillMaxWidth().hoverable(hoverInteraction)
@@ -222,13 +225,13 @@ internal fun ContinueWatchingSection(
                         horizontalAlignment = if (wide) Alignment.Start else Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
                         Text(hero.showTitle ?: hero.title, color = Color.White,
-                            style = MaterialTheme.typography.headlineSmall,
+                            style = MaterialTheme.typography.headlineSmall.copy(shadow = artworkTextShadow),
                             fontSize = if (wide) 28.sp else 26.sp,
                             textAlign = if (wide) TextAlign.Start else TextAlign.Center,
                             fontWeight = FontWeight.Bold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("continue-hero-title"))
                         Text(continueHeroMetadata(hero), color = Color.White.copy(alpha = .9f),
-                            style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelLarge.copy(shadow = artworkTextShadow), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("continue-hero-meta"))
                         Button(onClick = { onResume(selectedItem) }, enabled = !busy,
                             shape = RoundedCornerShape(50),
@@ -252,14 +255,14 @@ internal fun ContinueWatchingSection(
                         }
                         Text(hero.summary, color = Color.White.copy(alpha = .9f),
                             textAlign = if (wide) TextAlign.Start else TextAlign.Center,
-                            style = MaterialTheme.typography.bodySmall, minLines = 2, maxLines = 2,
+                            style = MaterialTheme.typography.bodySmall.copy(shadow = artworkTextShadow), minLines = 2, maxLines = 2,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("continue-hero-summary"))
                     }
                 }
                 Row(Modifier.padding(horizontal = 24.dp, vertical = if (wide) 4.dp else 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("계속 시청", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("계속 시청", color = Color.White, style = MaterialTheme.typography.titleLarge.copy(shadow = artworkTextShadow), fontWeight = FontWeight.Bold)
                 }
                 LazyRow(state = row, modifier = Modifier.fillMaxWidth().testTag("continue-watching-row"),
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = if (wide) 12.dp else 20.dp),
@@ -317,17 +320,21 @@ internal fun cinematicContinueFadeColors(background: Color): Array<Pair<Float, C
     cinematicContinueFadeStops().map { (position, alpha) -> position to background.copy(alpha = alpha) }.toTypedArray()
 
 internal fun Modifier.continueSectionBackdropFade(
-    heroHeight: Dp, background: Color, wide: Boolean, cinematic: Boolean = false,
+    heroHeight: Dp, background: Color, wide: Boolean, cinematic: Boolean = false, brightenArtwork: Boolean = true,
 ): Modifier =
     drawWithCache {
         val height = size.height.coerceAtLeast(1f)
         val heroEnd = heroHeight.toPx().coerceIn(0f, height)
         val cardStart = (heroEnd + 36.dp.toPx()).coerceAtMost(height)
         val captionStart = (height - 56.dp.toPx()).coerceIn(cardStart, height)
+        // Let approximately 50% more of the image through, capped at full brightness.
+        // Page-color and text-protection fades remain separate and unchanged.
+        fun shadeAlpha(original: Float): Float = if (brightenArtwork)
+            (1f - (1f - original) * 1.5f).coerceAtLeast(0f) else original
         val shade = if (wide) Brush.horizontalGradient(
-            0f to Color.Black.copy(alpha = .78f), .58f to Color.Black.copy(alpha = .50f),
-            1f to Color.Black.copy(alpha = .02f))
-        else Brush.verticalGradient(listOf(Color.Black.copy(alpha = .48f), Color.Black.copy(alpha = .48f)))
+            0f to Color.Black.copy(alpha = shadeAlpha(.78f)), .58f to Color.Black.copy(alpha = shadeAlpha(.50f)),
+            1f to Color.Black.copy(alpha = shadeAlpha(.02f)))
+        else Brush.verticalGradient(listOf(Color.Black.copy(alpha = shadeAlpha(.48f)), Color.Black.copy(alpha = shadeAlpha(.48f))))
         val fade = if (cinematic) Brush.verticalGradient(
             *cinematicContinueFadeColors(background),
         ) else Brush.verticalGradient(
