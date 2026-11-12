@@ -2103,13 +2103,33 @@ class ShyniClient(
             val playbackProgress = async(start = CoroutineStart.UNDISPATCHED) {
                 stage("이어보기 위치 조회") {
                     try {
-                        progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler,
-                            lane = ShyniRequestLane.PLAYBACK), item.id)
+                        // Resume data improves the card's existing position, but must not
+                        // hold an already authorized stream behind the API's 45s read timeout.
+                        // Include dispatcher queueing and cancel the real HTTP call at expiry.
+                        withTimeout(PLAYBACK_PROGRESS_BUDGET_MS) {
+                            progressFor(request("/playback/progress?item_ids=${item.id}&library_view_id=$viewId", spoiler = item.isSpoiler,
+                                lane = ShyniRequestLane.PLAYBACK, singleAttempt = true,
+                                expectedToken = accountToken, failFastAuthorization = true), item.id)
+                        }
+                    } catch (_: TimeoutCancellationException) {
+                        // An outer cancellation, changed account or revoked private grant
+                        // must not become a successful fallback to the card's saved state.
+                        requireCurrentAuthorization()
+                        null
+                    } catch (cancel: CancellationException) {
+                        throw cancel
                     } catch (error: ApiException) {
                         // A selected decision (or recovered ticket) already authorizes this source.
-                        // A broken canonical progress identity must not discard its valid stream.
-                        // Keep the card's resume/watch state when this optional lookup is unknown.
-                        if (!error.isEpisodeIdentityFailure()) throw error
+                        // Only unavailable optional history may fall back; access denials,
+                        // malformed responses and unrelated identity failures remain errors.
+                        requireCurrentAuthorization()
+                        val transient = error.status in setOf(408, 429, 500, 502, 503, 504) ||
+                            (error.status == 0 && error.cause is IOException && error.cause !is javax.net.ssl.SSLException)
+                        if (!error.isEpisodeIdentityFailure() && !transient) throw error
+                        null
+                    } catch (error: IOException) {
+                        requireCurrentAuthorization()
+                        if (error is javax.net.ssl.SSLException) throw error
                         null
                     }
                 }
@@ -2585,7 +2605,7 @@ class ShyniClient(
     private suspend fun request(path: String, body: JSONObject? = null, authenticated: Boolean = true, method: String = "POST", responseLimit: Long? = null,
         spoiler: Boolean = false, spoilerToken: String? = null, expectContinueResponse: Boolean = false,
         singleAttempt: Boolean = false, lane: ShyniRequestLane? = null, expectedToken: String? = null,
-        onEnqueued: (() -> Unit)? = null): Any = withContext(Dispatchers.Default) {
+        onEnqueued: (() -> Unit)? = null, failFastAuthorization: Boolean = false): Any = withContext(Dispatchers.Default) {
         val url = resolve(path)
         if (!sameOrigin(url)) throw ApiException("다른 서버로 인증 정보를 전달할 수 없습니다.")
         val builder = Request.Builder().url(url).header("Accept", "application/json")
@@ -2611,6 +2631,10 @@ class ShyniClient(
                 override fun onResponse(call: Call, response: Response) {
                     try {
                         val result = response.use {
+                            // A short optional-read deadline must not hide an already received
+                            // authorization denial while its explanatory body is still arriving.
+                            if (failFastAuthorization && it.code in setOf(401, 403))
+                                throw ApiException(errorMessage(null, it.code), it.code)
                             val responseBody = it.body
                             val text = if (responseLimit == null) responseBody?.string().orEmpty() else {
                                 if (responseBody != null && responseBody.contentLength() > responseLimit) throw ApiException("서버 응답이 너무 큽니다.")
@@ -2682,5 +2706,6 @@ class ShyniClient(
     companion object {
         const val PAGE_SIZE = 60
         const val RECENT_ITEMS_PER_LIBRARY = 20
+        private const val PLAYBACK_PROGRESS_BUDGET_MS = 2_000L
     }
 }

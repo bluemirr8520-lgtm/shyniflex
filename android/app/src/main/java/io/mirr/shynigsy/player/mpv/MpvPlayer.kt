@@ -80,6 +80,7 @@ class MpvPlayer(
     private var pendingStartMs = 0L
     private var nativePaused = true
     private val readiness = MpvPlaybackReadiness()
+    private val rebufferPolicy = MpvRebufferPolicy(playbackProfile.cacheSeconds, playbackProfile.forwardCacheMiB)
     private var seekable = false
     private var playback = PlaybackParameters.DEFAULT
     private var selection = TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
@@ -121,6 +122,7 @@ class MpvPlayer(
             // A property update may be coalesced or lost on event-queue overflow.
             // MPV's keep-open EOF flag is authoritative; position alone is not.
             if (reconcileNativeEof()) invalidateState()
+            updateRebufferWait()
             if (loaded && status != Player.STATE_ENDED) main.postDelayed(this, 1_000)
         }
     }
@@ -156,6 +158,7 @@ class MpvPlayer(
                     MPVLib.setPropertyBoolean("pause", true)
                 }
             }
+            updateRebufferWait()
             invalidateState()
         }
     }
@@ -172,6 +175,7 @@ class MpvPlayer(
                 playReason = Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY
                 MPVLib.setPropertyBoolean("pause", true)
                 abandonFocus()
+                updateRebufferWait()
                 invalidateState()
             }
         }
@@ -274,6 +278,7 @@ class MpvPlayer(
     override fun handleSetMediaItems(mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
         loadGeneration++
         main.removeCallbacks(eofCheck); eofState.reset()
+        resetRebufferWait()
         stopRequested = true
         MPVLib.command(arrayOf("stop"))
         item = mediaItems.firstOrNull(); itemUid = Any()
@@ -294,6 +299,7 @@ class MpvPlayer(
         val media = item?.localConfiguration ?: return done()
         loadGeneration++
         main.removeCallbacks(eofCheck); eofState.reset()
+        resetRebufferWait()
         failure = null; stopRequested = false; startObserved = false; loaded = false; loading = true; status = Player.STATE_BUFFERING
         firstFrame = false; nativeFirstFrameSeen = false; readiness.reset(); bufferedMs = pendingStartMs
         nativePaused = !requestedPlay || focusSuppressed
@@ -332,6 +338,7 @@ class MpvPlayer(
             resumeAfterFocus = focusSuppressed
         } else { focusSuppressed = false; resumeAfterFocus = false; abandonFocus() }
         MPVLib.setPropertyBoolean("pause", !playWhenReady || focusSuppressed)
+        updateRebufferWait()
         return done()
     }
 
@@ -339,6 +346,7 @@ class MpvPlayer(
         val requested = positionMs.takeUnless { it == C.TIME_UNSET }?.coerceAtLeast(0) ?: 0
         val target = conversionTimeline?.clamp(requested) ?: requested
         this.positionMs = target; pendingStartMs = target; positionUpdatedAt = SystemClock.elapsedRealtime()
+        resetRebufferWait()
         clearCues()
         if (isServerConverted) {
             if (durationMs > 0 && target >= durationMs) {
@@ -453,6 +461,21 @@ class MpvPlayer(
     fun subtitleTrackIdForStreamIndex(streamIndex: Int): String? {
         if (!alive || !loaded || streamIndex < 0) return null
         return nativeTracks.firstOrNull { it.type == "sub" && it.streamIndex == streamIndex }?.id?.toString()
+    }
+
+    /** Numeric transport/decoder observations only: no URL, path, account or subtitle text. */
+    internal fun streamDiagnostics(): MpvStreamDiagnostics? {
+        if (!alive || !loaded || released) return null
+        return MpvStreamDiagnostics(
+            inputBytesPerSecond = MPVLib.getPropertyDouble("demuxer-cache-state/raw-input-rate"),
+            videoBitsPerSecond = MPVLib.getPropertyDouble("video-bitrate"),
+            audioBitsPerSecond = MPVLib.getPropertyDouble("audio-bitrate"),
+            cacheSeconds = MPVLib.getPropertyDouble("demuxer-cache-duration"),
+            cachePaused = MPVLib.getPropertyBoolean("paused-for-cache") == true,
+            hardwareDecoder = MPVLib.getPropertyString("hwdec-current"),
+            droppedFrames = MPVLib.getPropertyInt("decoder-frame-drop-count")?.toLong(),
+            rebufferTargetSeconds = rebufferPolicy.waitSeconds,
+        )
     }
 
     /** A strict native list and decoded color properties are required before trying Exo. */
@@ -577,6 +600,7 @@ class MpvPlayer(
             "seekable" -> seekable = if (isServerConverted) durationMs > 0 else value
             "paused-for-cache" -> {
                 freezePlaybackClock()
+                updateRebufferWait(value)
                 readiness.cachePausedChanged(value)
                 updatePlaybackReadiness()
             }
@@ -585,6 +609,7 @@ class MpvPlayer(
                 val seeking = MPVLib.getPropertyBoolean("seeking") ?: value
                 eofState.nativeSeekingChanged(seeking)
                 if (seeking) {
+                    resetRebufferWait()
                     freezePlaybackClock(); readiness.seekStarted(); updatePlaybackReadiness()
                 } else reconcileNativeEof()
             }
@@ -643,6 +668,7 @@ class MpvPlayer(
             }
             MPVLib.MpvEvent.MPV_EVENT_SEEK -> {
                 if (MPVLib.getPropertyBoolean("seeking") != false) {
+                    resetRebufferWait()
                     freezePlaybackClock(); readiness.seekStarted(); updatePlaybackReadiness()
                     eofState.nativeSeekingChanged(true)
                 }
@@ -741,6 +767,21 @@ class MpvPlayer(
         if (!loaded || stopRequested || failure != null || status == Player.STATE_ENDED || status == Player.STATE_IDLE) return
         status = if (readiness.ready) Player.STATE_READY else Player.STATE_BUFFERING
         loading = !readiness.ready
+    }
+    private fun resetRebufferWait() {
+        rebufferPolicy.reset()?.let { MPVLib.setPropertyDouble("cache-pause-wait", it.toDouble()) }
+    }
+
+    private fun updateRebufferWait(cachePaused: Boolean = readiness.cachePaused) {
+        val scheme = item?.localConfiguration?.uri?.scheme
+        val eligible = loaded && nativeFirstFrameSeen && requestedPlay && !focusSuppressed &&
+            !readiness.restartPending && !stopRequested && failure == null && status != Player.STATE_ENDED &&
+            !isServerConverted && (scheme == "https" || scheme == "http") &&
+            MPVLib.getPropertyBoolean("seeking") == false && MPVLib.getPropertyBoolean("eof-reached") == false
+        rebufferPolicy.observe(SystemClock.elapsedRealtime(), cachePaused, eligible,
+            progressing = eligible && readiness.ready && !nativePaused)?.let {
+            MPVLib.setPropertyDouble("cache-pause-wait", it.toDouble())
+        }
     }
     private fun requestFocus(): Boolean {
         if (!handleFocus || gain == 0f) return true

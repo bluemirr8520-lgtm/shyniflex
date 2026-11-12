@@ -88,6 +88,9 @@ private fun Player.subtitleTrackIdForStreamIndex(index: Int): String? =
 /** MPV decodes media while the original Shyni controls and subtitle Canvas remain native. */
 class NativePlayerActivity : AppCompatActivity() {
     private val television by lazy { isTelevision() }
+    private var diagnosticDialog: AlertDialog? = null
+    private var lastDiagnosticAt = 0L
+    private var diagnosticStartedAt = 0L
     private lateinit var spec: PlaybackSpec
     private lateinit var client: ShyniClient
     private lateinit var playerView: PlayerView
@@ -276,6 +279,7 @@ class NativePlayerActivity : AppCompatActivity() {
             if (closeLockedSpoilerPlayback()) return
             ensureSpoilerPlaybackReauthentication()
             val active = player
+            if (active != null) samplePlaybackDiagnostics(active)
             if (active != null && playbackEngineSettled(mpvProbePending, active is ExoPlayer && !exoValidated) &&
                 !refreshing && !gestures.isSeekGestureActive && active.reconcilePlaybackCompletion()) {
                 finishCompletedPlayback()
@@ -961,6 +965,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun preparePlayback(autoStart: Boolean) {
         prepared = false
         releasePlayer()
+        diagnosticStartedAt = SystemClock.elapsedRealtime()
+        lastDiagnosticAt = 0L
         playbackFirstFrameReported = false
         playerView.visibility = View.VISIBLE
         errorPanel.getChildAt(1).apply { visibility = View.VISIBLE; isEnabled = true }
@@ -1440,6 +1446,57 @@ class NativePlayerActivity : AppCompatActivity() {
         view.stateListAnimator = null
     }
 
+    /** Sparse numeric-only local logs. Private playback is never sampled into logcat. */
+    private fun samplePlaybackDiagnostics(active: Player) {
+        val now = SystemClock.elapsedRealtime()
+        if (spec.sourceItem?.isSpoiler != false || now - lastDiagnosticAt < 5_000 ||
+            (now - diagnosticStartedAt > 120_000 && active.playbackState != Player.STATE_BUFFERING)) return
+        lastDiagnosticAt = now
+        Log.i("ShyniflexPlayback", playbackDiagnosticLog(if (active is MpvPlayer) "mpv" else "exo",
+            active.playbackState, playbackFirstFrameReported, active.isPlaying,
+            (active as? MpvPlayer)?.streamDiagnostics()))
+    }
+
+    private fun showPlaybackDiagnostics() {
+        diagnosticDialog?.dismiss()
+        val dialog = AlertDialog.Builder(this).setTitle("재생 상태")
+            .setMessage("확인 중…").setPositiveButton("닫기", null).create()
+        diagnosticDialog = dialog
+        val refresh = object : Runnable {
+            override fun run() {
+                if (!dialog.isShowing || !visible || exiting || isDestroyed) return
+                val active = player ?: return
+                val native = (active as? MpvPlayer)?.streamDiagnostics()
+                val cache = native?.cacheSeconds ?: (active.totalBufferedDuration.coerceAtLeast(0) / 1000.0)
+                val state = when (active.playbackState) {
+                    Player.STATE_BUFFERING -> "불러오는 중"
+                    Player.STATE_ENDED -> "재생 완료"
+                    Player.STATE_READY -> if (active.isPlaying) "재생 중" else "일시정지"
+                    else -> "준비 중"
+                }
+                dialog.setMessage(buildString {
+                    appendLine("${playbackModeLabel(spec)} · ${if (active is MpvPlayer) "MPV" else "ExoPlayer"}")
+                    appendLine(state)
+                    appendLine("미리 받은 영상: ${diagnosticNumber(cache)}초")
+                    if (native != null) {
+                        appendLine("디코딩: ${diagnosticDecoder(native.hardwareDecoder)}")
+                        appendLine("수신 속도: ${diagnosticNumber(native.inputBytesPerSecond?.times(8)?.div(1_000_000))} Mbps")
+                        appendLine("영상 비트레이트: ${diagnosticNumber(native.videoBitsPerSecond?.div(1_000_000))} Mbps")
+                        appendLine("버퍼 회복 목표: ${native.rebufferTargetSeconds}초")
+                        appendLine("\n속도는 최근 패킷의 추정값입니다. 미리 받기가 끝나면 수신 속도가 낮아질 수 있습니다.")
+                    }
+                }.trim())
+                handler.postDelayed(this, 1_000)
+            }
+        }
+        dialog.setOnDismissListener {
+            handler.removeCallbacks(refresh)
+            if (diagnosticDialog === dialog) diagnosticDialog = null
+        }
+        dialog.show()
+        refresh.run()
+    }
+
     private fun showSettings() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1526,6 +1583,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 -1 -> {
                     addRow("배속", speedLabel()) { showSpeed() }
                     addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
+                    addRow("재생 상태", playbackModeLabel(spec)) { showPlaybackDiagnostics() }
                     addRow("화면 크기", resizeLabel()) {
                         AlertDialog.Builder(this).setTitle("화면 크기")
                             .setSingleChoiceItems(resizeChoices.map { it.label }.toTypedArray(), resizeChoiceIndex()) { choice, position ->
@@ -3086,6 +3144,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        diagnosticDialog?.dismiss()
+        diagnosticDialog = null
         dismissTvSubtitlePosition()
         tvSegmentFocusGate.clearHeldKeys()
         finishRemoteSeeking()

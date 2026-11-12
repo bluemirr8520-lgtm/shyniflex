@@ -64,6 +64,159 @@ class Native4kStreamingTest {
 
     @Test fun unresponsiveServerCanBeStoppedAndReleasedWithoutBlockingPlaybackControls() = slowServerCase(cancelWhileWaiting = true)
 
+    @Test fun nativeRebufferTargetGrowsOnlyAfterARealNetworkUnderrunAndPlaybackRecovers() {
+        val context = instrumentation.targetContext
+        requireSyntheticEnvironment(context)
+        val clip = instrumentation.context.assets.open("media3/$FIXTURE").use { it.readBytes() }
+        val timings = Timings()
+        StreamingFixture(clip, hold = true).use { server ->
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                var player: MpvPlayer? = null
+                var view: PlayerView? = null
+                val targetAtFirstFrame = AtomicReference<Double?>()
+                try {
+                    scenario.onActivity { activity ->
+                        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        val video = PlayerView(activity).apply { useController = false }
+                        activity.setContentView(video)
+                        val active = MpvPlayer(activity).apply {
+                            volume = 0f; setAudioAttributes(AudioAttributes.DEFAULT, false)
+                            addListener(object : Player.Listener {
+                                override fun onRenderedFirstFrame() {
+                                    targetAtFirstFrame.compareAndSet(null, nativeNumber("cache-pause-wait"))
+                                    timings.firstFrameAt.compareAndSet(0, SystemClock.elapsedRealtime())
+                                    server.firstFrame.countDown()
+                                }
+                                override fun onPlaybackStateChanged(playbackState: Int) { timings.state(playbackState) }
+                                override fun onPlayerError(error: PlaybackException) { timings.error.set(error.errorCodeName) }
+                            })
+                        }
+                        player = active; view = video; video.player = active
+                        assertEquals("Initial preparation must keep the original one-second recovery target", 1.0,
+                            nativeNumber("cache-pause-wait")!!, 0.001)
+                        assertEquals("The larger recovery target must not become a startup prebuffer", false,
+                            MPVLib.getPropertyBoolean("cache-pause-initial"))
+                        timings.startedAt = SystemClock.elapsedRealtime()
+                        active.setMediaItem(MediaItem.fromUri(server.url)); active.prepare(); active.play()
+                    }
+                    val active = player!!
+                    await("The fast-start prefix must render without waiting for the withheld body", 15_000, server, timings) {
+                        timings.firstFrameAt.get() > 0
+                    }
+                    // This server cannot release the remaining body until a real frame
+                    // has rendered. A startup prebuffer that waits for more fails here.
+                    assertEquals("Initial buffering must not count as a playback underrun", 1.0,
+                        targetAtFirstFrame.get()!!, 0.001)
+                    assertTrue("The first frame must precede release of the remaining body",
+                        server.stallFinishedAt.get() == 0L || timings.firstFrameAt.get() < server.stallFinishedAt.get())
+                    await("A real cache underrun must increase the native recovery target", 8_000, server, timings) {
+                        main {
+                            active.playbackState == Player.STATE_BUFFERING &&
+                                MPVLib.getPropertyBoolean("paused-for-cache") == true &&
+                                nativeNumber("cache-pause-wait") == 2.0
+                        }
+                    }
+                    verifyRecovery(active, server, timings)
+                    main {
+                        assertFalse("The helper pauses after confirmed recovery", active.playWhenReady)
+                        assertEquals("A user pause must preserve, not increase, the recovery target", 2.0,
+                            nativeNumber("cache-pause-wait")!!, 0.001)
+                    }
+                    Thread.sleep(250)
+                    main {
+                        assertEquals("A settled user pause is not another network underrun", 2.0,
+                            nativeNumber("cache-pause-wait")!!, 0.001)
+                        active.seekTo(6_000)
+                    }
+                    await("A paused seek must return to its source position without retaining a long refill wait", 8_000, server, timings) {
+                        main { active.playbackState == Player.STATE_READY && kotlin.math.abs(active.currentPosition - 6_000) < 500 }
+                    }
+                    main {
+                        assertFalse(active.playWhenReady)
+                        assertEquals("An explicit seek resets the adaptive target", 1.0,
+                            nativeNumber("cache-pause-wait")!!, 0.001)
+                        active.play()
+                    }
+                    await("Playback must still advance after the seek and recovery", 5_000, server, timings) {
+                        main { active.isPlaying && active.currentPosition >= 6_500 }
+                    }
+                    assertNull(main { active.playerError })
+                    server.assertHealthy()
+                } finally { main { view?.player = null; player?.release() } }
+            }
+        }
+    }
+
+    @Test fun delayedNetworkSeekAndUserPauseDoNotIncreaseTheRecoveryTarget() {
+        val context = instrumentation.targetContext
+        requireSyntheticEnvironment(context)
+        val clip = instrumentation.context.assets.open("media3/$FIXTURE").use { it.readBytes() }
+        val timings = Timings()
+        StreamingFixture(clip, hold = false, startupHold = true).use { server ->
+            ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+                var player: MpvPlayer? = null
+                var view: PlayerView? = null
+                try {
+                    scenario.onActivity { activity ->
+                        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        val video = PlayerView(activity).apply { useController = false }
+                        activity.setContentView(video)
+                        val active = MpvPlayer(activity).apply {
+                            volume = 0f; setAudioAttributes(AudioAttributes.DEFAULT, false)
+                            addListener(object : Player.Listener {
+                                override fun onRenderedFirstFrame() {
+                                    timings.firstFrameAt.compareAndSet(0, SystemClock.elapsedRealtime())
+                                }
+                                override fun onPlayerError(error: PlaybackException) { timings.error.set(error.errorCodeName) }
+                            })
+                        }
+                        player = active; view = video; video.player = active
+                        // A paused prepare renders the prefix without consuming it.
+                        active.setMediaItem(MediaItem.fromUri(server.url)); active.prepare()
+                    }
+                    val active = player!!
+                    await("The paused prefix must render before the explicit seek", 15_000, server, timings) {
+                        main { timings.firstFrameAt.get() > 0 && active.playbackState == Player.STATE_READY }
+                    }
+                    assertTrue(server.startupBlocked.await(2, TimeUnit.SECONDS))
+                    main { active.play(); active.seekTo(6_000) }
+                    await("The real seek must wait for the withheld source bytes", 5_000, server, timings) {
+                        main { active.playbackState == Player.STATE_BUFFERING && MPVLib.getPropertyBoolean("seeking") == true }
+                    }
+                    Thread.sleep(250)
+                    main {
+                        assertEquals("Waiting for an explicit seek must not count as an underrun", 1.0,
+                            nativeNumber("cache-pause-wait")!!, 0.001)
+                        active.pause()
+                    }
+                    Thread.sleep(250)
+                    main {
+                        assertFalse(active.playWhenReady)
+                        assertEquals("A paused seek must not increase the adaptive target", 1.0,
+                            nativeNumber("cache-pause-wait")!!, 0.001)
+                    }
+                    server.releaseStartup()
+                    await("Releasing the source must complete the paused seek", 8_000, server, timings) {
+                        main { active.playbackState == Player.STATE_READY && kotlin.math.abs(active.currentPosition - 6_000) < 500 }
+                    }
+                    main {
+                        assertFalse(active.isPlaying)
+                        assertEquals(1.0, nativeNumber("cache-pause-wait")!!, 0.001)
+                        active.play()
+                    }
+                    await("The real source clock must advance after user resume", 5_000, server, timings) {
+                        main { active.isPlaying && active.currentPosition >= 6_500 }
+                    }
+                    assertNull(main { active.playerError })
+                    server.assertHealthy()
+                } finally {
+                    server.releaseStartup()
+                    main { view?.player = null; player?.release() }
+                }
+            }
+        }
+    }
+
     @Test fun nativeStringTrackSnapshotsPreserveAudioVideoAndGlobalStreamIdentity() {
         val context = instrumentation.targetContext
         requireSyntheticEnvironment(context)

@@ -141,9 +141,9 @@ class PlaybackPreparationTest {
         assertTrue(server.requestCount in 3..4)
     }
 
-    @Test fun progressAccessDenialsAndUnrelatedFailuresRemainFatalWithTheirOriginalCause() = runBlocking {
+    @Test fun progressAccessDenialsAndUnrelatedFailuresRemainFatal() = runBlocking {
         val errors = listOf(401 to identityMessage, 403 to identityMessage,
-            404 to "시청 기록 경로를 찾을 수 없습니다.", 503 to "서버가 일시적으로 응답하지 않습니다.")
+            404 to "시청 기록 경로를 찾을 수 없습니다.")
         for ((status, message) in errors) {
             respond(decision)
             respond("""{"ticket":"fixture-media-ticket"}""")
@@ -151,10 +151,17 @@ class PlaybackPreparationTest {
                 "/playback/progress", MockResponse().setResponseCode(status)
                     .setBody(JSONObject().put("detail", message).toString()))
             val caught = runCatching { client.playback(item) }.exceptionOrNull()
-            failure(caught, "이어보기 위치 조회", status, message)
+            // Optional progress rejects authorization as soon as the headers arrive,
+            // without waiting for a slow error body to exhaust its short deadline.
+            val expectedMessage = when (status) {
+                401 -> "로그인이 만료되었거나 계정 정보가 올바르지 않습니다."
+                403 -> "이 항목에 접근할 권한이 없습니다."
+                else -> message
+            }
+            failure(caught, "이어보기 위치 조회", status, expectedMessage)
             repeat(4) { request() }
         }
-        assertEquals(16, server.requestCount)
+        assertEquals(12, server.requestCount)
     }
 
     @Test fun conversionAndSubtitleTicketsStaySeparateWhenProgressIdentityFails() = runBlocking {
