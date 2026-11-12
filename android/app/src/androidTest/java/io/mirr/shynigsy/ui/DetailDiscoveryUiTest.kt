@@ -89,12 +89,57 @@ class DetailDiscoveryUiTest {
         screen.onNodeWithTag("detail-actor-${compactMediaIdentity(movie)}").performScrollTo().assertIsDisplayed()
     }
 
+    @Test fun actorCountsIncludeOffscreenWorksAndExcludeLockedResults() {
+        val shows = (0 until 15).map { index ->
+            work.copy(id = 200 + index, title = "합성 시리즈 $index", viewItemId = 700 + index)
+        }
+        val movies = (0 until 2).map { index ->
+            MediaItem(400 + index, 9, "합성 영화 $index", "movie", viewItemId = 900 + index)
+        }
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorItems = shows + movies + privateWork, actorLoaded = true))
+        render(frame)
+        screen.onNodeWithTag("detail-actor-heading").performScrollTo()
+            .assertTextEquals("합성 배우의 출연작 · 17편")
+        screen.onNodeWithTag("detail-actor-counts").performScrollTo()
+            .assertTextEquals("확인된 작품: 시리즈 15편 · 영화 2편")
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(privateWork)}").assertDoesNotExist()
+    }
+
     @Test fun localActorLoadingExplainsTheBroaderSearch() {
         val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
             selectedActor = actor, actorLoading = true))
         render(frame)
         screen.onNodeWithTag("detail-actor-loading").performScrollTo()
             .assertTextEquals("서버에서 출연작을 불러오는 중입니다")
+    }
+
+    @Test fun libraryProgressAndCountsUpdateWhilePartialWorksRemainUsable() {
+        val movie = MediaItem(400, 9, "합성 영화", "movie", viewItemId = 900)
+        val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,
+            selectedActor = actor, actorItems = listOf(work), actorLoading = true,
+            actorChecked = 1, actorTotal = 3))
+        var opened: MediaItem? = null
+        render(frame, onOpen = { opened = it })
+        screen.onNodeWithTag("detail-actor-loading").performScrollTo()
+            .assertTextEquals("라이브러리 1/3 확인 · 출연작을 불러오는 중입니다")
+        screen.onNodeWithTag("detail-actor-heading").performScrollTo()
+            .assertTextEquals("합성 배우의 출연작 · 1편")
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(work)}").performScrollTo()
+            .assertIsEnabled().performClick()
+        screen.runOnIdle {
+            assertEquals(work, opened)
+            frame.value = frame.value!!.copy(actorItems = listOf(work, movie), actorChecked = 2)
+        }
+        screen.onNodeWithTag("detail-actor-heading").performScrollTo()
+            .assertTextEquals("합성 배우의 출연작 · 2편")
+        screen.onNodeWithTag("detail-actor-counts").performScrollTo()
+            .assertTextEquals("확인된 작품: 시리즈 1편 · 영화 1편")
+        screen.onNodeWithTag("detail-actor-loading").performScrollTo()
+            .assertTextEquals("라이브러리 2/3 확인 · 출연작을 불러오는 중입니다")
+        screen.onNodeWithTag("detail-actor-${compactMediaIdentity(movie)}").performScrollTo()
+            .assertIsEnabled().performClick()
+        screen.runOnIdle { assertEquals(movie, opened) }
     }
 
     @Test fun actorSearchDisplaysProgressAlongsideAlreadyFoundMovies() {

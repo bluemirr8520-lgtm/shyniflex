@@ -129,7 +129,14 @@ internal fun DetailDiscoverySections(
         }
         frame?.selectedActor?.let { actor ->
             Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.testTag("detail-actor-works")) {
-                Text("${actor.name}의 작품", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("${actor.name}의 출연작 · ${actorWorks.size}편", fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold, modifier = Modifier.testTag("detail-actor-heading"))
+                if (actorWorks.isNotEmpty()) {
+                    val seriesCount = actorWorks.count { it.type == "show" || it.type == "tv" }
+                    val movieCount = actorWorks.count { it.type == "movie" }
+                    Text("확인된 작품: 시리즈 ${seriesCount}편 · 영화 ${movieCount}편", fontSize = 11.sp,
+                        modifier = Modifier.testTag("detail-actor-counts"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 if (frame.currentLibraryOnly) Text("현재 라이브러리", fontSize = 11.sp,
                     modifier = Modifier.testTag("detail-actor-scope"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else if (frame.tvLibrariesOnly) Text("전체 시리즈 라이브러리", fontSize = 11.sp,
@@ -139,6 +146,8 @@ internal fun DetailDiscoverySections(
                         if (frame.movieSearchRunning && frame.actorTotal != null)
                             "영화 출연작을 검색 중입니다. ${frame.actorChecked}/${frame.actorTotal} 확인"
                         else if (frame.movieSearchRunning) "영화 출연작을 검색 중입니다"
+                        else if (frame.actorTotal != null && frame.actorTotal > 0)
+                            "라이브러리 ${frame.actorChecked}/${frame.actorTotal} 확인 · 출연작을 불러오는 중입니다"
                         else "서버에서 출연작을 불러오는 중입니다",
                         fontSize = 12.sp, modifier = Modifier.testTag("detail-actor-loading"))
                     frame.actorError != null -> {

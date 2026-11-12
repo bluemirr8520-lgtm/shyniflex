@@ -65,10 +65,12 @@ class ShyniClient(
     private val requestLanes = ShyniRequestLanes(client)
     private data class CachedItems(val at: Long, val items: List<MediaItem>, val total: Int)
     private val browseCache = ConcurrentHashMap<String, CachedItems>()
+    private val actorWorksMemo = ActorWorksMemo()
     private val browseCacheGeneration = java.util.concurrent.atomic.AtomicLong()
     @Synchronized private fun clearBrowseCache() {
         browseCacheGeneration.incrementAndGet()
         browseCache.clear()
+        actorWorksMemo.clear()
     }
     @Synchronized private fun cacheBrowsePage(key: String, generation: Long, page: CachedItems): CachedItems {
         if (generation != browseCacheGeneration.get()) throw CancellationException("목록 요청이 종료되었습니다.")
@@ -1236,9 +1238,39 @@ class ShyniClient(
         allowLocalFallback: Boolean = false,
         scanMovieDetails: Boolean = false,
         includeExtraMovieScan: Boolean = false,
-        onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks =
-        actorWorksInSession(actor, parent, libraries, allowLocalFallback, scanMovieDetails,
-            includeExtraMovieScan, onProgress, token, spoilerKey(), spoilerGrant(), null, true)
+        onProgress: (List<MediaItem>, Int, Int) -> Unit = { _, _, _ -> }): ActorWorks {
+        val account = token
+        val identity = spoilerKey()
+        val grant = spoilerGrant()
+        val scopes = libraries.filter { it.id > 0 && it.type in setOf("movie", "tv") }
+            .groupBy { it.id }.values.mapNotNull { rows ->
+                // Conflicting types cannot identify one authorized View reliably.
+                if (rows.map { it.type }.distinct().size != 1) null
+                else rows.firstOrNull { it.isSpoiler } ?: rows.first()
+            }
+        suspend fun validate() {
+            currentCoroutineContext().ensureActive()
+            if (account.isNullOrBlank() || token != account) throw ApiException("로그인 정보가 변경되었습니다. 다시 여세요.", 401)
+            if (identity != spoilerKey() || (grant != null && !SpoilerAccessRegistry.isCurrent(identity, grant)) ||
+                (grant == null && spoilerGrant() != null)) throw ApiException("스포일러 표시 상태가 변경되었습니다. 다시 여세요.", 403)
+            val parentScopes = scopes.filter { it.id == parent.libraryId }
+            val type = when (parent.type) { "movie" -> "movie"; "show", "tv", "season", "episode" -> "tv"; else -> null }
+            if (parent.id <= 0 || type == null || parentScopes.none { it.type == type } ||
+                ((parent.isSpoiler || parentScopes.any { it.isSpoiler }) && grant == null))
+                throw ApiException("이 라이브러리에 접근할 수 없습니다.", 403)
+        }
+        // The complete authorized catalogue and capability generation form part
+        // of the key. Never reuse works after logout, locking or a scope change.
+        val key = listOf(identity, grant?.generation, grant?.token, actor.tmdbId, actor.ppkey,
+            actor.name, parent.libraryId, parent.type, parent.isSpoiler, allowLocalFallback,
+            scanMovieDetails, includeExtraMovieScan,
+            if (scanMovieDetails && !includeExtraMovieScan) "${parent.id}:${parent.showId}" else null,
+            scopes.map { "${it.id}:${it.type}:${it.isSpoiler}" }.distinct().sorted().joinToString(",")).joinToString("\u0000")
+        return actorWorksMemo.getOrLoad(key, ::validate) {
+            actorWorksInSession(actor, parent, scopes, allowLocalFallback, scanMovieDetails,
+                includeExtraMovieScan, onProgress, account, identity, grant, null, true)
+        }
+    }
 
     private suspend fun actorWorksInSession(actor: CastMember, parent: MediaItem, libraries: List<Library>,
         allowLocalFallback: Boolean, scanMovieDetails: Boolean, includeExtraMovieScan: Boolean,
@@ -1393,7 +1425,46 @@ class ShyniClient(
                     null
                 }
                 requireCurrent()
-                (response as? JSONObject)?.optJSONArray("local_credits")
+                (response as? JSONObject)?.let { person ->
+                    val local = person.optJSONArray("local_credits")
+                    val cast = person.optJSONObject("tmdb")?.optJSONArray("cast")
+                    if (local == null && cast == null) return@let null
+                    val combined = JSONArray()
+                    if (local != null) for (index in 0 until local.length())
+                        local.optJSONObject(index)?.let(combined::put)
+                    // The server's person modal also exposes owned works as
+                    // tmdb.cast[].local_match. Never use the TMDB work ID, an
+                    // inferred library_id, or crew credits as playable identity.
+                    if (cast != null) for (index in 0 until cast.length()) {
+                        val credit = cast.optJSONObject(index) ?: continue
+                        val match = credit.optJSONObject("local_match") ?: continue
+                        if (listOf(credit, match).any { row ->
+                                row.optBoolean("remote") || row.stringOrNull("federated_id") != null ||
+                                    row.optBoolean("locked") || row.optBoolean("is_locked") ||
+                                    row.stringOrNull("context_kind")?.let { it != "view" } == true ||
+                                    row.stringOrNull("source") == "remote"
+                            }) continue
+                        val viewId = match.exactPositiveInt("library_view_id") ?: continue
+                        val metadataId = when {
+                            !match.isNull("representative_metadata_item_id") -> match.exactPositiveInt("representative_metadata_item_id")
+                            !match.isNull("local_id") -> match.exactPositiveInt("local_id")
+                            else -> match.exactPositiveInt("metadata_item_id")
+                        } ?: continue
+                        val type = when (match.stringOrNull("media_type")) {
+                            "movie" -> 1; "show", "tv" -> 2; else -> continue
+                        }
+                        val title = match.stringOrNull("title")?.takeIf { it.isNotBlank() }
+                            ?: credit.stringOrNull("title")?.takeIf { it.isNotBlank() } ?: continue
+                        val normalized = JSONObject(match.toString()).put("library_view_id", viewId)
+                            .put("metadata_item_id", metadataId).put("metadata_type", type).put("title", title)
+                        if (credit.booleanOrNull("spoiler_enabled") == true) normalized.put("spoiler_enabled", true)
+                        combined.put(normalized)
+                    }
+                    // A bare external filmography is not an authoritative
+                    // empty local catalogue. Preserve the unsupported-response
+                    // error unless the server supplied local credits or links.
+                    combined.takeIf { local != null || it.length() > 0 }
+                }
                     ?: if (ppkey != null && allowLocalFallback) null else throw ApiException("출연작 응답 형식이 올바르지 않습니다.")
             } else null
             // A server can expose both identities yet have no local TMDB credits.
@@ -1484,8 +1555,21 @@ class ShyniClient(
                 if (useTmdb) row.stringOrNull("poster")?.let { normalized.put("poster_url", it) }
                 val item = parseMedia(normalized, libraryId, type).let { it.copy(isSpoiler = it.isSpoiler || library.isSpoiler) }
                 val identity = Identity(libraryId, type, metadataId, item.viewItemId)
-                val previous = matched[identity]
-                if (previous == null || (item.isSpoiler && !previous.isSpoiler)) matched[identity] = item
+                // Provider rows may identify one work through both collections.
+                // Keep the original constant-time path for large local movie scans.
+                val existing = if (useTmdb) matched.entries.firstOrNull { (_, previous) ->
+                    previous.libraryId == item.libraryId && previous.type == item.type &&
+                        if (previous.viewItemId != null && item.viewItemId != null) previous.viewItemId == item.viewItemId
+                        else previous.id == item.id
+                } else null
+                if (existing == null) {
+                    val previous = matched[identity]
+                    if (previous == null || (item.isSpoiler && !previous.isSpoiler)) matched[identity] = item
+                } else {
+                    val previous = existing.value
+                    val richer = if (previous.viewItemId == null && item.viewItemId != null) item else previous
+                    matched[existing.key] = richer.copy(isSpoiler = previous.isSpoiler || item.isSpoiler)
+                }
               }
             }
             collectAuthorizedRows(creditRows)
@@ -2464,6 +2548,8 @@ class ShyniClient(
         require(state in setOf("playing", "paused", "stopped", "completed", "completed_candidate", "buffering")) { "올바르지 않은 재생 상태입니다." }
         val body = progressBody(spec, positionMs, durationMs, state, watchedMs, completionEligible)
         request("/playback/progress", body, spoiler = spec.sourceItem?.isSpoiler == true)
+        // A result cached before playback must not restore its old watch badge.
+        actorWorksMemo.clear()
     }
 
     /** Optional same-origin dashboard metadata channel; HTTP progress is unaffected. */
