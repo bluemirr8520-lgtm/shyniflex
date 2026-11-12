@@ -9,10 +9,14 @@ import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
@@ -24,10 +28,14 @@ import androidx.compose.ui.input.InputModeManager
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModel
@@ -77,8 +85,13 @@ class TvContinueBackdropUiTest {
         val style = mutableStateOf(CinemaStyle.CINEMA)
         withFixture(AppState(loggedIn = true, continueItems = listOf(first, second),
             recentItems = listOf(recent), libraries = listOf(Library(7, "합성 영화", "movie")))) { fixture ->
-            renderHome(fixture, style)
-            focusCard(second)
+            renderFocusedHome(fixture, style, televisionCanvas = true)
+            // Enter the row through its restore target, then navigate like the remote. Asking
+            // for the second card from outside the group may legitimately restore the first.
+            focusCard(first)
+            screen.onNodeWithTag(cardTag(first)).performKeyInput { pressKey(Key.DirectionRight) }
+            screen.onNodeWithTag(cardTag(second)).assertIsFocused()
+            assertEquals("Focus selects the second work before a style changes", second.title, heroTitleText())
             screen.waitUntil(3_000) {
                 val job = AppViewModel::class.java.getDeclaredField("continueDetailsJob")
                     .apply { isAccessible = true }.get(fixture.model) as Job?
@@ -87,12 +100,14 @@ class TvContinueBackdropUiTest {
             val requestsBefore = fixture.requests.size
             // Hold the independent six-second artwork timer while comparing the selected item.
             screen.runOnIdle { fixture.state.value = fixture.state.value.copy(busy = true) }
+            assertEquals("Pausing the artwork timer retains the focus selection", second.title, heroTitleText())
             val heroHeights = mutableListOf<Float>()
             val posterWidths = mutableListOf<Float>()
             CinemaStyle.entries.forEach { candidate ->
                 screen.runOnIdle { style.value = candidate }
                 screen.waitForIdle()
-                assertTrue("Changing style retains the selected work", heroExists(second))
+                saveScreenshot("tv-home", "home-style-${candidate.key}.png")
+                assertEquals("Style ${candidate.key} retains the selected work", second.title, heroTitleText())
                 val card = screen.onNodeWithTag(cardTag(second)).assertIsFocused().fetchSemanticsNode().boundsInRoot
                 heroHeights += screen.onNodeWithTag("tv-continue-hero").fetchSemanticsNode().boundsInRoot.height
                 posterWidths += card.width
@@ -100,9 +115,8 @@ class TvContinueBackdropUiTest {
                 assertEquals(if (candidate == CinemaStyle.OTT) FontFamily.SansSerif else FontFamily.Serif,
                     title.layoutInput.style.fontFamily)
                 val action = screen.onNodeWithTag("cinema-hero-resume").fetchSemanticsNode().boundsInRoot
-                val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+                val density = fixture.pixelsPerDp
                 assertTrue("Every style retains a 48dp play target", action.height >= 48f * density - 1f)
-                saveScreenshot("tv-home", "home-style-${candidate.key}.png")
             }
             assertEquals("Styles change composition, not only colors", 3, heroHeights.distinct().size)
             assertEquals("Each style has its own poster density", 3, posterWidths.distinct().size)
@@ -112,6 +126,27 @@ class TvContinueBackdropUiTest {
             screen.waitUntil(3_000) { fixture.requests.any { it.first == "/playback/decision" } }
             assertEquals(second.viewItemId, JSONObject(fixture.requests.first { it.first == "/playback/decision" }.second)
                 .getInt("view_item_id"))
+        }
+    }
+
+    @Test fun mobileStyleChangesKeepTheTappedPosterAndNeverReplayIt() {
+        val style = mutableStateOf(CinemaStyle.CINEMA)
+        withFixture(AppState(loggedIn = true, continueItems = listOf(first, second))) { fixture ->
+            renderHome(fixture, style)
+            screen.onNodeWithTag(cardTag(second)).performTouchInput { click() }
+            screen.waitUntil(3_000) { fixture.requests.any { it.first == "/playback/decision" } }
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(busy = true) }
+            CinemaStyle.entries.forEach { candidate ->
+                screen.runOnIdle { style.value = candidate }
+                screen.waitForIdle()
+                assertEquals("Mobile style ${candidate.key} retains the tapped work", second.title, heroTitleText())
+                screen.onNodeWithTag(cardTag(second)).assertIsSelected()
+                screen.onNodeWithTag("cinema-hero-art-${second.libraryId}-${second.id}", useUnmergedTree = true).assertExists()
+                saveScreenshot("tv-home", "home-mobile-style-${candidate.key}.png")
+            }
+            val decisions = fixture.requests.filter { it.first == "/playback/decision" }
+            assertEquals("Appearance changes do not start playback again", 1, decisions.size)
+            assertEquals(second.viewItemId, JSONObject(decisions.single().second).getInt("view_item_id"))
         }
     }
 
@@ -149,6 +184,9 @@ class TvContinueBackdropUiTest {
         return layouts.single()
     }
 
+    private fun heroTitleText() = screen.onNodeWithTag("cinema-hero-title", useUnmergedTree = true)
+        .fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
+
     @Test fun mobileContinueDragAndFlingFollowPostersWithoutStartingPlayback() {
         val items = (0 until 14).map { index -> first.copy(id = 101 + index, viewItemId = 701 + index,
             title = "모바일 이어보기 ${index + 1}") }
@@ -169,11 +207,20 @@ class TvContinueBackdropUiTest {
             assertTrue("Passing posters does not ask the server for details", fixture.requests.isEmpty())
 
             row.performTouchInput {
-                moveTo(Offset(width * .05f, center.y), delayMillis = 16)
+                // A real flick supplies several recent motion samples. A single late event can
+                // produce zero velocity; on a wide screen its drag distance alone masked this.
+                listOf(.21f, .17f, .13f, .09f, .05f).forEach { fraction ->
+                    moveTo(Offset(width * fraction, center.y), delayMillis = 16)
+                }
                 up()
             }
+            screen.mainClock.advanceTimeByFrame()
+            screen.waitForIdle()
+            val releasePosition = row.fetchSemanticsNode().config[SemanticsProperties.HorizontalScrollAxisRange].value()
             screen.mainClock.advanceTimeBy(160)
             screen.waitForIdle()
+            val flingPosition = row.fetchSemanticsNode().config[SemanticsProperties.HorizontalScrollAxisRange].value()
+            assertTrue("The shelf keeps moving after release: $releasePosition -> $flingPosition", flingPosition > releasePosition)
             val duringFling = items.single { heroExists(it) }
             assertNotEquals("The backdrop follows the fling after the finger is released", duringDrag, duringFling)
             screen.onNodeWithTag("cinema-hero-art-${duringFling.libraryId}-${duringFling.id}", useUnmergedTree = true)
@@ -416,7 +463,8 @@ class TvContinueBackdropUiTest {
     }
 
     @Suppress("DEPRECATION")
-    private fun renderFocusedHome(fixture: Fixture) {
+    private fun renderFocusedHome(fixture: Fixture, style: MutableState<CinemaStyle>? = null,
+        televisionCanvas: Boolean = false) {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
         val configuration = Configuration(base.resources.configuration).apply {
             uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or Configuration.UI_MODE_TYPE_TELEVISION
@@ -425,12 +473,29 @@ class TvContinueBackdropUiTest {
         InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
         screen.setContent {
             inputMode = LocalInputModeManager.current
-            CompositionLocalProvider(LocalContext provides tvContext) {
-                MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
+            val selectedStyle = style?.value ?: CinemaStyle.CINEMA
+            val home: @Composable () -> Unit = {
+              CompositionLocalProvider(LocalContext provides tvContext, LocalCinemaStyle provides selectedStyle) {
+                MaterialTheme(colorScheme = cinemaColorScheme(Color(selectedStyle.defaultBackgroundArgb), selectedStyle),
+                    typography = CompactTypography, shapes = CompactShapes) {
                     TvSidebarDrawer(screenKey = "home", sidebar = { close ->
                         TvAction("라이브러리", Modifier.testTag("fixture-sidebar-action"), onClick = close)
                     }) { TvHome(fixture.state.value, fixture.model, {}) }
                 }
+              }
+            }
+            if (televisionCanvas) BoxWithConstraints(Modifier.fillMaxSize()) {
+                val physicalDensity = LocalDensity.current
+                val fit = minOf(maxWidth.value / 960f, maxHeight.value / 540f).coerceAtLeast(.01f)
+                val fittedDensity = physicalDensity.density * fit
+                SideEffect { fixture.pixelsPerDp = fittedDensity }
+                CompositionLocalProvider(LocalDensity provides Density(fittedDensity, physicalDensity.fontScale)) {
+                    Box(Modifier.requiredSize(960.dp, 540.dp).testTag("tv-home-style-fixture")) { home() }
+                }
+            } else {
+                val density = LocalDensity.current.density
+                SideEffect { fixture.pixelsPerDp = density }
+                home()
             }
         }
         screen.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
@@ -441,6 +506,7 @@ class TvContinueBackdropUiTest {
         screen.runOnIdle { assertTrue(inputMode.requestInputMode(InputMode.Keyboard)) }
         screen.onNodeWithTag(cardTag(item)).performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
         screen.waitForIdle()
+        screen.onNodeWithTag(cardTag(item)).assertIsFocused()
     }
 
     private fun waitForHero(item: MediaItem) {
@@ -469,7 +535,9 @@ class TvContinueBackdropUiTest {
     }
 
     private class Fixture(val model: AppViewModel, val state: MutableState<AppState>,
-        val requests: CopyOnWriteArrayList<Pair<String, String>>)
+        val requests: CopyOnWriteArrayList<Pair<String, String>>) {
+        var pixelsPerDp: Float = 1f
+    }
 
     private fun withFixture(initial: AppState, block: (Fixture) -> Unit) {
         guardFixture()

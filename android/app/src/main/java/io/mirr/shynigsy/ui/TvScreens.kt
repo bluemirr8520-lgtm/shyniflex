@@ -145,7 +145,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                 contentPadding = sidebarPadding,
                 verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 item(key = "sidebar-brand") {
-                    Text("SHYNIFLEX", Modifier.padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
+                    Text("SHYNIFLEX", Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
                         color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -155,7 +155,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                     TvSidebarItem("검색", cinemaIcon(CinemaGlyph.Search), searchSelected, onSearch, Modifier.testTag("sidebar-search"))
                 }
                 item(key = "sidebar-library-heading") {
-                    Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
+                    Text("라이브러리", Modifier.fillMaxWidth().padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
                         style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -180,13 +180,13 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
             }
         } else Column(Modifier.fillMaxSize().padding(sidebarPadding),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("SHYNIFLEX", Modifier.padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
+            Text("SHYNIFLEX", Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             TvSidebarItem("홈", cinemaIcon(CinemaGlyph.Home), homeSelected, onHome)
             TvSidebarItem("검색", cinemaIcon(CinemaGlyph.Search), searchSelected, onSearch, Modifier.testTag("sidebar-search"))
-            Text("라이브러리", Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
+            Text("라이브러리", Modifier.fillMaxWidth().padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
