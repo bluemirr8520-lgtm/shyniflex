@@ -196,7 +196,7 @@ class TvContinueBackdropUiTest {
             val row = screen.onNodeWithTag("home-continue-row")
             row.performTouchInput {
                 down(Offset(width * .9f, center.y))
-                moveTo(Offset(width * .25f, center.y), delayMillis = 250)
+                moveTo(Offset(width * .55f, center.y), delayMillis = 250)
             }
             screen.mainClock.advanceTimeBy(64)
             screen.waitForIdle()
@@ -209,7 +209,7 @@ class TvContinueBackdropUiTest {
             row.performTouchInput {
                 // A real flick supplies several recent motion samples. A single late event can
                 // produce zero velocity; on a wide screen its drag distance alone masked this.
-                listOf(.21f, .17f, .13f, .09f, .05f).forEach { fraction ->
+                listOf(.45f, .35f, .25f, .15f, .05f).forEach { fraction ->
                     moveTo(Offset(width * fraction, center.y), delayMillis = 16)
                 }
                 up()
@@ -217,15 +217,35 @@ class TvContinueBackdropUiTest {
             screen.mainClock.advanceTimeByFrame()
             screen.waitForIdle()
             val releasePosition = row.fetchSemanticsNode().config[SemanticsProperties.HorizontalScrollAxisRange].value()
-            screen.mainClock.advanceTimeBy(160)
-            screen.waitForIdle()
+            val releaseHero = items.single { heroExists(it) }
+            val frameHeroes = mutableListOf<String>()
+            repeat(10) {
+                screen.mainClock.advanceTimeByFrame()
+                screen.waitForIdle()
+                frameHeroes += heroTitleText()
+            }
+            val beforeRenderFlush = heroTitleText()
+            // Give layoutInfo -> snapshotFlow -> hero state a render frame as well as main-queue
+            // time, then log the synthetic before/after values to distinguish clock lag from a bug.
+            repeat(2) {
+                screen.mainClock.advanceTimeByFrame()
+                screen.waitForIdle()
+            }
             val flingPosition = row.fetchSemanticsNode().config[SemanticsProperties.HorizontalScrollAxisRange].value()
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+                putString("synthetic_fling_render", "scroll=$releasePosition->$flingPosition; " +
+                    "released=${releaseHero.id}; frames=${frameHeroes.joinToString(",")}; " +
+                    "beforeFlush=$beforeRenderFlush; afterFlush=${heroTitleText()}")
+            })
             assertTrue("The shelf keeps moving after release: $releasePosition -> $flingPosition", flingPosition > releasePosition)
             val duringFling = items.single { heroExists(it) }
-            assertNotEquals("The backdrop follows the fling after the finger is released", duringDrag, duringFling)
+            assertNotEquals("The backdrop follows the fling after release ($releasePosition -> $flingPosition)", releaseHero, duringFling)
+            assertNotEquals("The browsing gesture advances beyond its initial drag", duringDrag, duringFling)
             screen.onNodeWithTag("cinema-hero-art-${duringFling.libraryId}-${duringFling.id}", useUnmergedTree = true)
                 .assertExists()
             screen.mainClock.advanceTimeBy(2_500)
+            screen.waitForIdle()
+            screen.mainClock.advanceTimeByFrame()
             screen.waitForIdle()
             screen.waitUntil(3_000) { fixture.requests.isNotEmpty() }
             assertEquals("Only the final visible work requests details", 1, fixture.requests.size)
@@ -478,9 +498,14 @@ class TvContinueBackdropUiTest {
               CompositionLocalProvider(LocalContext provides tvContext, LocalCinemaStyle provides selectedStyle) {
                 MaterialTheme(colorScheme = cinemaColorScheme(Color(selectedStyle.defaultBackgroundArgb), selectedStyle),
                     typography = CompactTypography, shapes = CompactShapes) {
-                    TvSidebarDrawer(screenKey = "home", sidebar = { close ->
-                        TvAction("라이브러리", Modifier.testTag("fixture-sidebar-action"), onClick = close)
-                    }) { TvHome(fixture.state.value, fixture.model, {}) }
+                    // Production ShyniApp's Scaffold supplies onBackground as LocalContentColor.
+                    // MaterialTheme alone does not; mirror the real content surface for TV captions.
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background,
+                        contentColor = MaterialTheme.colorScheme.onBackground) {
+                        TvSidebarDrawer(screenKey = "home", sidebar = { close ->
+                            TvAction("라이브러리", Modifier.testTag("fixture-sidebar-action"), onClick = close)
+                        }) { TvHome(fixture.state.value, fixture.model, {}) }
+                    }
                 }
               }
             }

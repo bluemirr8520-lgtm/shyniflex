@@ -7,6 +7,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 internal data class ContinueShelfCard(val key: String, val offset: Int, val size: Int)
@@ -49,13 +51,18 @@ internal fun ObserveMobileContinueShelf(
             }
             Triple(dragging, row.isScrollInProgress,
                 continueShelfAnchorKey(cards, layout.viewportStartOffset, layout.viewportEndOffset))
-        }.distinctUntilChanged().collect { (draggingNow, scrolling, key) ->
+        }.distinctUntilChanged().collectLatest { (draggingNow, scrolling, key) ->
             if (draggingNow) browsing = true
             if (browsing && key != null && key != lastKey) {
                 lastKey = key
                 browse(key)
             }
             if (browsing && !draggingNow && !scrolling) {
+                // Drag.Stop may be observed between the drag's scroll mutation ending and the
+                // fling acquiring it. Keep ownership through that gap. Any new motion/layout
+                // snapshot cancels this wait, including revocation through the effect's keys.
+                delay(120)
+                if (dragging || row.isScrollInProgress) return@collectLatest
                 key?.let(settle)
                 browsing = false
                 lastKey = null
