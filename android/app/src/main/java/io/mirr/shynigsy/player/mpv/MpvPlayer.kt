@@ -129,6 +129,9 @@ class MpvPlayer(
 
     var onNativeSubtitleText: ((String) -> Unit)? = null
     var onNativePosition: ((Long) -> Unit)? = null
+    /** Called after the current file's headers/tracks are loaded, before a frame
+     * is required. Hosts must post a handoff instead of releasing in this callback. */
+    var onNativeHeadersReady: (() -> Unit)? = null
 
     /** Hides glyphs only; the subtitle decoder and sub-text observation stay active. */
     var nativeSubtitleVisibility: Boolean = true
@@ -406,6 +409,7 @@ class MpvPlayer(
     override fun handleRelease(): ListenableFuture<*> {
         if (released) return done()
         released = true
+        onNativeHeadersReady = null
         loadGeneration++
         main.removeCallbacksAndMessages(null)
         stateUpdatePosted = false
@@ -466,11 +470,15 @@ class MpvPlayer(
     /** Numeric transport/decoder observations only: no URL, path, account or subtitle text. */
     internal fun streamDiagnostics(): MpvStreamDiagnostics? {
         if (!alive || !loaded || released) return null
+        fun number(property: String) = readMpvDiagnosticNumber(property,
+            MPVLib::getPropertyDouble, MPVLib::getPropertyString)
         return MpvStreamDiagnostics(
-            inputBytesPerSecond = MPVLib.getPropertyDouble("demuxer-cache-state/raw-input-rate"),
-            videoBitsPerSecond = MPVLib.getPropertyDouble("video-bitrate"),
-            audioBitsPerSecond = MPVLib.getPropertyDouble("audio-bitrate"),
-            cacheSeconds = MPVLib.getPropertyDouble("demuxer-cache-duration"),
+            // Pinned MPV exposes the same demuxer bytes_per_second through this
+            // top-level property. A zero raw-input-rate node key can be absent.
+            inputBytesPerSecond = number("cache-speed"),
+            videoBitsPerSecond = number("video-bitrate"),
+            audioBitsPerSecond = number("audio-bitrate"),
+            cacheSeconds = number("demuxer-cache-duration"),
             cachePaused = MPVLib.getPropertyBoolean("paused-for-cache") == true,
             hardwareDecoder = MPVLib.getPropertyString("hwdec-current"),
             droppedFrames = MPVLib.getPropertyInt("decoder-frame-drop-count")?.toLong(),
@@ -495,9 +503,27 @@ class MpvPlayer(
         MpvTrackSnapshot.manualExoEvidence(MPVLib.getPropertyString("track-list"), expected,
             expectedAudioIndex, expectedAudioOrdinal) else null
 
+    /** A finite, seekable header-indexed original; never infer this from its URL suffix. */
+    internal fun hasFixedTrackHeaders(): Boolean {
+        if (!alive || !loaded || released || stopRequested || isServerConverted) return false
+        val expected = expectedNativePath ?: return false
+        if (MPVLib.getPropertyString("path") != expected) return false
+        val supported = MpvTrackSnapshot.fixedHeadersReady(MPVLib.getPropertyString("file-format"),
+            MPVLib.getPropertyBoolean("seekable") == true, MPVLib.getPropertyDouble("duration"))
+        return supported && MPVLib.getPropertyString("path") == expected
+    }
+
+    internal fun exoHeaderEvidence(): MpvExoTrackEvidence? {
+        if (!hasFixedTrackHeaders()) return null
+        val tracks = MpvTrackSnapshot.exoEvidence(MPVLib.getPropertyString("track-list")) ?: return null
+        return tracks.takeIf { MPVLib.getPropertyString("path") == expectedNativePath }
+    }
+
     /** Source chapters are read only from the currently loaded, original MPV file. */
-    internal fun nativeChapterCredits(expectedSourceDurationMs: Long): io.mirr.shynigsy.data.PlaybackMarker? {
-        if (!alive || !loaded || !nativeFirstFrameSeen || released || stopRequested || isServerConverted) return null
+    internal fun nativeChapterCredits(expectedSourceDurationMs: Long,
+        allowFixedHeaders: Boolean = false): io.mirr.shynigsy.data.PlaybackMarker? {
+        if (!alive || !loaded || released || stopRequested || isServerConverted) return null
+        if (!nativeFirstFrameSeen && (!allowFixedHeaders || !hasFixedTrackHeaders())) return null
         val expectedPath = expectedNativePath ?: return null
         if (MPVLib.getPropertyString("path") != expectedPath) return null
         val count = MPVLib.getPropertyInt("chapter-list/count")?.takeIf { it in 1..64 } ?: return null
@@ -639,6 +665,7 @@ class MpvPlayer(
                 MPVLib.setPropertyBoolean("sub-visibility", nativeSubtitleVisibility)
                 setText(MPVLib.getPropertyString("sub-text").orEmpty())
                 reconcileNativeEof()
+                onNativeHeadersReady?.invoke()
                 main.removeCallbacks(eofCheck)
                 if (status != Player.STATE_ENDED) main.postDelayed(eofCheck, 1_000)
             }

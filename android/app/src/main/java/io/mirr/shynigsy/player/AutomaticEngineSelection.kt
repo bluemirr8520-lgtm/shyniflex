@@ -11,6 +11,7 @@ import io.mirr.shynigsy.data.PlaybackCodecInfo
 import io.mirr.shynigsy.data.PlaybackSpec
 import io.mirr.shynigsy.data.SubtitleTrack
 import io.mirr.shynigsy.player.mpv.MpvExoProbe
+import io.mirr.shynigsy.player.mpv.MpvExoTrackEvidence
 import io.mirr.shynigsy.player.subtitles.isEmbedded
 import java.util.Locale
 
@@ -31,7 +32,7 @@ internal fun exoExternalSubtitleFormat(format: String?): Boolean =
 internal fun exoEmbeddedSubtitle(subtitle: SubtitleTrack): Boolean = subtitle.isEmbedded &&
     exoExternalSubtitleKind(subtitle.format) == "mov_text" && subtitle.streamIndex?.let { it >= 0 } == true
 
-/** A candidate still requires an independent, decoded MPV probe before Exo can start. */
+/** A candidate still requires an independent native track probe before Exo can start. */
 internal fun isPotentialExoCandidate(spec: PlaybackSpec, info: PlaybackCodecInfo?, subtitles: List<SubtitleTrack>?,
     defaultLayout: Boolean): Boolean {
     if (info == null || spec.partId != info.partId || spec.isServerConversion || spec.preferSoftwareDecode ||
@@ -56,7 +57,7 @@ internal fun isPotentialExoCandidate(spec: PlaybackSpec, info: PlaybackCodecInfo
         val kind = exoExternalSubtitleKind(format) ?: return false
         if (!listedKinds.remove(kind)) return false
     }
-    if (container !in setOf("mp4", "mov", "m4v") || video !in setOf("h264", "avc", "avc1") ||
+    if (container !in setOf("mp4", "mov", "m4v", "mkv", "matroska", "webm") || video !in setOf("h264", "avc", "avc1") ||
         audio !in setOf("aac", "mp4a") || (selectedAudio != null && selectedAudio !in setOf("aac", "mp4a")) ||
         (profile != null && profile !in setOf("baseline", "constrained baseline", "main", "high")) ||
         (audioProfile != null && audioProfile !in setOf("lc", "aac lc", "aac-lc", "low complexity")) ||
@@ -65,6 +66,28 @@ internal fun isPotentialExoCandidate(spec: PlaybackSpec, info: PlaybackCodecInfo
         (info.audioChannels != null && info.audioChannels !in setOf(1, 2)) ||
         (info.width != null && info.width !in 1..3840) || (info.height != null && info.height !in 1..2160) ||
         (info.frameRate != null && (!info.frameRate.isFinite() || info.frameRate <= 0 || info.frameRate > 60))) return false
+    return true
+}
+
+/** Header evidence proves track identity only. The Exo extractor must independently
+ * validate the real AVC/AAC profiles and reject HDR before playback is unpaused. */
+internal fun isSafeExoHeaderProbe(info: PlaybackCodecInfo, tracks: MpvExoTrackEvidence,
+    subtitles: List<SubtitleTrack>): Boolean {
+    val embedded = subtitles.filter(::exoEmbeddedSubtitle)
+    if (embedded.size > 1 || tracks.subtitleStreamIndex != embedded.singleOrNull()?.streamIndex) return false
+    fun normalize(value: String?) = value?.trim()?.lowercase(Locale.ROOT)
+    val profile = normalize(tracks.videoProfile)
+    val audioProfile = normalize(tracks.audioProfile)
+    if ((profile != null && profile !in setOf("baseline", "constrained baseline", "main", "high")) ||
+        (audioProfile != null && audioProfile !in setOf("lc", "aac lc", "aac-lc", "low complexity"))) return false
+    val width = tracks.width?.takeIf { it in 1..3840 } ?: return false
+    val height = tracks.height?.takeIf { it in 1..2160 } ?: return false
+    val fps = tracks.frameRate
+    if ((fps != null && (!fps.isFinite() || fps <= 0 || fps > 60)) ||
+        (tracks.audioChannels != null && tracks.audioChannels !in setOf(1, 2)) ||
+        (info.width != null && info.width != width) || (info.height != null && info.height != height) ||
+        (info.audioChannels != null && tracks.audioChannels != null && info.audioChannels != tracks.audioChannels) ||
+        (info.frameRate != null && fps != null && kotlin.math.abs(info.frameRate - fps) > 0.1)) return false
     return true
 }
 
@@ -123,7 +146,10 @@ internal fun hasAvcHardwareDecoder(width: Int, height: Int, fps: Double, profile
 
 /** Validate actual extraction before starting: do not discard tracks or subtitle rendering. */
 internal data class ExtractedTrack(val type: Int, val mime: String?, val supported: Boolean, val selected: Boolean,
-    val codecs: String? = null, val channels: Int? = null)
+    val codecs: String? = null, val channels: Int? = null,
+    val width: Int? = null, val height: Int? = null, val frameRate: Double? = null,
+    val colorTransfer: Int? = null, val lumaBitDepth: Int? = null, val chromaBitDepth: Int? = null,
+    val hdrStaticInfoPresent: Boolean = false)
 
 internal fun exoMovTextMime(mime: String?, codecs: String?): Boolean =
     mime == MimeTypes.APPLICATION_TX3G ||
@@ -150,6 +176,43 @@ internal fun exoTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false): B
             format.codecs, format.channelCount.takeIf { it > 0 })
     }
 }, embeddedExpected)
+
+/** AVC baseline/main/high are 8-bit profiles; reject high-10/422/444 and missing
+ * codec profile evidence. Container color hints must not positively identify HDR. */
+internal fun headerExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean = false): Boolean {
+    if (!extractedTracksSafe(tracks, embeddedExpected)) return false
+    val video = tracks.single { it.type == C.TRACK_TYPE_VIDEO }
+    val codec = video.codecs?.trim()?.lowercase(Locale.ROOT) ?: return false
+    val parts = codec.split('.')
+    if (parts.firstOrNull() !in setOf("avc1", "avc3")) return false
+    val profile = when {
+        parts.size == 2 && Regex("[0-9a-f]{6}").matches(parts[1]) -> parts[1].take(2).toIntOrNull(16)
+        parts.size == 3 && parts[1].all(Char::isDigit) && parts[2].all(Char::isDigit) &&
+            parts[2].toIntOrNull()?.let { it > 0 } == true -> parts[1].toIntOrNull()
+        else -> null
+    }
+    if (profile !in setOf(66, 77, 100) || video.width?.let { it in 1..3840 } != true ||
+        video.height?.let { it in 1..2160 } != true ||
+        (video.frameRate != null && (!video.frameRate.isFinite() || video.frameRate <= 0 || video.frameRate > 60)) ||
+        video.colorTransfer in setOf(C.COLOR_TRANSFER_ST2084, C.COLOR_TRANSFER_HLG) || video.hdrStaticInfoPresent ||
+        (video.lumaBitDepth != null && video.lumaBitDepth != 8) ||
+        (video.chromaBitDepth != null && video.chromaBitDepth != 8)) return false
+    return true
+}
+
+internal fun exoHeaderTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false): Boolean =
+    headerExtractedTracksSafe(tracks.groups.flatMap { group ->
+        (0 until group.length).map { index ->
+            val format = group.getTrackFormat(index)
+            val color = format.colorInfo
+            ExtractedTrack(group.type, format.sampleMimeType, group.isTrackSupported(index), group.isTrackSelected(index),
+                format.codecs, format.channelCount.takeIf { it > 0 },
+                format.width.takeIf { it > 0 }, format.height.takeIf { it > 0 },
+                format.frameRate.toDouble().takeUnless { it == -1.0 }, color?.colorTransfer,
+                color?.lumaBitdepth?.takeUnless { it == -1 }, color?.chromaBitdepth?.takeUnless { it == -1 },
+                color?.hdrStaticInfo != null)
+        }
+    }, embeddedExpected)
 
 /** Manual Exo may support codecs beyond the conservative automatic selection.
  * Still reject missing/unsupported native text tracks instead of silently hiding subtitles. */

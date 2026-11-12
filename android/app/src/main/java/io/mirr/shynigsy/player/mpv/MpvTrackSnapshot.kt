@@ -35,6 +35,16 @@ internal data class MpvExoProbe(
 internal data class MpvManualExoEvidence(val hasAudio: Boolean)
 
 internal object MpvTrackSnapshot {
+    /** Header-indexed files expose their tracks before video decoding. Live/PES
+     * formats can discover new tracks later and must not use this shortcut. */
+    fun fixedHeadersReady(format: String?, seekable: Boolean, durationSeconds: Double?): Boolean {
+        if (!seekable || durationSeconds == null || !durationSeconds.isFinite() || durationSeconds <= 0) return false
+        val names = format?.trim()?.lowercase(java.util.Locale.ROOT)?.split(',')?.map(String::trim) ?: return false
+        val mov = setOf("mov", "mp4", "m4a", "3gp", "3g2", "mj2", "m4v")
+        val matroska = setOf("matroska", "webm", "mkv")
+        return names.isNotEmpty() && (names.all { it in mov } || names.all { it in matroska })
+    }
+
     /** Ensure Media3 cannot silently hide a native subtitle missing from server metadata. */
     fun manualExoEvidence(value: String?, expected: List<Int>, expectedAudioIndex: Int?,
         expectedAudioOrdinal: Int?): MpvManualExoEvidence? {
@@ -49,6 +59,7 @@ internal object MpvTrackSnapshot {
             for (index in 0 until rows.length()) {
                 val row = rows.optJSONObject(index) ?: return null
                 val type = row.opt("type") as? String ?: return null
+                if (type !in setOf("video", "audio", "sub")) return null
                 if (row.integer("id")?.let { it > 0 } != true) return null
                 if (type == "video" && row.opt("external") != true) videos++
                 if (type == "audio" && row.opt("external") != true) audioIndices.add(row.integer("ff-index"))

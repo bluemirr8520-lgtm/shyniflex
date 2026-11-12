@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MpvTrackSnapshotTest {
+    @Test fun onlyFiniteSeekableHeaderIndexedContainersCanHandoffBeforeDecoding() {
+        for (format in listOf("mov,mp4,m4a,3gp,3g2,mj2", "mp4", "Matroska,WebM", "mkv"))
+            assertTrue(MpvTrackSnapshot.fixedHeadersReady(format, true, 120.0))
+        for (format in listOf(null, "", "mpegts", "hls", "lavf", "mov,hls", "matroska,unknown", ",mp4"))
+            assertFalse(MpvTrackSnapshot.fixedHeadersReady(format, true, 120.0))
+        for (duration in listOf(null, -1.0, 0.0, Double.NaN, Double.POSITIVE_INFINITY))
+            assertFalse(MpvTrackSnapshot.fixedHeadersReady("mp4", true, duration))
+        assertFalse(MpvTrackSnapshot.fixedHeadersReady("mp4", false, 120.0))
+    }
+
     @Test fun manualExoProbeChecksHiddenSubtitlesAndSourceAudio() {
         val video = """{"id":1,"type":"video","codec":"hevc","selected":true}"""
         val audio = """{"id":2,"type":"audio","codec":"eac3","ff-index":1,"selected":true}"""
@@ -19,6 +29,7 @@ class MpvTrackSnapshotTest {
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio]", emptyList(), 1, 1))
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$audio]", emptyList(), null, null))
         assertNull(MpvTrackSnapshot.manualExoEvidence(null, emptyList(), null, null))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,{\"id\":7,\"type\":\"unknown\"}]", emptyList(), 1, 0))
     }
 
     @Test fun exoProbeRequiresExactlyTwoKnownNativeTracksAndNeverDropsSubtitles() {

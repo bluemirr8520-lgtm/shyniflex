@@ -5,6 +5,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackDiagnosticsTest {
+    @Test fun exoUsesItsOwnBufferMeasurementWithoutInventingNativeTelemetry() {
+        val log = playbackDiagnosticLog("exo", 3, true, true, null, 12_500)
+        assertTrue(log.contains("cache_s=12.50"))
+        assertTrue(log.contains("input_mbps=확인 중"))
+        assertTrue(log.contains("decoder=unknown"))
+    }
+
     @Test fun missingInvalidAndUnboundedMeasurementsAreUnknown() {
         for (value in listOf(null, Double.NaN, Double.POSITIVE_INFINITY, -1.0, 1e20))
             assertEquals("확인 중", diagnosticNumber(value))

@@ -15,10 +15,10 @@ internal fun diagnosticDecoder(value: String?): String = when (value) {
 
 /** Closed fields prevent native/server strings from escaping into diagnostics. */
 internal fun playbackDiagnosticLog(engine: String, state: Int, firstFrame: Boolean,
-    playing: Boolean, snapshot: MpvStreamDiagnostics?): String =
+    playing: Boolean, snapshot: MpvStreamDiagnostics?, bufferedDurationMs: Long? = null): String =
     "engine=${if (engine == "mpv") "mpv" else "exo"} state=${state.coerceIn(1, 4)} " +
         "frame=$firstFrame playing=$playing " +
-        "cache_s=${diagnosticNumber(snapshot?.cacheSeconds)} " +
+        "cache_s=${diagnosticNumber(snapshot?.cacheSeconds ?: bufferedDurationMs?.takeIf { it >= 0 }?.div(1000.0))} " +
         "cache_pause=${snapshot?.cachePaused == true} " +
         "input_mbps=${diagnosticNumber(snapshot?.inputBytesPerSecond?.times(8)?.div(1_000_000))} " +
         "video_mbps=${diagnosticNumber(snapshot?.videoBitsPerSecond?.div(1_000_000))} " +

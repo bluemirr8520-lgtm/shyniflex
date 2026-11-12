@@ -155,6 +155,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private var manualExoProbePending = false
     private var manualExoInUse = false
     private var manualExoSourceHasAudio = false
+    private var headerExoInUse = false
+    private var mpvHeaderHandoffPending = false
     private var enginePreferenceContentKey: String? = null
     private var enginePreferenceForContent = PlaybackEnginePreference.AUTO
     private var exoValidated = false
@@ -239,6 +241,8 @@ class NativePlayerActivity : AppCompatActivity() {
         manualExoSelectionPending = false
         if (player == null && !exiting && !isDestroyed && ::spec.isInitialized && ::client.isInitialized &&
             !closeLockedSpoilerPlayback()) {
+            if (!manual && spec.sourceItem?.isSpoiler == false)
+                Log.i("ShyniflexPlayback", "stage=auto_candidate available=false reason=timeout")
             if (manual) toast("ExoPlayer의 자막을 확인하지 못해 MPV로 재생합니다.")
             startPreparedPlayer(null, false)
         }
@@ -676,13 +680,13 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun effectiveSegmentMarkers(): List<PlaybackMarker> =
         markersWithOriginalChapter(spec, chapterCreditsEvidence.takeIf { chapterCreditsOwner === player })
 
-    private fun captureOriginalChapterCredits(created: Player) {
+    private fun captureOriginalChapterCredits(created: Player, allowFixedHeaders: Boolean = false) {
         if (player !== created || created !is MpvPlayer || exiting || isDestroyed || closeLockedSpoilerPlayback()) return
         val source = originalChapterSource(spec) ?: return
         if (!chapterCreditsCaptureGate.begin(created, source)) return
         chapterCreditsRetry?.let(handler::removeCallbacks)
         chapterCreditsRetry = null
-        val marker = runCatching { created.nativeChapterCredits(lastDuration) }.getOrNull()
+        val marker = runCatching { created.nativeChapterCredits(lastDuration, allowFixedHeaders) }.getOrNull()
         if (player !== created || !sameOriginalChapterSource(spec, source) || exiting || isDestroyed) return
         if (marker != null) {
             chapterCreditsCaptureGate.finish(created, source)
@@ -1029,6 +1033,7 @@ class NativePlayerActivity : AppCompatActivity() {
             return
         }
         engineSelectionJob = scope.launch(start = CoroutineStart.LAZY) {
+            var candidateReason = "candidate_policy"
             val candidate = try {
                 kotlinx.coroutines.coroutineScope {
                     val information = async { client.playbackCodecInfo(current) }
@@ -1038,12 +1043,16 @@ class NativePlayerActivity : AppCompatActivity() {
                     val inspected = subtitles.await()
                     val list = inspected.tracks
                     val savedId = embeddedServerSubtitleId ?: externalSubtitleId
-                    if (!inspected.safeForExo || (savedId != null && list.none { it.id == savedId })) null
-                    else info?.takeIf { isPotentialExoCandidate(current, it, list, true) }
-                        ?.let { EngineCandidate(it, list) }
+                    when {
+                        !inspected.safeForExo -> { candidateReason = "subtitle_unverified"; null }
+                        savedId != null && list.none { it.id == savedId } -> { candidateReason = "saved_subtitle_missing"; null }
+                        info == null -> { candidateReason = "metadata_unavailable"; null }
+                        !isPotentialExoCandidate(current, info, list, true) -> null
+                        else -> EngineCandidate(info, list)
+                    }
                 }
             } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
-              catch (_: Exception) { null }
+              catch (_: Exception) { candidateReason = "request_failed"; null }
             if (generation != engineGeneration || player != null || exiting || isDestroyed || client.token != account || spec != current ||
                 closeLockedSpoilerPlayback()) return@launch
             handler.removeCallbacks(engineSelectionTimeout)
@@ -1051,6 +1060,11 @@ class NativePlayerActivity : AppCompatActivity() {
             // Apply the checked list only for this exact playback, preserving a
             // restored/manual choice and the same default selection as MPV.
             val adopted = candidate.takeIf { visible }
+            if (spec.sourceItem?.isSpoiler == false) {
+                val reason = if (!visible) "not_visible" else candidateReason
+                Log.i("ShyniflexPlayback", "stage=auto_candidate available=${adopted != null}" +
+                    if (adopted == null) " reason=$reason" else "")
+            }
             if (adopted != null) {
                 spec = spec.copy(subtitles = adopted.subtitles, subtitlesPending = false)
                 val savedId = embeddedServerSubtitleId ?: externalSubtitleId
@@ -1072,7 +1086,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean,
         chapterCarry: OriginalChapterCredits? = null, manualExo: Boolean = false, manualProbe: Boolean = false,
-        sourceHasAudio: Boolean = false) {
+        sourceHasAudio: Boolean = false, headerExo: Boolean = false) {
         val headers = client.playbackHeaders(spec)
         val created: Player = try {
             if (useExo) try {
@@ -1103,6 +1117,8 @@ class NativePlayerActivity : AppCompatActivity() {
         mpvProbePending = (candidate != null || manualProbe) && created is MpvPlayer
         manualExoInUse = manualExo && created is ExoPlayer
         manualExoSourceHasAudio = manualExoInUse && sourceHasAudio
+        headerExoInUse = headerExo && created is ExoPlayer
+        mpvHeaderHandoffPending = false
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
@@ -1128,6 +1144,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     val manual = manualExoProbePending
                     mpvProbePending = false
                     manualExoProbePending = false
+                    mpvHeaderHandoffPending = false
                     finishMpvProbe = null
                     handler.removeCallbacks(engineProbeTimeout)
                     mpvProbeJob?.cancel(); mpvProbeJob = null
@@ -1139,7 +1156,33 @@ class NativePlayerActivity : AppCompatActivity() {
                     refreshSegmentActions()
                 }
             }
-            handler.postDelayed(engineProbeTimeout, if (manualProbe) 8_000 else 600)
+            // A slow media header must not exhaust an arbitrary 600ms decoder
+            // probe. Header validation usually finishes before the first frame;
+            // a rendered MPV frame still immediately settles the old fast path.
+            handler.postDelayed(engineProbeTimeout, 8_000)
+            if (created is MpvPlayer) {
+                val revision = engineGeneration
+                val source = spec
+                val account = client.token
+                created.onNativeHeadersReady = {
+                    // Native callbacks still have an active event stack. Release
+                    // only after returning, and only for this exact playback.
+                    handler.post {
+                        if (!mayCommitMpvProbe(mpvProbePending, player === created,
+                                revision == engineGeneration, spec == source, client.token == account,
+                                visible, exiting || isDestroyed) || closeLockedSpoilerPlayback()) return@post
+                        if (!created.hasFixedTrackHeaders()) {
+                            if (spec.sourceItem?.isSpoiler == false)
+                                Log.i("ShyniflexPlayback", "stage=header_checked mode=${if (manualExoProbePending) "manual" else "auto"} accepted=false")
+                            finishMpvProbe?.invoke()
+                            return@post
+                        }
+                        captureOriginalChapterCredits(created, allowFixedHeaders = true)
+                        if (manualExoProbePending) checkManualMpvProbe(created, fromHeaders = true)
+                        else if (candidate != null) checkMpvHeaderProbe(created, candidate)
+                    }
+                }
+            }
         }
         var initialAudioApplied = false
         created.addListener(object : Player.Listener {
@@ -1219,6 +1262,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (mpvProbePending) {
                     mpvProbePending = false; finishMpvProbe = null
                     manualExoProbePending = false
+                    mpvHeaderHandoffPending = false
                     handler.removeCallbacks(engineProbeTimeout)
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                 }
@@ -1323,6 +1367,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun exoPlaybackTracksSafe(tracks: androidx.media3.common.Tracks): Boolean =
         if (manualExoInUse) manualExoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle), manualExoSourceHasAudio)
+        else if (headerExoInUse) exoHeaderTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))
         else exoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))
 
     private fun acceptPreparedPlayer(created: Player) {
@@ -1338,7 +1383,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     /** Probe with MPV's raw track list before Exo, which can hide unknown MP4 subtitle tracks. */
     private fun checkMpvProbe(created: MpvPlayer, candidate: PlaybackCodecInfo) {
-        if (!mpvProbePending || player !== created || mpvProbeJob?.isActive == true || exiting || isDestroyed) return
+        if (!mpvProbePending || mpvHeaderHandoffPending || player !== created || mpvProbeJob?.isActive == true || exiting || isDestroyed) return
         val evidence = created.exoProbeEvidence() ?: run { finishMpvProbe?.invoke(); return }
         val revision = engineGeneration
         val current = spec
@@ -1365,13 +1410,56 @@ class NativePlayerActivity : AppCompatActivity() {
         }
     }
 
+    /** Header-indexed originals need no decoded MPV frame to identify every
+     * audio/subtitle track. Exo must still validate its own extracted profiles. */
+    private fun checkMpvHeaderProbe(created: MpvPlayer, candidate: PlaybackCodecInfo) {
+        if (!mpvProbePending || mpvHeaderHandoffPending || player !== created ||
+            mpvProbeJob?.isActive == true || exiting || isDestroyed || !visible) return
+        val embedded = spec.subtitles.filter(::exoEmbeddedSubtitle).mapNotNull { it.streamIndex }
+        val tracks = created.exoHeaderEvidence()
+        val audio = created.manualExoEvidence(embedded, spec.selectedAudioStreamIndex, spec.selectedAudioStreamOrdinal)
+        val accepted = tracks != null && audio?.hasAudio == true && isSafeExoHeaderProbe(candidate, tracks, spec.subtitles)
+        if (spec.sourceItem?.isSpoiler == false)
+            Log.i("ShyniflexPlayback", "stage=header_checked mode=auto accepted=$accepted")
+        if (!accepted) {
+            finishMpvProbe?.invoke()
+            return
+        }
+        mpvHeaderHandoffPending = true
+        val revision = engineGeneration
+        val source = spec
+        val account = client.token
+        handler.post {
+            if (!mayCommitMpvProbe(mpvProbePending && mpvHeaderHandoffPending, player === created,
+                    revision == engineGeneration, spec == source, client.token == account,
+                    visible, exiting || isDestroyed) || closeLockedSpoilerPlayback()) {
+                if (player === created) mpvHeaderHandoffPending = false
+                return@post
+            }
+            val chapterCarry = chapterCreditsEvidence.takeIf {
+                chapterCreditsOwner === created && it?.source == originalChapterSource(spec)
+            }
+            val pendingSubtitles = spec.subtitlesPending
+            finishMpvProbe = null
+            handler.removeCallbacks(engineProbeTimeout)
+            releasePlayer()
+            exoRestoreSubtitlePending = pendingSubtitles
+            spec = spec.copy(subtitlesPending = false)
+            playbackFirstFrameReported = false
+            startPreparedPlayer(null, true, chapterCarry, headerExo = true)
+        }
+    }
+
     /** A deliberate Exo choice still checks MPV's full native tracks for hidden audio/text. */
-    private fun checkManualMpvProbe(created: MpvPlayer) {
+    private fun checkManualMpvProbe(created: MpvPlayer, fromHeaders: Boolean = false) {
         if (!manualExoProbePending || !mpvProbePending || player !== created || exiting || isDestroyed ||
             !visible || closeLockedSpoilerPlayback()) return
         val embedded = spec.subtitles.filter(::exoEmbeddedSubtitle).mapNotNull { it.streamIndex }
         val evidence = created.manualExoEvidence(embedded, spec.selectedAudioStreamIndex,
-            spec.selectedAudioStreamOrdinal) ?: run { finishMpvProbe?.invoke(); return }
+            spec.selectedAudioStreamOrdinal)
+        if (fromHeaders && spec.sourceItem?.isSpoiler == false)
+            Log.i("ShyniflexPlayback", "stage=header_checked mode=manual accepted=${evidence != null}")
+        if (evidence == null) { finishMpvProbe?.invoke(); return }
         val revision = engineGeneration
         val source = spec
         val account = client.token
@@ -1454,7 +1542,7 @@ class NativePlayerActivity : AppCompatActivity() {
         lastDiagnosticAt = now
         Log.i("ShyniflexPlayback", playbackDiagnosticLog(if (active is MpvPlayer) "mpv" else "exo",
             active.playbackState, playbackFirstFrameReported, active.isPlaying,
-            (active as? MpvPlayer)?.streamDiagnostics()))
+            (active as? MpvPlayer)?.streamDiagnostics(), active.totalBufferedDuration))
     }
 
     private fun showPlaybackDiagnostics() {
@@ -3053,6 +3141,8 @@ class NativePlayerActivity : AppCompatActivity() {
         manualExoProbePending = false
         manualExoInUse = false
         manualExoSourceHasAudio = false
+        headerExoInUse = false
+        mpvHeaderHandoffPending = false
         handler.removeCallbacks(engineSelectionTimeout)
         handler.removeCallbacks(engineProbeTimeout)
         mpvProbeJob?.cancel(); mpvProbeJob = null

@@ -28,6 +28,53 @@ class AutomaticEngineSelectionTest {
         assertTrue(isSafeExoProbe(info, probe, supported))
     }
 
+    @Test fun indexedHeadersCanPrepareExoWithoutPretendingADecodedProfileWasObserved() {
+        val header = MpvExoTrackEvidence(null, null, 1920, 1080, 24.0, 2)
+        assertTrue(isSafeExoHeaderProbe(info, header, emptyList()))
+        assertTrue(isPotentialExoCandidate(spec, info.copy(container = "mkv"), emptyList(), true))
+        assertFalse(isPotentialExoCandidate(spec, info.copy(container = "mpegts"), emptyList(), true))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(width = null), emptyList()))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(width = 1280), emptyList()))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(frameRate = Double.NaN), emptyList()))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(audioChannels = 6), emptyList()))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(videoProfile = "High 10"), emptyList()))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(audioProfile = "HE-AAC"), emptyList()))
+        val subtitle = SubtitleTrack(9, "한국어", "https://example.invalid/sub", source = "embedded", format = "mov_text", streamIndex = 4)
+        assertFalse(isSafeExoHeaderProbe(info, header, listOf(subtitle)))
+        assertTrue(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 4), listOf(subtitle)))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 5), listOf(subtitle)))
+        assertFalse(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 4), emptyList()))
+        // The previous decoded path still requires independent decoded color/profile evidence.
+        assertFalse(isSafeExoProbe(info, probe.copy(tracks = header), supported))
+    }
+
+    @Test fun headerHandoffCannotStartUntilExoConfirmsAvcEightBitAndAacLcProfiles() {
+        val video = ExtractedTrack(C.TRACK_TYPE_VIDEO, MimeTypes.VIDEO_H264, true, true,
+            codecs = "avc1.640028", width = 1920, height = 1080, frameRate = 24.0)
+        val audio = ExtractedTrack(C.TRACK_TYPE_AUDIO, MimeTypes.AUDIO_AAC, true, true, "mp4a.40.2", 2)
+        for (codec in listOf("avc1.42e01e", "avc1.4d0028", "avc1.640028", "avc3.640028", "avc1.66.30"))
+            assertTrue(headerExtractedTracksSafe(listOf(video.copy(codecs = codec), audio)))
+        for (codec in listOf(null, "avc1", "avc1.6e0033", "avc1.7a0033", "avc1.f40033", "avc1.100.", "hvc1.1.6.L120"))
+            assertFalse(headerExtractedTracksSafe(listOf(video.copy(codecs = codec), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(width = null), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(height = 4320), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(frameRate = Double.NaN), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(frameRate = 120.0), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(supported = false), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video, audio.copy(codecs = "mp4a.40.5"))))
+        assertFalse(headerExtractedTracksSafe(listOf(video, audio.copy(channels = 6))))
+        assertFalse(headerExtractedTracksSafe(listOf(video, audio, audio)))
+        for (transfer in listOf(C.COLOR_TRANSFER_ST2084, C.COLOR_TRANSFER_HLG))
+            assertFalse(headerExtractedTracksSafe(listOf(video.copy(colorTransfer = transfer), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(hdrStaticInfoPresent = true), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(lumaBitDepth = 10), audio)))
+        assertFalse(headerExtractedTracksSafe(listOf(video.copy(chromaBitDepth = 10), audio)))
+        val text = ExtractedTrack(C.TRACK_TYPE_TEXT, MimeTypes.APPLICATION_TX3G, true, false)
+        assertTrue(headerExtractedTracksSafe(listOf(video, audio, text), embeddedExpected = true))
+        assertFalse(headerExtractedTracksSafe(listOf(video, audio), embeddedExpected = true))
+        assertFalse(headerExtractedTracksSafe(listOf(video, audio, text), embeddedExpected = false))
+    }
+
     @Test fun unknownUnsupportedOrPrivateMediaStayOnMpv() {
         assertTrue(isPotentialExoCandidate(spec, info.copy(hdrFormat = null, videoBitDepth = null), emptyList(), true))
         assertFalse(isSafeExoProbe(info.copy(hdrFormat = null), probe.copy(gamma = null), supported))

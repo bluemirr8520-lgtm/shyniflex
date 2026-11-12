@@ -11,3 +11,11 @@ data class MpvStreamDiagnostics(
     val droppedFrames: Long?,
     val rebufferTargetSeconds: Int,
 )
+
+/** The JNI's Int getter narrows int64_t to jint. Do not use it for byte/rate counters. */
+internal fun readMpvDiagnosticNumber(property: String, doubleReader: (String) -> Double?,
+    stringReader: (String) -> String?): Double? {
+    fun valid(value: Double?): Double? = value?.takeIf { it.isFinite() && it in 0.0..1e12 }
+    return valid(doubleReader(property)) ?: valid(stringReader(property)
+        ?.takeIf { it.length <= 64 }?.trim()?.toDoubleOrNull())
+}

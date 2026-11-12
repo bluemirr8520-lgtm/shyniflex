@@ -570,6 +570,16 @@ class Native4kStreamingTest {
                         timings.hardwareDecoder = MPVLib.getPropertyString("hwdec-current").orEmpty()
                         assertTrue("Record the actual decoder, including a possible software fallback", timings.hardwareDecoder.isNotBlank())
                         assertTrue("The whole synthetic timeline must be available", active.duration in 11_000L..13_000L)
+                        val rateBefore = nativeNumber("cache-speed")
+                        val diagnosticRate = active.streamDiagnostics()?.inputBytesPerSecond
+                        val rateAfter = nativeNumber("cache-speed")
+                        assertNotNull("The bundled native cache-speed property must be readable", rateBefore)
+                        assertNotNull("Diagnostics must retain a native zero or positive input rate", diagnosticRate)
+                        assertTrue(diagnosticRate!!.isFinite() && diagnosticRate >= 0)
+                        // Network observations can update between JNI calls. Compare
+                        // exact bytes/second only when both bounding reads agree.
+                        if (rateBefore == rateAfter)
+                            assertEquals("Diagnostic input rate must use cache-speed bytes/second", rateBefore!!, diagnosticRate, 0.001)
                     }
                     assertColoredFrame(main { view!!.videoSurfaceView as SurfaceView })
                     if (stall) verifyRecovery(active, server, timings)
