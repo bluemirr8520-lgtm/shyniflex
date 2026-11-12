@@ -32,7 +32,41 @@ internal data class MpvExoProbe(
     val frameRate: Double?,
 )
 
+internal data class MpvManualExoEvidence(val hasAudio: Boolean)
+
 internal object MpvTrackSnapshot {
+    /** Ensure Media3 cannot silently hide a native subtitle missing from server metadata. */
+    fun manualExoEvidence(value: String?, expected: List<Int>, expectedAudioIndex: Int?,
+        expectedAudioOrdinal: Int?): MpvManualExoEvidence? {
+        if (value == null || value.length > 1_048_576 || expected.size > 1 ||
+            expected.any { it < 0 } || expected.distinct().size != expected.size) return null
+        return try {
+            val rows = JSONArray(value)
+            if (rows.length() !in 1..256) return null
+            val indices = mutableListOf<Int>()
+            var videos = 0
+            val audioIndices = mutableListOf<Int?>()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: return null
+                val type = row.opt("type") as? String ?: return null
+                if (row.integer("id")?.let { it > 0 } != true) return null
+                if (type == "video" && row.opt("external") != true) videos++
+                if (type == "audio" && row.opt("external") != true) audioIndices.add(row.integer("ff-index"))
+                if (type == "sub" && row.opt("external") != true) {
+                    if ((row.opt("codec") as? String)?.lowercase(java.util.Locale.ROOT) !in setOf("mov_text", "tx3g")) return null
+                    indices.add(row.integer("ff-index")?.takeIf { it >= 0 } ?: return null)
+                }
+            }
+            // With multiple audio/video streams Media3 can hide the selected
+            // stream and substitute another; retain MPV unless mapping is certain.
+            if (videos != 1 || audioIndices.size > 1 ||
+                (expectedAudioOrdinal != null && (audioIndices.isEmpty() || expectedAudioOrdinal != 0)) ||
+                (expectedAudioIndex != null && audioIndices.singleOrNull() != expectedAudioIndex)) return null
+            if (indices.size == expected.size && indices.toSet() == expected.toSet())
+                MpvManualExoEvidence(audioIndices.isNotEmpty()) else null
+        } catch (_: Exception) { null }
+    }
+
     /** Exo may ignore unsupported MP4 subtitle tracks; independently inspect the full mpv list. */
     fun exoEvidence(value: String?): MpvExoTrackEvidence? {
         if (value == null || value.length > 1_048_576) return null

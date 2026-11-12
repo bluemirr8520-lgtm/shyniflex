@@ -4,6 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MpvTrackSnapshotTest {
+    @Test fun manualExoProbeChecksHiddenSubtitlesAndSourceAudio() {
+        val video = """{"id":1,"type":"video","codec":"hevc","selected":true}"""
+        val audio = """{"id":2,"type":"audio","codec":"eac3","ff-index":1,"selected":true}"""
+        val subtitle = """{"id":3,"type":"sub","codec":"mov_text","ff-index":4}"""
+        assertEquals(MpvManualExoEvidence(true), MpvTrackSnapshot.manualExoEvidence("[$video,$audio]", emptyList(), 1, 0))
+        assertEquals(MpvManualExoEvidence(false), MpvTrackSnapshot.manualExoEvidence("[$video]", emptyList(), null, null))
+        assertEquals(MpvManualExoEvidence(true), MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(4), 1, 0))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", emptyList(), null, null))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(5), null, null))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,${subtitle.replace("mov_text", "ass")} ]", listOf(4), null, null))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$audio]", emptyList(), 1, 0))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio]", emptyList(), 2, 0))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio]", emptyList(), 1, 1))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$audio]", emptyList(), null, null))
+        assertNull(MpvTrackSnapshot.manualExoEvidence(null, emptyList(), null, null))
+    }
+
     @Test fun exoProbeRequiresExactlyTwoKnownNativeTracksAndNeverDropsSubtitles() {
         val video = """{"id":1,"type":"video","codec":"h264","selected":true}"""
         val audio = """{"id":2,"type":"audio","codec":"aac","selected":true}"""

@@ -466,6 +466,12 @@ class MpvPlayer(
             MPVLib.getPropertyDouble("container-fps"))
     }
 
+    /** Compare native track identities before a manually selected Exo handoff. */
+    internal fun manualExoEvidence(expected: List<Int>, expectedAudioIndex: Int?,
+        expectedAudioOrdinal: Int?): MpvManualExoEvidence? = if (alive && loaded)
+        MpvTrackSnapshot.manualExoEvidence(MPVLib.getPropertyString("track-list"), expected,
+            expectedAudioIndex, expectedAudioOrdinal) else null
+
     /** Source chapters are read only from the currently loaded, original MPV file. */
     internal fun nativeChapterCredits(expectedSourceDurationMs: Long): io.mirr.shynigsy.data.PlaybackMarker? {
         if (!alive || !loaded || !nativeFirstFrameSeen || released || stopRequested || isServerConverted) return null

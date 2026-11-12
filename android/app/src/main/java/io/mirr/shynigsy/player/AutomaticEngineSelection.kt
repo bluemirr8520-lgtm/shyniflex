@@ -151,6 +151,30 @@ internal fun exoTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false): B
     }
 }, embeddedExpected)
 
+/** Manual Exo may support codecs beyond the conservative automatic selection.
+ * Still reject missing/unsupported native text tracks instead of silently hiding subtitles. */
+internal fun manuallyExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean,
+    sourceHasAudio: Boolean): Boolean {
+    if (tracks.any { it.type == C.TRACK_TYPE_UNKNOWN }) return false
+    val video = tracks.filter { it.type == C.TRACK_TYPE_VIDEO }
+    val audio = tracks.filter { it.type == C.TRACK_TYPE_AUDIO }
+    val text = tracks.filter { it.type == C.TRACK_TYPE_TEXT }
+    if (video.none { it.selected && it.supported } || (sourceHasAudio && audio.isEmpty()) ||
+        (audio.isNotEmpty() && audio.none { it.selected && it.supported })) return false
+    if (tracks.any { it.selected && !it.supported && it.type in setOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO) }) return false
+    return text.size == (if (embeddedExpected) 1 else 0) &&
+        text.all { it.supported && exoMovTextMime(it.mime, it.codecs) }
+}
+
+internal fun manualExoTracksSafe(tracks: Tracks, embeddedExpected: Boolean, sourceHasAudio: Boolean): Boolean =
+    manuallyExtractedTracksSafe(tracks.groups.flatMap { group ->
+        (0 until group.length).map { index ->
+            val format = group.getTrackFormat(index)
+            ExtractedTrack(group.type, format.sampleMimeType, group.isTrackSupported(index),
+                group.isTrackSelected(index), format.codecs, format.channelCount.takeIf { it > 0 })
+        }
+    }, embeddedExpected, sourceHasAudio)
+
 /** Network, permission and TLS errors are never treated as codec failures. */
 internal fun shouldFallbackFromExo(errorCode: Int): Boolean = errorCode in setOf(
     PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,

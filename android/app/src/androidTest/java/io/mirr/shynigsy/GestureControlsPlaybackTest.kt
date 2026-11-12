@@ -145,7 +145,7 @@ class GestureControlsPlaybackTest {
         }
         scenario.onActivity { it.findViewById<View>(R.id.player_settings).performClick() }
         waitForWindow("settings opens with speed row focused") { focusedLabel().startsWith("배속") }
-        listOf("화면 크기", "변환 (데이터 절약)", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
+        listOf("재생 엔진", "화면 크기", "변환 (데이터 절약)", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
             instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
             waitForWindow("settings focus reaches $label") { focusedLabel().startsWith(label) }
         }
@@ -155,6 +155,31 @@ class GestureControlsPlaybackTest {
         scenario.onActivity { activity ->
             val active = findView<PlayerView>(activity.findViewById(android.R.id.content))!!.player!!
             assertFalse("Settings navigation must preserve paused playback", active.playWhenReady)
+        }
+    }
+
+    @Test fun choosingEngineKeepsCurrentPlaybackAndSavesChoice() = withFixture(false) { scenario ->
+        var original: androidx.media3.common.Player? = null
+        var position = 0L
+        waitFor(scenario, "source ready for engine settings") { activity ->
+            val active = findView<PlayerView>(activity.findViewById(android.R.id.content))?.player
+            if (active?.playbackState == Player.STATE_READY) {
+                active.pause()
+                original = active
+                position = active.currentPosition
+            }
+            active?.playbackState == Player.STATE_READY && !active.playWhenReady
+        }
+        scenario.onActivity { it.findViewById<View>(R.id.player_settings).performClick() }
+        waitForWindow("engine settings row is actionable") { clickWindowText("재생 엔진") }
+        waitForWindow("engine selection choices are visible") {
+            activeWindowChoiceLabels() == listOf("자동", "MPV", "ExoPlayer")
+        }
+        assertTrue(clickWindowText("ExoPlayer"))
+        waitFor(scenario, "engine choice is saved without replacing the current player") { activity ->
+            val active = findView<PlayerView>(activity.findViewById(android.R.id.content))?.player
+            activity.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE).getString("playback_engine", null) == "exo" &&
+                active === original && active?.playWhenReady == false && abs(active.currentPosition - position) < 300
         }
     }
 
@@ -554,6 +579,11 @@ class GestureControlsPlaybackTest {
         waitFor(scenario, "direct conversion button is visible") {
             nativeView.isControllerFullyVisible && it.findViewById<View>(R.id.player_conversion).isShown
         }
+        scenario.onActivity { activity ->
+            assertEquals("변환\n원본", activity.findViewById<Button>(R.id.player_conversion).text.toString())
+            assertEquals("원본", activity.findViewById<TextView>(R.id.player_mode).text.toString())
+            assertTrue("Playback mode appears with the controls", activity.findViewById<TextView>(R.id.player_mode).isShown)
+        }
         tapThroughActivityRoot(scenario, R.id.player_conversion)
         waitForWindow("a local file offers original playback without a server lookup") {
             activeWindowChoiceLabels().contains("원본")
@@ -637,7 +667,7 @@ class GestureControlsPlaybackTest {
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
         val settingKeys = setOf("subtitle_vertical", "subtitle_x", "subtitle_y", "subtitle_size", "subtitle_font",
             "subtitle_horizontal_writing_x", "subtitle_horizontal_writing_y", "subtitle_vertical_writing_x", "subtitle_vertical_writing_y",
-            "playback_speed", "resize_mode", "resize_scale")
+            "playback_speed", "playback_engine", "resize_mode", "resize_scale")
         val oldSettings = settingKeys.associateWith { settings.all[it] }
         val sessions = context.getSharedPreferences("encrypted_sessions", Context.MODE_PRIVATE)
         val server = "https://gesture-controls-test.invalid"
@@ -648,7 +678,8 @@ class GestureControlsPlaybackTest {
         val clip = File(context.cacheDir, "gesture-controls-$asset")
         try {
             settings.edit().putBoolean("subtitle_vertical", false).putInt("subtitle_x", 0).putInt("subtitle_y", 0)
-                .putInt("subtitle_size", 100).putString("subtitle_font", "system").putFloat("playback_speed", 1f).commit()
+                .putInt("subtitle_size", 100).putString("subtitle_font", "system").putFloat("playback_speed", 1f)
+                .putString("playback_engine", "auto").commit()
             if (invalidMedia) clip.writeText("This synthetic fixture is not a playable media container.")
             else instrumentation.context.assets.open("media3/$asset").use { source -> clip.outputStream().use { source.copyTo(it) } }
             store.save(server, "synthetic-gesture-test-only", "테스트")

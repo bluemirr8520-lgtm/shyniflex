@@ -148,6 +148,12 @@ class NativePlayerActivity : AppCompatActivity() {
     private val mpvSubtitleController = MpvSubtitleController { native -> (player as? MpvPlayer)?.nativeSubtitleVisibility = native }
     private var engineSelectionJob: Job? = null
     private var engineGeneration = 0L
+    private var manualExoSelectionPending = false
+    private var manualExoProbePending = false
+    private var manualExoInUse = false
+    private var manualExoSourceHasAudio = false
+    private var enginePreferenceContentKey: String? = null
+    private var enginePreferenceForContent = PlaybackEnginePreference.AUTO
     private var exoValidated = false
     private var forceMpvSession: String? = null
     private var mpvProbePending = false
@@ -226,8 +232,13 @@ class NativePlayerActivity : AppCompatActivity() {
     private val engineSelectionTimeout = Runnable {
         engineSelectionJob?.cancel(); engineSelectionJob = null
         engineGeneration++
+        val manual = manualExoSelectionPending
+        manualExoSelectionPending = false
         if (player == null && !exiting && !isDestroyed && ::spec.isInitialized && ::client.isInitialized &&
-            !closeLockedSpoilerPlayback()) startPreparedPlayer(null, false)
+            !closeLockedSpoilerPlayback()) {
+            if (manual) toast("ExoPlayer의 자막을 확인하지 못해 MPV로 재생합니다.")
+            startPreparedPlayer(null, false)
+        }
     }
     private val engineProbeTimeout = Runnable { finishMpvProbe?.invoke() }
     private val hideUnlock = Runnable { if (::gestures.isInitialized && gestures.locked) hideLockControl() }
@@ -849,10 +860,29 @@ class NativePlayerActivity : AppCompatActivity() {
         return super.dispatchTouchEvent(event)
     }
 
+    private fun manualEnginePreparing(): Boolean = manualExoSelectionPending || manualExoProbePending ||
+        (manualExoInUse && !exoValidated)
+
     /** Apply a remote/touch action to the existing MPV immediately, without a later surprise switch. */
     private fun abandonEnginePreflightForInteraction() {
-        when (engineInteraction(player != null, engineSelectionJob?.isActive == true, mpvProbePending,
-            player is ExoPlayer && !exoValidated)) {
+        val action = engineInteraction(player != null, engineSelectionJob?.isActive == true, mpvProbePending,
+            player is ExoPlayer && !exoValidated)
+        if (manualEnginePreparing() && action != EngineInteraction.NONE) {
+            // Do not block close, pause or seek while waiting on the network.
+            // A later Exo handoff would override that interaction, so keep MPV.
+            manualExoSelectionPending = false
+            manualExoProbePending = false
+            manualExoInUse = false
+            when (action) {
+                EngineInteraction.START_MPV -> engineSelectionTimeout.run()
+                EngineInteraction.ACCEPT_MPV -> finishMpvProbe?.invoke()
+                EngineInteraction.FALLBACK_FROM_EXO -> player?.let(::fallbackFromExo)
+                EngineInteraction.NONE -> Unit
+            }
+            toast("조작을 위해 MPV로 재생합니다. 다시 열면 ExoPlayer를 재시도합니다.")
+            return
+        }
+        when (action) {
             EngineInteraction.START_MPV -> engineSelectionTimeout.run()
             EngineInteraction.ACCEPT_MPV -> finishMpvProbe?.invoke()
             EngineInteraction.FALLBACK_FROM_EXO -> player?.let(::fallbackFromExo)
@@ -941,10 +971,55 @@ class NativePlayerActivity : AppCompatActivity() {
         val account = client.token
         val generation = engineGeneration
         val key = "${current.sessionId}:${current.partId}"
-        if (current.sessionId.isNullOrBlank() || forceMpvSession == key || current.sourceItem?.isSpoiler != false ||
-            current.isServerConversion || current.preferSoftwareDecode ||
-            pendingTextPreference != null || resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT || resizeScale != 1f) {
+        // Freeze the choice for this item, including transport retries/conversion.
+        // A new item or a freshly opened player reads the latest preference.
+        val contentKey = "${current.libraryId}:${current.itemId}:${current.partId}:${current.viewItemId}"
+        if (enginePreferenceContentKey != contentKey) {
+            enginePreferenceContentKey = contentKey
+            enginePreferenceForContent = playbackEnginePreference()
+        }
+        val preference = enginePreferenceForContent
+        val start = engineStart(preference, forceMpvSession == key,
+            current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
+            pendingTextPreference != null, resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT || resizeScale != 1f,
+            current.sessionId.isNullOrBlank())
+        if (start == EngineStart.MPV || start == EngineStart.SAFE_MPV) {
+            if (start == EngineStart.SAFE_MPV) toast("이 재생에는 MPV가 필요해 MPV로 재생합니다.")
             startPreparedPlayer(null, false)
+            return
+        }
+        if (start == EngineStart.MANUAL_EXO) {
+            manualExoSelectionPending = true
+            engineSelectionJob = scope.launch(start = CoroutineStart.LAZY) {
+                val inspected = try { client.playbackSubtitlesForEngine(current) }
+                    catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+                    catch (_: Exception) { null }
+                if (generation != engineGeneration || player != null || exiting || isDestroyed ||
+                    client.token != account || spec != current || closeLockedSpoilerPlayback()) return@launch
+                handler.removeCallbacks(engineSelectionTimeout)
+                engineSelectionJob = null
+                manualExoSelectionPending = false
+                val savedId = embeddedServerSubtitleId ?: externalSubtitleId
+                if (inspected == null || !inspected.safeForExo || !visible ||
+                    (savedId != null && inspected.tracks.none { it.id == savedId })) {
+                    toast("ExoPlayer의 자막을 확인하지 못해 MPV로 재생합니다.")
+                    startPreparedPlayer(null, false)
+                    return@launch
+                }
+                spec = spec.copy(subtitles = inspected.tracks, subtitlesPending = false)
+                val preferred = deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
+                    subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null, true)
+                deferredSubtitlePreference = null
+                if (preferred != null) {
+                    if (preferred.isEmbedded) { embeddedServerSubtitleId = preferred.id; externalSubtitleId = null }
+                    else { externalSubtitleId = preferred.id; embeddedServerSubtitleId = null }
+                }
+                // Native MPV sees embedded tracks that Media3 can silently omit.
+                // Do not start the requested Exo engine until their identity matches.
+                startPreparedPlayer(null, false, manualProbe = true)
+            }
+            handler.postDelayed(engineSelectionTimeout, 8_000)
+            engineSelectionJob?.start()
             return
         }
         engineSelectionJob = scope.launch(start = CoroutineStart.LAZY) {
@@ -990,7 +1065,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean,
-        chapterCarry: OriginalChapterCredits? = null) {
+        chapterCarry: OriginalChapterCredits? = null, manualExo: Boolean = false, manualProbe: Boolean = false,
+        sourceHasAudio: Boolean = false) {
         val headers = client.playbackHeaders(spec)
         val created: Player = try {
             if (useExo) try {
@@ -1005,6 +1081,7 @@ class NativePlayerActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 if (exoRestoreSubtitlePending) spec = spec.copy(subtitlesPending = true)
                 exoRestoreSubtitlePending = false
+                if (manualExo) toast("ExoPlayer를 시작하지 못해 MPV로 재생합니다.")
                 MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
                     serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
             } else MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
@@ -1016,7 +1093,10 @@ class NativePlayerActivity : AppCompatActivity() {
             onPlayerInitializationFailure()
             return
         }
-        mpvProbePending = candidate != null && created is MpvPlayer
+        manualExoProbePending = manualProbe && created is MpvPlayer
+        mpvProbePending = (candidate != null || manualProbe) && created is MpvPlayer
+        manualExoInUse = manualExo && created is ExoPlayer
+        manualExoSourceHasAudio = manualExoInUse && sourceHasAudio
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
@@ -1039,18 +1119,21 @@ class NativePlayerActivity : AppCompatActivity() {
         if (mpvProbePending) {
             finishMpvProbe = {
                 if (mpvProbePending && player === created && !exiting && !isDestroyed) {
+                    val manual = manualExoProbePending
                     mpvProbePending = false
+                    manualExoProbePending = false
                     finishMpvProbe = null
                     handler.removeCallbacks(engineProbeTimeout)
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                     forceMpvSession = "${spec.sessionId}:${spec.partId}"
+                    if (manual) toast("ExoPlayer의 영상·자막을 확인하지 못해 MPV로 재생합니다.")
                     if (created.playbackState == Player.STATE_READY) acceptPreparedPlayer(created)
                     finishReplacementAfterFirstFrame(created)
                     created.playWhenReady = resumeWhenVisible && visible
                     refreshSegmentActions()
                 }
             }
-            handler.postDelayed(engineProbeTimeout, 600)
+            handler.postDelayed(engineProbeTimeout, if (manualProbe) 8_000 else 600)
         }
         var initialAudioApplied = false
         created.addListener(object : Player.Listener {
@@ -1060,7 +1143,7 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 if (player !== created) return
-                if (created is ExoPlayer && exoValidated && !exoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))) {
+                if (created is ExoPlayer && exoValidated && !exoPlaybackTracksSafe(tracks)) {
                     fallbackFromExo(created)
                     return
                 }
@@ -1090,12 +1173,15 @@ class NativePlayerActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 if (player !== created) return
                 if (state == Player.STATE_READY) {
-                    if (mpvProbePending && created is MpvPlayer && candidate != null) {
-                        if (playbackFirstFrameReported) checkMpvProbe(created, candidate)
+                    if (mpvProbePending && created is MpvPlayer) {
+                        if (playbackFirstFrameReported) {
+                            if (manualExoProbePending) checkManualMpvProbe(created)
+                            else if (candidate != null) checkMpvProbe(created, candidate)
+                        }
                         return
                     }
                     if (created is ExoPlayer && !exoValidated) {
-                        if (!exoTracksSafe(created.currentTracks, spec.subtitles.any(::exoEmbeddedSubtitle))) { fallbackFromExo(created); return }
+                        if (!exoPlaybackTracksSafe(created.currentTracks)) { fallbackFromExo(created); return }
                         exoValidated = true
                         created.playWhenReady = resumeWhenVisible && visible
                     }
@@ -1126,6 +1212,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (player !== created) return
                 if (mpvProbePending) {
                     mpvProbePending = false; finishMpvProbe = null
+                    manualExoProbePending = false
                     handler.removeCallbacks(engineProbeTimeout)
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                 }
@@ -1153,8 +1240,11 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (player !== created) return
                 playbackFirstFrameReported = true
                 captureOriginalChapterCredits(created)
-                if (mpvProbePending && created is MpvPlayer && candidate != null) {
-                    if (created.playbackState == Player.STATE_READY) checkMpvProbe(created, candidate)
+                if (mpvProbePending && created is MpvPlayer) {
+                    if (created.playbackState == Player.STATE_READY) {
+                        if (manualExoProbePending) checkManualMpvProbe(created)
+                        else if (candidate != null) checkMpvProbe(created, candidate)
+                    }
                     return
                 }
                 finishReplacementAfterFirstFrame(created)
@@ -1214,6 +1304,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun fallbackFromExo(active: Player) {
         if (active !is ExoPlayer || player !== active || exiting || isDestroyed || refreshing) return
+        if (manualExoInUse) toast("이 영상 또는 자막을 ExoPlayer에서 지원하지 않아 MPV로 재생합니다.")
         val playing = if (exoValidated) active.playWhenReady else resumeWhenVisible
         // Before track validation Exo's default position can still be zero;
         // preserve the authorized resume point until it has a valid timeline.
@@ -1223,6 +1314,10 @@ class NativePlayerActivity : AppCompatActivity() {
         forceMpvSession = "${spec.sessionId}:${spec.partId}"
         preparePlayback(playing)
     }
+
+    private fun exoPlaybackTracksSafe(tracks: androidx.media3.common.Tracks): Boolean =
+        if (manualExoInUse) manualExoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle), manualExoSourceHasAudio)
+        else exoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))
 
     private fun acceptPreparedPlayer(created: Player) {
         if (player !== created || exiting || isDestroyed) return
@@ -1261,6 +1356,36 @@ class NativePlayerActivity : AppCompatActivity() {
             spec = spec.copy(subtitlesPending = false)
             playbackFirstFrameReported = false
             startPreparedPlayer(null, true, chapterCarry)
+        }
+    }
+
+    /** A deliberate Exo choice still checks MPV's full native tracks for hidden audio/text. */
+    private fun checkManualMpvProbe(created: MpvPlayer) {
+        if (!manualExoProbePending || !mpvProbePending || player !== created || exiting || isDestroyed ||
+            !visible || closeLockedSpoilerPlayback()) return
+        val embedded = spec.subtitles.filter(::exoEmbeddedSubtitle).mapNotNull { it.streamIndex }
+        val evidence = created.manualExoEvidence(embedded, spec.selectedAudioStreamIndex,
+            spec.selectedAudioStreamOrdinal) ?: run { finishMpvProbe?.invoke(); return }
+        val revision = engineGeneration
+        val source = spec
+        val account = client.token
+        // Releasing a player while it dispatches a listener can invalidate its
+        // event iteration; defer the handoff and fence it against user actions.
+        handler.post {
+            if (!mayCommitMpvProbe(mpvProbePending && manualExoProbePending, player === created,
+                    revision == engineGeneration, spec == source, client.token == account,
+                    visible, exiting || isDestroyed) || closeLockedSpoilerPlayback()) return@post
+            val chapterCarry = chapterCreditsEvidence.takeIf {
+                chapterCreditsOwner === created && it?.source == originalChapterSource(spec)
+            }
+            val pendingSubtitles = spec.subtitlesPending
+            finishMpvProbe = null
+            handler.removeCallbacks(engineProbeTimeout)
+            releasePlayer()
+            exoRestoreSubtitlePending = pendingSubtitles
+            spec = spec.copy(subtitlesPending = false)
+            playbackFirstFrameReported = false
+            startPreparedPlayer(null, true, chapterCarry, manualExo = true, sourceHasAudio = evidence.hasAudio)
         }
     }
 
@@ -1400,6 +1525,7 @@ class NativePlayerActivity : AppCompatActivity() {
             when (index) {
                 -1 -> {
                     addRow("배속", speedLabel()) { showSpeed() }
+                    addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
                     addRow("화면 크기", resizeLabel()) {
                         AlertDialog.Builder(this).setTitle("화면 크기")
                             .setSingleChoiceItems(resizeChoices.map { it.label }.toTypedArray(), resizeChoiceIndex()) { choice, position ->
@@ -1421,7 +1547,10 @@ class NativePlayerActivity : AppCompatActivity() {
                     if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
                     addRow("싱크 다시 맞추기") { resynchronize() }
                 }
-                0 -> addRow("배속", speedLabel()) { showSpeed() }
+                0 -> {
+                    addRow("배속", speedLabel()) { showSpeed() }
+                    addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
+                }
                 1 -> {
                     addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
                     addRow("화면 크기", resizeLabel()) {
@@ -1475,6 +1604,33 @@ class NativePlayerActivity : AppCompatActivity() {
             setLayout(minOf(dp(360), resources.displayMetrics.widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
+    }
+
+    private fun playbackEnginePreference(): PlaybackEnginePreference = PlaybackEnginePreference.fromKey(
+        getSharedPreferences("gsy_settings", MODE_PRIVATE).getString("playback_engine", null))
+
+    private fun playbackEngineSettingLabel(): String {
+        val active = when (player) {
+            is MpvPlayer -> "MPV"
+            is ExoPlayer -> "ExoPlayer"
+            else -> "확인 중"
+        }
+        return "${playbackEnginePreference().label} · 현재 $active"
+    }
+
+    private fun showPlaybackEnginePreference() {
+        val choices = PlaybackEnginePreference.entries
+        val selected = choices.indexOf(playbackEnginePreference())
+        val dialog = AlertDialog.Builder(this).setTitle("재생 엔진 · 현재 영상 종료 후 적용")
+            .setSingleChoiceItems(choices.map { it.label }.toTypedArray(), selected) { choice, index ->
+                val next = choices.getOrNull(index) ?: return@setSingleChoiceItems
+                getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("playback_engine", next.key).apply()
+                choice.dismiss()
+                toast(if (next == PlaybackEnginePreference.EXO)
+                    "현재 영상 종료 후 적용됩니다. 변환·미지원 영상과 자막은 MPV로 재생됩니다."
+                    else "재생 엔진은 현재 영상 종료 후 적용됩니다.")
+            }.setNegativeButton("취소", null).show()
+        if (television) dialog.window?.setLayout(dp(360), WindowManager.LayoutParams.WRAP_CONTENT)
     }
 
     private fun selectedTrackLabel(type: Int): String {
@@ -2003,11 +2159,16 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun updatePlaybackButtons() {
         if (!::playerView.isInitialized) return
+        val mode = playbackModeLabel(spec)
+        playerView.findViewById<TextView>(R.id.player_mode).apply {
+            text = mode
+            contentDescription = "재생 방식, $mode"
+        }
         playerView.findViewById<Button>(R.id.player_speed).apply {
             text = speedLabel(); contentDescription = "배속 설정, $text"; tooltipText = contentDescription
         }
         playerView.findViewById<Button>(R.id.player_conversion).apply {
-            text = "변환"; contentDescription = "변환 (데이터 절약), ${conversionLabel()}"; tooltipText = contentDescription
+            text = playbackModeButtonLabel(spec); contentDescription = "변환 (데이터 절약), 현재 $mode"; tooltipText = contentDescription
             isEnabled = !conversionLoading && !refreshing
         }
         updateNavigationButtons()
@@ -2830,6 +2991,10 @@ class NativePlayerActivity : AppCompatActivity() {
         chapterCreditsCaptureGate.reset()
         engineGeneration++
         engineSelectionJob?.cancel(); engineSelectionJob = null
+        manualExoSelectionPending = false
+        manualExoProbePending = false
+        manualExoInUse = false
+        manualExoSourceHasAudio = false
         handler.removeCallbacks(engineSelectionTimeout)
         handler.removeCallbacks(engineProbeTimeout)
         mpvProbeJob?.cancel(); mpvProbeJob = null
