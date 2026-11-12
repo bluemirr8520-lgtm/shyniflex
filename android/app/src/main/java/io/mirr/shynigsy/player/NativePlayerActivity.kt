@@ -991,8 +991,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val preference = enginePreferenceForContent
         val start = engineStart(preference, forceMpvSession == key,
             current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
-            pendingTextPreference != null, resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT || resizeScale != 1f,
-            current.sessionId.isNullOrBlank())
+            pendingTextPreference != null, current.sessionId.isNullOrBlank())
         if (start == EngineStart.MPV || start == EngineStart.SAFE_MPV) {
             if (start == EngineStart.SAFE_MPV) toast("이 재생에는 MPV가 필요해 MPV로 재생합니다.")
             startPreparedPlayer(null, false)
@@ -1288,6 +1287,10 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onRenderedFirstFrame() {
                 if (player !== created) return
+                if (!playbackFirstFrameReported && spec.sourceItem?.isSpoiler == false) {
+                    Log.i("ShyniflexPlayback", "stage=first_frame engine=${if (created is ExoPlayer) "exo" else "mpv"}" +
+                        " elapsed_ms=${(SystemClock.elapsedRealtime() - diagnosticStartedAt).coerceAtLeast(0)}")
+                }
                 playbackFirstFrameReported = true
                 captureOriginalChapterCredits(created)
                 if (mpvProbePending && created is MpvPlayer) {
@@ -2503,10 +2506,24 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun applyResizeMode() {
-        // Keep the TV output surface at screen size, then let the renderer fit/crop/stretch.
-        // Otherwise MPV letterboxes again inside the already resized Media3 surface.
-        playerView.resizeMode = if (player is ExoPlayer) AspectRatioFrameLayout.RESIZE_MODE_FIT
-            else AspectRatioFrameLayout.RESIZE_MODE_FILL
+        val exo = player is ExoPlayer
+        // Media3 sizes Exo's video surface for fit/crop/stretch. Scale only that
+        // surface for 110/125/150%, never the controls or the subtitle overlay.
+        // SurfaceView scaling is synchronized on Android N+ (our minimum is O).
+        playerView.resizeMode = if (exo) resizeMode else AspectRatioFrameLayout.RESIZE_MODE_FILL
+        playerView.findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
+            // A zoomed video may extend into its former letterbox; the PlayerView
+            // still clips it to the screen, while sibling captions remain unscaled.
+            clipChildren = false
+            clipToPadding = false
+        }
+        playerView.clipChildren = true
+        playerView.videoSurfaceView?.apply {
+            scaleX = if (exo) resizeScale else 1f
+            scaleY = if (exo) resizeScale else 1f
+        }
+        // MPV owns its fit/crop/zoom inside a full-screen Surface. Clear any Exo
+        // transform above before a fallback so native zoom is not applied twice.
         (player as? MpvPlayer)?.setVideoLayout(
             keepAspect = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FILL,
             crop = resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM, zoom = resizeScale)
@@ -2523,13 +2540,6 @@ class NativePlayerActivity : AppCompatActivity() {
         val choice = resizeChoices[(resizeChoiceIndex() + 1) % resizeChoices.size]
         resizeMode = choice.mode; resizeScale = choice.scale
         if (mpvProbePending) finishMpvProbe?.invoke()
-        val exo = player as? ExoPlayer
-        if (exo != null) {
-            saveResizeMode()
-            fallbackFromExo(exo)
-            showResizeNotice()
-            return
-        }
         applyResizeMode()
         saveResizeMode()
         showResizeNotice()

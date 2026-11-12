@@ -7,7 +7,9 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.SystemClock
 import android.security.NetworkSecurityPolicy
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ImageButton
 import androidx.activity.ComponentActivity
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -15,6 +17,7 @@ import androidx.media3.common.MediaItem as PlayerItem
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -25,6 +28,7 @@ import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.player.NativePlayerActivity
 import io.mirr.shynigsy.player.mpv.MpvPlayer
 import io.mirr.shynigsy.player.subtitles.PlexSubtitleOverlayView
+import `is`.xyz.mpv.MPVLib
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -58,7 +62,9 @@ class HeaderEngineHandoffTest {
 
     @Test fun automaticExoStartsFromHeadersBeforeMpvCanRenderTheResumeFrame() = handoff("auto")
 
-    private fun handoff(preference: String) {
+    @Test fun savedZoomKeepsExoAndResizeControlsNeverReplaceThePlayingEngine() = handoff("exo", verifyResize = true)
+
+    private fun handoff(preference: String, verifyResize: Boolean = false) {
         val context = instrumentation.targetContext
         requireSyntheticEnvironment(context)
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
@@ -71,7 +77,8 @@ class HeaderEngineHandoffTest {
         HeaderFixture(clip).use { fixture ->
             try {
                 settings.edit().putString("playback_engine", preference).putFloat("playback_speed", 1f)
-                    .putInt("resize_mode", 0).putFloat("resize_scale", 1f).putBoolean("subtitle_vertical", false).commit()
+                    .putInt("resize_mode", 0).putFloat("resize_scale", if (verifyResize) 1.1f else 1f)
+                    .putBoolean("subtitle_vertical", false).commit()
                 sessions.save(fixture.origin, SESSION, "합성 엔진 검사")
                 val item = MediaItem(ITEM, VIEW, "합성 엔진 영상", "movie", durationMs = 6_000,
                     viewItemId = VIEW_ITEM, playbackPartId = PART)
@@ -129,6 +136,7 @@ class HeaderEngineHandoffTest {
                         active.pause()
                         assertTrue(field<PlaybackSpec>(activity, "spec").subtitles.any { it.id == SUBTITLE_ID })
                     }
+                    if (verifyResize) verifyExoResizeAndFallback(scenario)
                     fixture.assertHealthy()
                 }
             } finally {
@@ -139,6 +147,106 @@ class HeaderEngineHandoffTest {
                 }.commit()
                 restore(settings, oldSettings)
             }
+        }
+    }
+
+    private fun verifyExoResizeAndFallback(scenario: ActivityScenario<NativePlayerActivity>) {
+        lateinit var original: ExoPlayer
+        var sourcePosition = 0L
+        scenario.onActivity {
+            original = field<Player>(it, "player") as ExoPlayer
+            sourcePosition = original.currentPosition
+            assertEquals(1.1f, field<Float>(it, "resizeScale"), 0f)
+        }
+        val choices = listOf(
+            AspectRatioFrameLayout.RESIZE_MODE_FIT to 1.1f,
+            AspectRatioFrameLayout.RESIZE_MODE_FIT to 1.25f,
+            AspectRatioFrameLayout.RESIZE_MODE_FIT to 1.5f,
+            AspectRatioFrameLayout.RESIZE_MODE_FIT to 1f,
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM to 1f,
+            AspectRatioFrameLayout.RESIZE_MODE_FILL to 1f,
+            AspectRatioFrameLayout.RESIZE_MODE_FIT to 1.1f)
+        choices.forEachIndexed { index, (mode, scale) ->
+            if (index > 0) scenario.onActivity {
+                assertTrue(it.findViewById<ImageButton>(R.id.player_resize).performClick())
+            }
+            waitFor(scenario, "The video surface must complete its fit/crop/stretch layout", 2_000) { activity ->
+                val playerView = field<PlayerView>(activity, "playerView")
+                val surface = playerView.videoSurfaceView!!
+                when (mode) {
+                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> surface.width <= playerView.width + 2 && surface.height <= playerView.height + 2
+                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> surface.width >= playerView.width - 2 && surface.height >= playerView.height - 2
+                    else -> surface.width == playerView.width && surface.height == playerView.height
+                }
+            }
+            scenario.onActivity { activity ->
+                val playerView = field<PlayerView>(activity, "playerView")
+                val surface = playerView.videoSurfaceView!!
+                val content = playerView.findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)
+                assertSame("Screen-size choices must keep the same Exo decoder and stream", original, field<Player>(activity, "player"))
+                assertFalse("Resizing a paused source must not resume playback", original.playWhenReady)
+                assertTrue("Resizing must not seek or reopen the source", kotlin.math.abs(original.currentPosition - sourcePosition) < 150)
+                assertEquals(mode, playerView.resizeMode)
+                assertEquals(scale, surface.scaleX, 0f); assertEquals(scale, surface.scaleY, 0f)
+                assertEquals(1f, playerView.scaleX, 0f); assertEquals(1f, playerView.scaleY, 0f)
+                assertEquals(1f, content.scaleX, 0f); assertEquals(1f, content.scaleY, 0f)
+                val subtitle = field<PlexSubtitleOverlayView>(activity, "subtitleOverlay")
+                assertEquals(1f, subtitle.scaleX, 0f); assertEquals(1f, subtitle.scaleY, 0f)
+                assertEquals(SUBTITLE, subtitle.subtitleText)
+                val controls = playerView.findViewById<ImageButton>(R.id.player_resize)
+                assertEquals(1f, controls.scaleX, 0f); assertEquals(1f, controls.scaleY, 0f)
+                assertTrue("The final viewport must crop only the overflowing video", playerView.clipChildren)
+                assertFalse("Zoom may use the video's former letterbox space", content.clipChildren)
+                assertTrue(surface.width > 0 && surface.height > 0)
+                if (mode != AspectRatioFrameLayout.RESIZE_MODE_FILL) {
+                    assertEquals("Fit and crop must preserve the original video aspect ratio",
+                        160.0 / 90, surface.width.toDouble() / surface.height, 0.025)
+                } else {
+                    assertEquals(playerView.width, surface.width)
+                    assertEquals(playerView.height, surface.height)
+                }
+                val settings = activity.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
+                assertEquals(mode, settings.getInt("resize_mode", -1))
+                assertEquals(scale, settings.getFloat("resize_scale", -1f), 0f)
+            }
+        }
+        scenario.onActivity { activity ->
+            original.play()
+            assertTrue(activity.findViewById<ImageButton>(R.id.player_resize).performClick())
+            assertSame("Live resizing must retain the same Exo engine", original, field<Player>(activity, "player"))
+            assertTrue(original.playWhenReady)
+            assertEquals(1.25f, field<PlayerView>(activity, "playerView").videoSurfaceView!!.scaleX, 0f)
+        }
+        waitFor(scenario, "Playback must continue advancing during live resizing", 2_000) {
+            field<Player>(it, "player") === original && original.isPlaying && original.currentPosition >= sourcePosition + 150
+        }
+        scenario.onActivity { activity ->
+            original.pause()
+            sourcePosition = original.currentPosition
+            // Return the preference to 110% before exercising the fallback.
+            repeat(5) { assertTrue(activity.findViewById<ImageButton>(R.id.player_resize).performClick()) }
+            assertEquals(1.1f, field<Float>(activity, "resizeScale"), 0f)
+        }
+        scenario.onActivity { activity ->
+            NativePlayerActivity::class.java.getDeclaredMethod("fallbackFromExo", Player::class.java)
+                .apply { isAccessible = true }.invoke(activity, original)
+        }
+        waitFor(scenario, "A real engine fallback must restore MPV without double-applying Exo zoom", 10_000) {
+            val active = field<Player?>(it, "player")
+            active is MpvPlayer && active.playbackState == Player.STATE_READY
+        }
+        scenario.onActivity { activity ->
+            val active = field<Player>(activity, "player")
+            val playerView = field<PlayerView>(activity, "playerView")
+            assertFalse(active.playWhenReady)
+            assertTrue(kotlin.math.abs(active.currentPosition - sourcePosition) < 500)
+            assertEquals(1f, playerView.videoSurfaceView!!.scaleX, 0f)
+            assertEquals(1f, playerView.videoSurfaceView!!.scaleY, 0f)
+            assertEquals(AspectRatioFrameLayout.RESIZE_MODE_FILL, playerView.resizeMode)
+            val zoom = MPVLib.getPropertyDouble("video-zoom")
+                ?: MPVLib.getPropertyString("video-zoom")?.toDoubleOrNull()
+            assertNotNull(zoom)
+            assertEquals("MPV must apply the saved zoom exactly once", kotlin.math.ln(1.1) / kotlin.math.ln(2.0), zoom!!, 0.001)
         }
     }
 

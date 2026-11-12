@@ -53,7 +53,8 @@ internal fun CinemaHomeBackdrop(
         if (hero != null && !(hero.backdrop ?: hero.poster).isNullOrBlank()) {
             // Keep account-scoped artwork headers/cache rules; no extra request or prefetch path.
             key(hero.libraryId, hero.id, hero.type, hero.isSpoiler, hero.backdrop ?: hero.poster) {
-                Poster(hero, model, Modifier.fillMaxSize(), transparentBackground = true,
+                Poster(hero, model, Modifier.fillMaxSize()
+                    .testTag("cinema-hero-art-${hero.libraryId}-${hero.id}"), transparentBackground = true,
                     imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
             }
         }

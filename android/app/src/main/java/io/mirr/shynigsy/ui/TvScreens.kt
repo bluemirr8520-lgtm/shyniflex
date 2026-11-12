@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -253,6 +254,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     // Background rotation owns a separate key; it never changes the focused card or its restore target.
     var heroKey by rememberSaveable { mutableStateOf("") }
     val continueKeys = continuing.map(::tvMediaKey)
+    val continueRow = rememberLazyListState()
     var heroVisible by remember { mutableStateOf(false) }
     var heroResumeFocused by remember { mutableStateOf(false) }
     var touchingContinue by remember { mutableStateOf(false) }
@@ -261,12 +263,23 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     val hoveringContinue by continueInteraction.collectIsHoveredAsState()
     val heroItem = continuing.firstOrNull { tvMediaKey(it) == heroKey } ?: continuing.firstOrNull()
     val hero = state.continueDetails?.takeIf { heroItem != null && tvMediaKey(it) == tvMediaKey(heroItem) } ?: heroItem
+    fun selectMobilePoster(key: String) {
+        if (continuing.none { tvMediaKey(it) == key }) return
+        selectedKey = key
+        heroKey = key
+        selectedShelf = "continue"
+        interactionRevision++
+    }
+    ObserveMobileContinueShelf(continueRow, continueKeys, enabled = !modelIsTelevision && !state.busy,
+        onBrowse = ::selectMobilePoster,
+        onSettled = { key -> continuing.firstOrNull { tvMediaKey(it) == key }?.let(model::selectContinueItem) })
     LaunchedEffect(continueKeys) {
         if (heroKey !in continueKeys) heroKey = continueKeys.firstOrNull().orEmpty()
         if (continueKeys.isEmpty()) heroResumeFocused = false
     }
     rememberContinueBackdropRotation(keys = continueKeys, selectedKey = heroItem?.let(::tvMediaKey).orEmpty(),
-        enabled = heroVisible && !state.busy && !hoveringContinue && !touchingContinue && !heroResumeFocused,
+        enabled = heroVisible && !state.busy && !hoveringContinue && !touchingContinue && !heroResumeFocused &&
+            !continueRow.isScrollInProgress,
         interactionRevision = interactionRevision,
         onAdvance = { heroKey = it })
     val shelfFocus = remember { FocusRequester() }
@@ -346,8 +359,10 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                             } else CinemaHomeWelcome(compact, onSearch, Modifier.fillMaxSize())
                         }
                         if (continuing.isNotEmpty()) TvShelf("계속 시청", continuing, model, onWatchOptions,
-                            modifier = if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus)
-                                .onGloballyPositioned { shelfAttached = true } else Modifier,
+                            state = continueRow,
+                            modifier = Modifier.testTag("home-continue-row").then(
+                                if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus)
+                                    .onGloballyPositioned { shelfAttached = true } else Modifier),
                             titleColor = Color(0xFFF4E8D1),
                             cinematic = true, cardWidth = homeCardWidth,
                             restoreKey = selectedKey, onSelect = {
@@ -356,7 +371,10 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                                 if (scroll.firstVisibleItemIndex != 0 || scroll.firstVisibleItemScrollOffset != 0) {
                                     homeScope.launch { scroll.animateScrollToItem(0) }
                                 }
-                            }, onClick = model::playContinue)
+                            }, onClick = {
+                                if (!modelIsTelevision) selectMobilePoster(tvMediaKey(it))
+                                model.playContinue(it)
+                            })
                         else Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
                             .padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("계속 시청", style = MaterialTheme.typography.titleMedium)
@@ -406,13 +424,15 @@ internal fun TvHomeClock(modifier: Modifier = Modifier, foreground: Color? = nul
 private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
     onWatchOptions: (MediaItem) -> Unit, modifier: Modifier = Modifier,
     onSelect: (MediaItem) -> Unit, onClick: (MediaItem) -> Unit, wide: Boolean = false, restoreKey: String = "",
-    titleColor: Color = MaterialTheme.colorScheme.onSurface, cinematic: Boolean = false, cardWidth: Dp? = null) {
+    titleColor: Color = MaterialTheme.colorScheme.onSurface, cinematic: Boolean = false, cardWidth: Dp? = null,
+    state: LazyListState = rememberLazyListState()) {
     val fallback = remember { FocusRequester() }
     val hasRestoreKey = remember(media, restoreKey) { media.any { tvMediaKey(it) == restoreKey } }
     Column(verticalArrangement = Arrangement.spacedBy(if (cinematic) 8.dp else 4.dp)) {
         Text(title, Modifier.padding(horizontal = 24.dp), color = titleColor,
             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        LazyRow(modifier.focusRestorer(fallback).focusGroup(), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
+        LazyRow(modifier.focusRestorer(fallback).focusGroup(), state = state,
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(if (cinematic) 12.dp else 6.dp)) {
             items(media, key = ::tvMediaKey) { item ->
                 TvMediaCard(item, model, Modifier.width(cardWidth ?: if (wide) 200.dp else 114.dp)

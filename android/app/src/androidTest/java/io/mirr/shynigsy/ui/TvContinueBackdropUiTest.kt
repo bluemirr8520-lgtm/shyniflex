@@ -16,6 +16,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
@@ -68,6 +69,91 @@ class TvContinueBackdropUiTest {
     private val hidden = first.copy(id = 201, libraryId = 8, viewItemId = 801,
         title = "합성 비공개 이어보기", isSpoiler = true)
     private val recent = first.copy(id = 301, viewItemId = 703, title = "순환하면 안 되는 최근 추가")
+
+    @Test fun mobileContinueDragAndFlingFollowPostersWithoutStartingPlayback() {
+        val items = (0 until 14).map { index -> first.copy(id = 101 + index, viewItemId = 701 + index,
+            title = "모바일 이어보기 ${index + 1}") }
+        withFixture(AppState(loggedIn = true, continueItems = items)) { fixture ->
+            renderHome(fixture)
+            screen.mainClock.autoAdvance = false
+            val row = screen.onNodeWithTag("home-continue-row")
+            row.performTouchInput {
+                down(Offset(width * .9f, center.y))
+                moveTo(Offset(width * .25f, center.y), delayMillis = 250)
+            }
+            screen.mainClock.advanceTimeBy(64)
+            screen.waitForIdle()
+            val duringDrag = items.single { heroExists(it) }
+            assertNotEquals("Touch browsing changes the hero before the finger is released", items.first(), duringDrag)
+            screen.onNodeWithTag("cinema-hero-art-${duringDrag.libraryId}-${duringDrag.id}", useUnmergedTree = true)
+                .assertExists()
+            assertTrue("Passing posters does not ask the server for details", fixture.requests.isEmpty())
+
+            row.performTouchInput {
+                moveTo(Offset(width * .05f, center.y), delayMillis = 16)
+                up()
+            }
+            screen.mainClock.advanceTimeBy(160)
+            screen.waitForIdle()
+            val duringFling = items.single { heroExists(it) }
+            assertNotEquals("The backdrop follows the fling after the finger is released", duringDrag, duringFling)
+            screen.onNodeWithTag("cinema-hero-art-${duringFling.libraryId}-${duringFling.id}", useUnmergedTree = true)
+                .assertExists()
+            screen.mainClock.advanceTimeBy(2_500)
+            screen.waitForIdle()
+            screen.waitUntil(3_000) { fixture.requests.isNotEmpty() }
+            assertEquals("Only the final visible work requests details", 1, fixture.requests.size)
+            assertTrue("Browsing never starts playback", fixture.requests.none { it.first == "/playback/decision" })
+            screen.mainClock.autoAdvance = true
+        }
+    }
+
+    @Test fun mobilePosterTapSelectsItsBackdropAndImmediatelyResumesTheSameWork() {
+        withFixture(AppState(loggedIn = true, continueItems = listOf(first, second))) { fixture ->
+            renderHome(fixture)
+            screen.onNodeWithTag(cardTag(second)).performTouchInput { click() }
+            screen.waitUntil(3_000) { fixture.requests.any { it.first == "/playback/decision" } }
+            assertTrue("The tapped poster remains the selected home background", heroExists(second))
+            screen.onNodeWithTag("cinema-hero-art-${second.libraryId}-${second.id}", useUnmergedTree = true).assertExists()
+            val body = JSONObject(fixture.requests.first { it.first == "/playback/decision" }.second)
+            assertEquals(second.viewItemId, body.getInt("view_item_id"))
+            assertEquals(second.id, body.getInt("metadata_item_id"))
+        }
+    }
+
+    @Test fun lockingDuringMobilePosterDragDropsPrivateBackdropAndStaleSelections() {
+        val trailing = (0 until 12).map { index -> recent.copy(id = 401 + index, viewItemId = 901 + index,
+            title = "스크롤 공간 ${index + 1}") }
+        withFixture(AppState(loggedIn = true, spoilerUnlocked = true,
+            continueItems = listOf(first, hidden, second, recent) + trailing)) { fixture ->
+            renderHome(fixture)
+            screen.mainClock.autoAdvance = false
+            val distance = screen.onNodeWithTag(cardTag(hidden)).fetchSemanticsNode().boundsInRoot.left -
+                screen.onNodeWithTag(cardTag(first)).fetchSemanticsNode().boundsInRoot.left
+            val row = screen.onNodeWithTag("home-continue-row")
+            row.performTouchInput {
+                down(Offset(width * .9f, center.y))
+                moveTo(Offset(width * .9f - distance, center.y), delayMillis = 300)
+            }
+            screen.mainClock.advanceTimeBy(64)
+            screen.waitForIdle()
+            assertTrue(heroExists(hidden))
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(spoilerUnlocked = false,
+                continueDetails = hidden) }
+            screen.mainClock.advanceTimeBy(64)
+            screen.waitForIdle()
+            assertFalse(heroExists(hidden))
+            screen.onNodeWithTag("cinema-hero-art-${hidden.libraryId}-${hidden.id}", useUnmergedTree = true)
+                .assertDoesNotExist()
+            screen.onNodeWithTag(cardTag(hidden)).assertDoesNotExist()
+            row.performTouchInput { up() }
+            screen.mainClock.advanceTimeBy(2_500)
+            screen.waitForIdle()
+            assertFalse("A lingering fling cannot restore a revoked item", heroExists(hidden))
+            assertTrue(fixture.requests.none { it.first == "/playback/decision" })
+            screen.mainClock.autoAdvance = true
+        }
+    }
 
     @Test fun initialHomeShelfTakesFocusOnlyWhenContentArrivesWithoutRemoteInput() {
         withFixture(AppState(loggedIn = true, continueLoading = true)) { fixture ->
