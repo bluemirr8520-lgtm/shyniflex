@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
 import androidx.compose.ui.input.key.Key
@@ -25,6 +26,8 @@ import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModel
@@ -69,6 +72,82 @@ class TvContinueBackdropUiTest {
     private val hidden = first.copy(id = 201, libraryId = 8, viewItemId = 801,
         title = "합성 비공개 이어보기", isSpoiler = true)
     private val recent = first.copy(id = 301, viewItemId = 703, title = "순환하면 안 되는 최근 추가")
+
+    @Test fun threeHomeStylesChangeGeometryAndTypographyWithoutReplacingFocusedMedia() {
+        val style = mutableStateOf(CinemaStyle.CINEMA)
+        withFixture(AppState(loggedIn = true, continueItems = listOf(first, second),
+            recentItems = listOf(recent), libraries = listOf(Library(7, "합성 영화", "movie")))) { fixture ->
+            renderHome(fixture, style)
+            focusCard(second)
+            screen.waitUntil(3_000) {
+                val job = AppViewModel::class.java.getDeclaredField("continueDetailsJob")
+                    .apply { isAccessible = true }.get(fixture.model) as Job?
+                fixture.requests.isNotEmpty() && job?.isCompleted == true
+            }
+            val requestsBefore = fixture.requests.size
+            // Hold the independent six-second artwork timer while comparing the selected item.
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(busy = true) }
+            val heroHeights = mutableListOf<Float>()
+            val posterWidths = mutableListOf<Float>()
+            CinemaStyle.entries.forEach { candidate ->
+                screen.runOnIdle { style.value = candidate }
+                screen.waitForIdle()
+                assertTrue("Changing style retains the selected work", heroExists(second))
+                val card = screen.onNodeWithTag(cardTag(second)).assertIsFocused().fetchSemanticsNode().boundsInRoot
+                heroHeights += screen.onNodeWithTag("tv-continue-hero").fetchSemanticsNode().boundsInRoot.height
+                posterWidths += card.width
+                val title = heroTitleLayout()
+                assertEquals(if (candidate == CinemaStyle.OTT) FontFamily.SansSerif else FontFamily.Serif,
+                    title.layoutInput.style.fontFamily)
+                val action = screen.onNodeWithTag("cinema-hero-resume").fetchSemanticsNode().boundsInRoot
+                val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+                assertTrue("Every style retains a 48dp play target", action.height >= 48f * density - 1f)
+                saveScreenshot("tv-home", "home-style-${candidate.key}.png")
+            }
+            assertEquals("Styles change composition, not only colors", 3, heroHeights.distinct().size)
+            assertEquals("Each style has its own poster density", 3, posterWidths.distinct().size)
+            assertEquals("Restyling does not refetch media", requestsBefore, fixture.requests.size)
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(busy = false) }
+            screen.onNodeWithTag("cinema-hero-resume").performClick()
+            screen.waitUntil(3_000) { fixture.requests.any { it.first == "/playback/decision" } }
+            assertEquals(second.viewItemId, JSONObject(fixture.requests.first { it.first == "/playback/decision" }.second)
+                .getInt("view_item_id"))
+        }
+    }
+
+    @Test fun loungeTitleKeepsContrastOnLightAndDarkCustomBackgrounds() {
+        val style = mutableStateOf(CinemaStyle.LOUNGE)
+        val background = mutableStateOf<Int?>(null)
+        withFixture(AppState(loggedIn = true, busy = true, continueItems = listOf(first))) { fixture ->
+            renderHome(fixture, style, background)
+            listOf(CinemaStyle.LOUNGE.defaultBackgroundArgb, 0xFF101820.toInt(), 0xFFFFFFFF.toInt(), 0xFF777777.toInt())
+                .forEach { color ->
+                    screen.runOnIdle { background.value = color }
+                    screen.waitForIdle()
+                    val expected = cinemaColorScheme(Color(color), CinemaStyle.LOUNGE).onBackground
+                    val textColor = heroTitleLayout().layoutInput.style.color
+                    assertEquals(expected, textColor)
+                    val home = screen.onNodeWithTag("tv-home").fetchSemanticsNode().boundsInRoot
+                    val title = screen.onNodeWithTag("cinema-hero-title").fetchSemanticsNode().boundsInRoot
+                    val bitmap = screen.onNodeWithTag("tv-home").captureToImage().asAndroidBitmap()
+                    try {
+                        // Sample just left of the text at the same height: the actual scrim over artwork.
+                        val x = (title.left - home.left - 6).toInt().coerceIn(0, bitmap.width - 1)
+                        val y = (title.center.y - home.top).toInt().coerceIn(0, bitmap.height - 1)
+                        assertTrue("The rendered lounge title area preserves readable contrast",
+                            cinemaContrastRatio(textColor, Color(bitmap.getPixel(x, y))) >= 4.5f)
+                    } finally { bitmap.recycle() }
+                }
+        }
+    }
+
+    private fun heroTitleLayout(): TextLayoutResult {
+        val layouts = mutableListOf<TextLayoutResult>()
+        screen.onNodeWithTag("cinema-hero-title").performSemanticsAction(SemanticsActions.GetTextLayoutResult) {
+            assertTrue(it(layouts))
+        }
+        return layouts.single()
+    }
 
     @Test fun mobileContinueDragAndFlingFollowPostersWithoutStartingPlayback() {
         val items = (0 until 14).map { index -> first.copy(id = 101 + index, viewItemId = 701 + index,
@@ -318,14 +397,19 @@ class TvContinueBackdropUiTest {
     }
 
     @Suppress("DEPRECATION")
-    private fun renderHome(fixture: Fixture) {
+    private fun renderHome(fixture: Fixture, style: MutableState<CinemaStyle>? = null,
+        background: MutableState<Int?>? = null) {
         InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
         screen.setContent {
             inputMode = LocalInputModeManager.current
-            MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
+            val selectedStyle = style?.value ?: CinemaStyle.CINEMA
+            val colors = cinemaColorScheme(Color(background?.value ?: selectedStyle.defaultBackgroundArgb), selectedStyle)
+            CompositionLocalProvider(LocalCinemaStyle provides selectedStyle) {
+            MaterialTheme(colorScheme = colors, typography = CompactTypography, shapes = CompactShapes) {
                 Surface(Modifier.fillMaxSize()) {
                     Box(Modifier.fillMaxSize()) { TvHome(fixture.state.value, fixture.model, {}) }
                 }
+            }
             }
         }
         screen.waitForIdle()

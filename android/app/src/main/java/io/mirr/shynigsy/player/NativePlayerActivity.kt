@@ -2,6 +2,9 @@ package io.mirr.shynigsy.player
 
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,6 +29,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -56,6 +60,8 @@ import io.mirr.shynigsy.data.ApiException
 import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.data.ShyniClient
 import io.mirr.shynigsy.data.SubtitleTrack
+import io.mirr.shynigsy.ui.CinemaAppearancePreferences
+import io.mirr.shynigsy.ui.cinemaColorScheme
 import io.mirr.shynigsy.player.subtitles.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
@@ -497,6 +503,12 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.setControllerAutoShow(false)
         playerView.setControllerHideOnTouch(false)
         playerView.hideController()
+        val playerAccent = cinemaColorScheme(androidx.compose.ui.graphics.Color.Black,
+            CinemaAppearancePreferences(this).read().style).primary.toArgb()
+        playerView.findViewById<androidx.media3.ui.DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress).apply {
+            setPlayedColor(playerAccent)
+            setScrubberColor(playerAccent)
+        }
         playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
         playerView.findViewById<Button>(R.id.player_back).setOnClickListener { leavePlayer() }
         playerView.findViewById<ImageButton>(R.id.player_settings).setOnClickListener { showSettings() }
@@ -515,7 +527,7 @@ class NativePlayerActivity : AppCompatActivity() {
             continuousButton.text = if (enabled) "연속재생\n켜짐" else "연속재생\n꺼짐"
             continuousButton.contentDescription = if (enabled) "연속 재생 켜짐" else "연속 재생 꺼짐"
             continuousButton.isSelected = enabled
-            continuousButton.setTextColor(if (enabled) 0xFF7BE6C6.toInt() else Color.WHITE)
+            continuousButton.setTextColor(if (enabled) playerAccent else Color.WHITE)
         }
         continuousButton.setOnClickListener {
             val enabled = !continuousSettings.getBoolean("continuous_playback", false)
@@ -1531,10 +1543,26 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun applyMenuHighlight(view: View) {
-        view.background = getDrawable(R.drawable.tv_control_background)
+        val colors = playerMenuColors()
+        fun focused() = GradientDrawable().apply {
+            cornerRadius = dp(8).toFloat()
+            setColor(colors.surfaceVariant.toArgb())
+            setStroke(dp(1), colors.primary.toArgb())
+        }
+        view.background = StateListDrawable().apply {
+            addState(intArrayOf(-android.R.attr.state_enabled), ColorDrawable(Color.TRANSPARENT))
+            addState(intArrayOf(android.R.attr.state_pressed), focused())
+            addState(intArrayOf(android.R.attr.state_focused), focused())
+            addState(intArrayOf(android.R.attr.state_selected), focused())
+            addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+        }
         view.backgroundTintList = null
         view.elevation = 0f
         view.stateListAnimator = null
+    }
+
+    private fun playerMenuColors() = CinemaAppearancePreferences(this).read().let { appearance ->
+        cinemaColorScheme(androidx.compose.ui.graphics.Color(appearance.backgroundArgb), appearance.style)
     }
 
     /** Sparse numeric-only local logs. Private playback is never sampled into logcat. */
@@ -1589,14 +1617,15 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun showSettings() {
+        val colors = playerMenuColors()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
-            setBackgroundColor(0xFFF5F7F8.toInt())
+            setBackgroundColor(colors.surface.toArgb())
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         panel.addView(TextView(this).apply {
-            text = "재생 설정"; textSize = 16f; setTextColor(0xFF18242F.toInt())
+            text = "재생 설정"; textSize = 16f; setTextColor(colors.onSurface.toArgb())
             setPadding(dp(4), dp(4), dp(4), dp(8))
         }, LinearLayout.LayoutParams(-1, -2))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -1619,7 +1648,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val dialog = AlertDialog.Builder(this).setView(panel).create()
         val close = Button(this).apply {
             id = View.generateViewId()
-            text = "닫기"; textSize = 14f; setTextColor(0xFF18242F.toInt()); applyMenuHighlight(this)
+            text = "닫기"; textSize = 14f; setTextColor(colors.onSurface.toArgb()); applyMenuHighlight(this)
             setOnClickListener { dialog.dismiss() }
         }
         panel.addView(close, LinearLayout.LayoutParams(-1, dp(48)))
@@ -1630,26 +1659,26 @@ class NativePlayerActivity : AppCompatActivity() {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(8), 0, dp(8), 0)
                 isClickable = true; isFocusable = true
-                background = getDrawable(R.drawable.tv_control_background)
+                applyMenuHighlight(this)
                 descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 contentDescription = listOf(label, value).filter { it.isNotBlank() }.joinToString(", ")
                 setOnClickListener { dialog.dismiss(); action() }
             }
             row.addView(TextView(this).apply {
-                text = label; textSize = 14f; setTextColor(0xFF18242F.toInt())
+                text = label; textSize = 14f; setTextColor(colors.onSurface.toArgb())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
-                text = value; textSize = 12f; setTextColor(0xFF006B5B.toInt())
+                text = value; textSize = 12f; setTextColor(colors.primary.toArgb())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 gravity = Gravity.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(TextView(this).apply {
-                text = "›"; textSize = 18f; setTextColor(0xFF52616F.toInt()); gravity = Gravity.END
+                text = "›"; textSize = 18f; setTextColor(colors.onSurfaceVariant.toArgb()); gravity = Gravity.END
             }, LinearLayout.LayoutParams(dp(18), -2))
             rows.addView(row, LinearLayout.LayoutParams(-1, dp(48)))
             focusRows.add(row)
-            rows.addView(View(this).apply { setBackgroundColor(0xFFDDE5E8.toInt()) },
+            rows.addView(View(this).apply { setBackgroundColor(colors.outlineVariant.toArgb()) },
                 LinearLayout.LayoutParams(-1, dp(1)))
         }
 
@@ -1665,7 +1694,7 @@ class NativePlayerActivity : AppCompatActivity() {
             selectedTab = index
             buttons.forEachIndexed { selected, button ->
                 button.isSelected = selected == index
-                button.setTextColor(if (selected == index) 0xFF006B5B.toInt() else 0xFF18242F.toInt())
+                button.setTextColor(if (selected == index) colors.primary.toArgb() else colors.onSurface.toArgb())
                 applyMenuHighlight(button)
             }
             rows.removeAllViews()

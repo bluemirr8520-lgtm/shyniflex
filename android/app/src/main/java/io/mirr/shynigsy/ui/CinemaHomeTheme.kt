@@ -12,7 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -45,13 +45,14 @@ private fun foregroundOn(background: Color): Color =
 internal fun cinemaReadableColor(preferred: Color, background: Color): Color =
     if (cinemaContrastRatio(preferred, background) >= 4.5f) preferred else foregroundOn(background)
 
-internal fun cinemaColorScheme(background: Color): ColorScheme {
+internal fun cinemaColorScheme(background: Color, style: CinemaStyle = CinemaStyle.CINEMA): ColorScheme {
     val base = background.copy(alpha = 1f)
     val contrastForeground = foregroundOn(base)
     val dark = contrastForeground == Color.White
     val ivory = Color(0xFFF4E8D1)
     // Preserve the user's hue; soften dark themes to ivory only where contrast allows it.
-    val foreground = if (dark && cinemaContrastRatio(ivory, base) >= 4.5f) ivory else contrastForeground
+    val foreground = if (style == CinemaStyle.CINEMA && dark && cinemaContrastRatio(ivory, base) >= 4.5f)
+        ivory else contrastForeground
     fun safeSurface(amount: Float): Color = lerp(base, foreground, amount).let {
         if (cinemaContrastRatio(foreground, it) >= 4.5f) it else base
     }
@@ -60,7 +61,14 @@ internal fun cinemaColorScheme(background: Color): ColorScheme {
     fun acrossSurfaces(preferred: Color): Color = if (listOf(base, surface, panel).all {
         cinemaContrastRatio(preferred, it) >= 4.5f
     }) preferred else foreground
-    val primary = acrossSurfaces(if (dark) Color(0xFFD8AC68) else Color(0xFF765019))
+    val preferredAccent = when (style) {
+        CinemaStyle.CINEMA -> if (dark) Color(0xFFD8AC68) else Color(0xFF765019)
+        CinemaStyle.OTT -> Color(0xFF78DCC3)
+        CinemaStyle.LOUNGE -> Color(0xFFAB8A54)
+    }
+    // Darken/lighten the style accent towards the readable foreground while retaining its hue.
+    val primary = (0..100).asSequence().map { lerp(preferredAccent, foreground, it / 100f) }
+        .first { accent -> listOf(base, surface, panel).all { cinemaContrastRatio(accent, it) >= 4.5f } }
     val primaryContainer = lerp(base, primary, .14f)
     val mutedCandidate = lerp(foreground, base, .22f)
     val muted = if (cinemaContrastRatio(mutedCandidate, base) >= 4.5f &&
@@ -97,30 +105,26 @@ internal val LocalCinemaAppearance = staticCompositionLocalOf {
     CinemaAppearanceController(DEFAULT_CINEMA_BACKGROUND) { }
 }
 
-/** Only a solid UI color is stored here. Account data and playback/subtitle settings are independent. */
-private class CinemaAppearancePreferences(context: Context) {
-    val preferences: SharedPreferences = context.applicationContext.getSharedPreferences("cinema_appearance", Context.MODE_PRIVATE)
-    fun read(): Int = runCatching { preferences.getInt("background_argb", DEFAULT_CINEMA_BACKGROUND) }
-        .getOrDefault(DEFAULT_CINEMA_BACKGROUND) or 0xFF000000.toInt()
-    fun save(argb: Int) { preferences.edit().putInt("background_argb", argb or 0xFF000000.toInt()).apply() }
-}
-
 @Composable
 internal fun CinemaAppearanceTheme(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val preferences = remember(context.applicationContext) { CinemaAppearancePreferences(context) }
-    var background by remember(preferences) { mutableIntStateOf(preferences.read()) }
+    var appearance by remember(preferences) { mutableStateOf(preferences.read()) }
     DisposableEffect(preferences) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "background_argb") background = preferences.read()
+            if (preferences.ownsKey(key)) appearance = preferences.read()
         }
         preferences.preferences.registerOnSharedPreferenceChangeListener(listener)
         onDispose { preferences.preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
-    val colors = remember(background) { cinemaColorScheme(Color(background)) }
-    val controller = CinemaAppearanceController(background) { color ->
-        background = color or 0xFF000000.toInt()
-        preferences.save(background)
+    val colors = remember(appearance) { cinemaColorScheme(Color(appearance.backgroundArgb), appearance.style) }
+    val controller = CinemaAppearanceController(appearance.backgroundArgb) { color ->
+        preferences.saveCurrentBackground(color)
+        appearance = preferences.read()
+    }
+    val styleController = CinemaStyleController(appearance.style, appearance.backgrounds) { style, backgrounds ->
+        preferences.apply(style, backgrounds)
+        appearance = preferences.read()
     }
     val activity = remember(context) { context.appearanceActivity() }
     val darkIcons = colors.onBackground == Color.Black
@@ -134,7 +138,8 @@ internal fun CinemaAppearanceTheme(content: @Composable () -> Unit) {
         }
         onDispose { }
     }
-    CompositionLocalProvider(LocalCinemaAppearance provides controller) {
+    CompositionLocalProvider(LocalCinemaAppearance provides controller, LocalCinemaStyle provides appearance.style,
+        LocalCinemaStyleController provides styleController) {
         MaterialTheme(colorScheme = colors, typography = CompactTypography, shapes = CompactShapes, content = content)
     }
 }

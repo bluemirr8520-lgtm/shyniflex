@@ -1,12 +1,14 @@
 package io.mirr.shynigsy.ui
 
 import android.view.KeyEvent
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
@@ -23,11 +25,12 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Synthetic dialog callbacks only: no preferences, account, backend or player is used. */
+/** Synthetic dialog callbacks and isolated preference files; no account, backend or player is used. */
 @RunWith(AndroidJUnit4::class)
 class CinemaAppearanceSettingsTest {
     @get:Rule val screen = createAndroidComposeRule<ComponentActivity>()
     private val applied = mutableListOf<Int>()
+    private val styleApplied = mutableListOf<Pair<CinemaStyle, Map<CinemaStyle, Int>>>()
     private var dismissals = 0
     private var originalTouchMode = true
     private var changedInputMode = false
@@ -145,18 +148,84 @@ class CinemaAppearanceSettingsTest {
         screen.runOnIdle { assertEquals(listOf(0xFFABCDEF.toInt()), applied) }
     }
 
+    @Test fun styleDraftsKeepTheirOwnColorsAndResetOnlyTheSelectedStyleUntilApply() {
+        val original = 0xFF123456.toInt()
+        render(original, television = false)
+        screen.onNodeWithTag("cinema-style-lounge").performScrollTo().performClick().assertIsSelected()
+        screen.onNodeWithTag(HEX).performScrollTo().performTextReplacement("E6D9BA")
+        screen.onNodeWithTag("cinema-style-ott").performScrollTo().performClick()
+        screen.onNodeWithTag(HEX).performScrollTo().performTextReplacement("162B27")
+        screen.onNodeWithTag("cinema-style-lounge").performScrollTo().performClick()
+        screen.onNodeWithTag(HEX).performScrollTo().assertTextContains("E6D9BA")
+        screen.onNodeWithTag("cinema-style-reset").performScrollTo().performClick()
+        screen.onNodeWithTag("cinema-style-cinema").performScrollTo().performClick()
+        screen.onNodeWithTag(HEX).performScrollTo().assertTextContains("123456")
+        screen.onNodeWithTag("cinema-style-lounge").performScrollTo().performClick()
+        screen.runOnIdle { assertTrue(styleApplied.isEmpty()); assertTrue(applied.isEmpty()) }
+        screen.onNodeWithTag(APPLY).performClick()
+        screen.runOnIdle {
+            val (style, colors) = styleApplied.single()
+            assertEquals(CinemaStyle.LOUNGE, style)
+            assertEquals(original, colors[CinemaStyle.CINEMA])
+            assertEquals(0xFF162B27.toInt(), colors[CinemaStyle.OTT])
+            assertEquals(CinemaStyle.LOUNGE.defaultBackgroundArgb, colors[CinemaStyle.LOUNGE])
+            assertEquals(listOf(CinemaStyle.LOUNGE.defaultBackgroundArgb), applied)
+        }
+    }
+
+    @Test fun styleSelectionAndDefaultResetAreDiscardedByCancel() {
+        render(0xFF123456.toInt(), television = true)
+        screen.onNodeWithTag("cinema-style-cinema").assertIsFocused()
+        key("cinema-style-cinema", Key.DirectionDown)
+        key("cinema-style-ott", Key.DirectionDown)
+        key("cinema-style-lounge", Key.DirectionCenter)
+        key("cinema-style-lounge", Key.DirectionDown)
+        screen.onNodeWithTag("cinema-style-reset").assertIsFocused()
+        key("cinema-style-reset", Key.DirectionCenter)
+        screen.onNodeWithTag(CANCEL).performClick()
+        screen.runOnIdle { assertTrue(styleApplied.isEmpty()); assertTrue(applied.isEmpty()); assertEquals(1, dismissals) }
+    }
+
+    @Test fun legacyCinemaColorAndAllStyleColorsSurviveReopeningPreferences() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "cinema_style_migration_fixture"
+        val preferences = context.getSharedPreferences(name, Context.MODE_PRIVATE)
+        try {
+            preferences.edit().clear().putInt("background_argb", 0xFF314159.toInt()).commit()
+            val store = CinemaAppearancePreferences(preferences)
+            assertEquals(0xFF314159.toInt(), store.read().backgrounds[CinemaStyle.CINEMA])
+            assertEquals(CinemaStyle.CINEMA, store.read().style)
+            store.apply(CinemaStyle.OTT, mapOf(CinemaStyle.OTT to 0xFF123456.toInt()))
+            // The legacy color-only callback now saves the active OTT style, never CINEMA.
+            store.saveCurrentBackground(0xFF345678.toInt())
+            val recreated = CinemaAppearancePreferences(context.getSharedPreferences(name, Context.MODE_PRIVATE))
+            assertEquals(CinemaStyle.OTT, recreated.read().style)
+            assertEquals(0xFF314159.toInt(), recreated.read().backgrounds[CinemaStyle.CINEMA])
+            assertEquals(0xFF345678.toInt(), recreated.read().backgrounds[CinemaStyle.OTT])
+            assertEquals(CinemaStyle.LOUNGE.defaultBackgroundArgb, recreated.read().backgrounds[CinemaStyle.LOUNGE])
+            recreated.apply(CinemaStyle.CINEMA, emptyMap())
+            assertEquals(0xFF314159.toInt(), recreated.read().backgroundArgb)
+        } finally { preferences.edit().clear().commit(); context.deleteSharedPreferences(name) }
+    }
+
     @Suppress("DEPRECATION")
     private fun render(initial: Int, television: Boolean) {
         InstrumentationRegistry.getInstrumentation().setInTouchMode(!television)
         changedInputMode = true
         screen.setContent {
             val open = remember { mutableStateOf(true) }
-            MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
+            val controller = CinemaStyleController(CinemaStyle.CINEMA,
+                CinemaStyle.entries.associateWith { if (it == CinemaStyle.CINEMA) initial else it.defaultBackgroundArgb }) { style, colors ->
+                styleApplied.add(style to colors)
+            }
+            CompositionLocalProvider(LocalCinemaStyleController provides controller) {
+              MaterialTheme(colorScheme = CinemaHomeColors, typography = CompactTypography, shapes = CompactShapes) {
                 Box(Modifier.fillMaxSize()) {
                     if (open.value) CinemaAppearanceSettings(initialBackground = initial,
                         onDismiss = { dismissals++; open.value = false },
                         onApply = { applied.add(it); open.value = false }, television = television)
                 }
+              }
             }
         }
         screen.waitForIdle()

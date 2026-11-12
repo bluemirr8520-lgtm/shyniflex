@@ -20,6 +20,31 @@ class CinemaAppearancePolicyTest {
         assertReadable(scheme, "cinema default")
     }
 
+    @Test fun threeStylesHaveDistinctPalettesAndUnknownSavedStylesReturnToCinema() {
+        assertEquals(CinemaStyle.CINEMA, CinemaStyle.fromKey(null))
+        assertEquals(CinemaStyle.CINEMA, CinemaStyle.fromKey("unsupported"))
+        for (style in CinemaStyle.entries) {
+            assertEquals(style, CinemaStyle.fromKey(style.key))
+            val scheme = cinemaColorScheme(Color(style.defaultBackgroundArgb), style)
+            assertEquals(Color(style.defaultBackgroundArgb), scheme.background)
+            assertReadable(scheme, style.key)
+        }
+        assertEquals(Color(0xFF78DCC3), cinemaColorScheme(Color(CinemaStyle.OTT.defaultBackgroundArgb), CinemaStyle.OTT).primary)
+        val lounge = cinemaColorScheme(Color(CinemaStyle.LOUNGE.defaultBackgroundArgb), CinemaStyle.LOUNGE)
+        assertEquals(Color(0xFFF3F0E8), lounge.background)
+        assertEquals(Color.Black, lounge.onBackground)
+        assertTrue("The brass accent must keep its warm hue after contrast adjustment", lounge.primary.red > lounge.primary.green && lounge.primary.green > lounge.primary.blue)
+    }
+
+    @Test fun everyStylePreservesCustomColorsAndReadableTextAcrossTheColorCube() {
+        for (style in CinemaStyle.entries) for (red in 0..255 step 51) for (green in 0..255 step 51) for (blue in 0..255 step 51) {
+            val background = Color(red, green, blue)
+            val scheme = cinemaColorScheme(background, style)
+            assertEquals(background, scheme.background)
+            assertReadable(scheme, "${style.key} $red/$green/$blue")
+        }
+    }
+
     @Test fun customBackgroundHuesArePreservedAndContrastSurvivesTheIvoryBoundary() {
         for (red in 0..255 step 17) for (green in 0..255 step 17) for (blue in 0..255 step 17) {
             val background = Color(red, green, blue)

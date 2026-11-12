@@ -2,6 +2,7 @@ package io.mirr.shynigsy.ui
 
 import android.view.KeyEvent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -18,9 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -81,11 +79,20 @@ private fun colorHex(argb: Int) = String.format(Locale.ROOT, "%06X", argb and 0x
 @Composable
 internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> Unit, onApply: (Int) -> Unit,
     television: Boolean = LocalContext.current.isTelevision()) {
+    val styleController = LocalCinemaStyleController.current
+    val initialStyle = styleController.style
+    var selectedStyleKey by rememberSaveable { mutableStateOf(initialStyle.key) }
+    val selectedStyle = CinemaStyle.fromKey(selectedStyleKey)
+    var drafts by rememberSaveable { mutableStateOf(HashMap(CinemaStyle.entries.associate {
+        it.key to colorHex(if (it == initialStyle) initialBackground else styleController.background(it))
+    })) }
     var hex by rememberSaveable(initialBackground) { mutableStateOf(colorHex(initialBackground)) }
     var editorOpen by rememberSaveable { mutableStateOf(false) }
     var editorValue by rememberSaveable { mutableStateOf("") }
     var restoreEditorFocus by remember { mutableStateOf(false) }
     val presetFocus = remember { List(appearancePresets.size) { FocusRequester() } }
+    val styleFocus = remember { List(CinemaStyle.entries.size) { FocusRequester() } }
+    val resetFocus = remember { FocusRequester() }
     val hexFocus = remember { FocusRequester() }
     val redFocus = remember { FocusRequester() }
     val greenFocus = remember { FocusRequester() }
@@ -93,15 +100,15 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
     val applyFocus = remember { FocusRequester() }
     val cancelFocus = remember { FocusRequester() }
     val parsed = parseHomeBackgroundColor(hex)
-    val preview = parsed ?: initialBackground
-    val previewColors = cinemaColorScheme(Color(preview))
+    val preview = parsed ?: if (selectedStyle == initialStyle) initialBackground else styleController.background(selectedStyle)
+    val previewColors = cinemaColorScheme(Color(preview), selectedStyle)
     val screenHeight = LocalConfiguration.current.screenHeightDp
     // IME insets may update screenHeightDp; keep the dialog's layout budget stable until it closes.
     val maxHeight = remember { (screenHeight * .60f).dp.coerceAtLeast(180.dp) }
     LaunchedEffect(television) {
         if (television) {
             withFrameNanos { }
-            presetFocus[appearancePresets.indexOfFirst { it.second == initialBackground }.coerceAtLeast(0)].requestFocus()
+            styleFocus[selectedStyle.ordinal].requestFocus()
         }
     }
     LaunchedEffect(editorOpen, restoreEditorFocus) {
@@ -111,12 +118,17 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
             restoreEditorFocus = false
         }
     }
+    fun chooseStyle(style: CinemaStyle) {
+        drafts = HashMap(drafts).apply { put(selectedStyleKey, hex) }
+        selectedStyleKey = style.key
+        hex = drafts[style.key] ?: colorHex(styleController.background(style))
+    }
     fun changeChannel(shift: Int, value: Int) {
-        val current = parseHomeBackgroundColor(hex) ?: initialBackground
+        val current = parseHomeBackgroundColor(hex) ?: preview
         hex = colorHex((current and (0xFF shl shift).inv()) or (value.coerceIn(0, 255) shl shift))
     }
     fun adjustChannel(shift: Int, delta: Int) {
-        val current = parseHomeBackgroundColor(hex) ?: initialBackground
+        val current = parseHomeBackgroundColor(hex) ?: preview
         changeChannel(shift, ((current ushr shift) and 0xFF) + delta)
     }
     fun closeEditor(commit: Boolean) {
@@ -126,11 +138,39 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("화면 색상") },
+        title = { Text("화면 스타일 · 색상") },
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState())
                 .testTag("cinema-appearance-settings"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("배경색을 고르면 글자와 아이콘 색이 자동으로 맞춰집니다.")
+                Text("스타일별 색상을 기억합니다. 적용을 누르면 저장되고, 취소하면 변경하지 않습니다.",
+                    style = MaterialTheme.typography.bodySmall)
+                CinemaStyle.entries.forEachIndexed { index, style ->
+                    val chosen = selectedStyle == style
+                    val color = if (chosen) preview else parseHomeBackgroundColor(drafts[style.key].orEmpty())
+                        ?: styleController.background(style)
+                    CompactMenuAction(onClick = { chooseStyle(style) }, selected = chosen,
+                        modifier = Modifier.fillMaxWidth().focusRequester(styleFocus[index])
+                            .focusProperties {
+                                if (television) {
+                                    up = if (index == 0) cancelFocus else styleFocus[index - 1]
+                                    down = if (index == CinemaStyle.entries.lastIndex) resetFocus else styleFocus[index + 1]
+                                }
+                            }.testTag("cinema-style-${style.key}").semantics { selected = chosen },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 6.dp)) {
+                        CinemaStylePreview(style, color)
+                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                            Text(style.label, style = MaterialTheme.typography.labelLarge)
+                            Text(style.description, style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        if (chosen) CinemaIcon(CinemaGlyph.Check, "선택됨", Modifier.size(18.dp))
+                    }
+                }
+                CompactMenuAction(onClick = { hex = colorHex(selectedStyle.defaultBackgroundArgb) },
+                    modifier = Modifier.fillMaxWidth().focusRequester(resetFocus)
+                        .focusProperties { if (television) { up = styleFocus.last(); down = presetFocus.first() } }
+                        .testTag("cinema-style-reset")) { Text("${selectedStyle.label} 기본색 복원") }
+                Text("배경색에 맞춰 글자와 아이콘 대비가 자동으로 조정됩니다.", style = MaterialTheme.typography.bodySmall)
                 appearancePresets.chunked(3).forEachIndexed { row, presets ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         presets.forEachIndexed { column, (label, color) ->
@@ -140,7 +180,7 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
                                 modifier = Modifier.weight(1f).focusRequester(presetFocus[index])
                                     .focusProperties {
                                         if (television) {
-                                            if (row == 0) up = cancelFocus
+                                            if (row == 0) up = resetFocus
                                             if (row == 1) down = hexFocus
                                         }
                                     }.semantics { selected = chosen },
@@ -148,8 +188,8 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Box(Modifier.size(30.dp).background(Color(color), CircleShape)
                                         .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape), contentAlignment = Alignment.Center) {
-                                        if (chosen) Icon(Icons.Rounded.Check, null, Modifier.size(18.dp),
-                                            tint = cinemaColorScheme(Color(color)).onBackground)
+                                        if (chosen) CinemaIcon(CinemaGlyph.Check, null, Modifier.size(18.dp),
+                                            tint = cinemaColorScheme(Color(color), selectedStyle).onBackground)
                                     }
                                     Text(label, style = MaterialTheme.typography.labelMedium)
                                 }
@@ -162,9 +202,10 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
                     modifier = Modifier.fillMaxWidth().testTag("cinema-color-preview")) {
                     Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Palette, null, tint = previewColors.primary)
+                        Icon(remember(selectedStyle) { cinemaIconVector(CinemaGlyph.Palette, selectedStyle) },
+                            null, tint = previewColors.primary)
                         Column {
-                            Text("미리보기", color = previewColors.onBackground)
+                            Text("${selectedStyle.label} 미리보기", color = previewColors.onBackground)
                             Text("글자 · 아이콘 자동 대비", color = previewColors.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall)
                         }
@@ -202,13 +243,22 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
                     }
             }
         },
-        confirmButton = { CompactMenuAction(onClick = { parsed?.let(onApply) }, enabled = parsed != null,
+        confirmButton = { CompactMenuAction(onClick = {
+            parsed?.let { color ->
+                val colors = CinemaStyle.entries.associateWith { style ->
+                    if (style == selectedStyle) color else parseHomeBackgroundColor(drafts[style.key].orEmpty())
+                        ?: styleController.background(style)
+                }
+                styleController.apply(selectedStyle, colors)
+                onApply(color)
+            }
+        }, enabled = parsed != null,
             modifier = Modifier.focusRequester(applyFocus).focusProperties {
                 if (television) { up = blueFocus; down = cancelFocus; left = cancelFocus; right = cancelFocus }
             }.testTag("cinema-appearance-apply")) { Text("적용") } },
         dismissButton = { CompactMenuAction(onClick = onDismiss,
             modifier = Modifier.focusRequester(cancelFocus).focusProperties {
-                if (television) { up = applyFocus; down = presetFocus.first(); left = applyFocus; right = applyFocus }
+                if (television) { up = applyFocus; down = styleFocus.first(); left = applyFocus; right = applyFocus }
             }.testTag("cinema-appearance-cancel")) { Text("취소") } },
     )
     if (editorOpen) {
@@ -244,6 +294,30 @@ internal fun CinemaAppearanceSettings(initialBackground: Int, onDismiss: () -> U
                     modifier = Modifier.focusRequester(editorCancel).focusProperties { up = editorInput; right = editorDone }
                         .testTag("cinema-hex-cancel")) { Text("취소") }
             })
+    }
+}
+
+/** A compact layout preview uses the real palette, without loading any library artwork. */
+@Composable
+private fun CinemaStylePreview(style: CinemaStyle, background: Int) {
+    val colors = cinemaColorScheme(Color(background), style)
+    Canvas(Modifier.size(width = 70.dp, height = 46.dp).border(1.dp, colors.outlineVariant)) {
+        drawRect(colors.background)
+        val inset = 5.dp.toPx()
+        val heroHeight = size.height * when (style) { CinemaStyle.CINEMA -> .48f; CinemaStyle.OTT -> .28f; CinemaStyle.LOUNGE -> .37f }
+        drawRect(colors.primary.copy(alpha = if (style == CinemaStyle.LOUNGE) .18f else .25f),
+            topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+            size = androidx.compose.ui.geometry.Size(size.width - inset * 2, heroHeight))
+        drawRect(colors.primary, topLeft = androidx.compose.ui.geometry.Offset(inset * 1.6f, inset * 1.6f),
+            size = androidx.compose.ui.geometry.Size(size.width * .28f, 2.dp.toPx()))
+        val count = when (style) { CinemaStyle.CINEMA -> 3; CinemaStyle.OTT -> 4; CinemaStyle.LOUNGE -> 2 }
+        val gap = 3.dp.toPx()
+        val width = (size.width - inset * 2 - gap * (count - 1)) / count
+        repeat(count) { index ->
+            drawRect(if (index == 0) colors.primary else colors.onSurfaceVariant.copy(alpha = .35f),
+                topLeft = androidx.compose.ui.geometry.Offset(inset + (width + gap) * index, heroHeight + inset + gap),
+                size = androidx.compose.ui.geometry.Size(width, (size.height - heroHeight - inset * 2 - gap).coerceAtLeast(0f)))
+        }
     }
 }
 

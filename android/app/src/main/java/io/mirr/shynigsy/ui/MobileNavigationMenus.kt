@@ -9,14 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AccountCircle
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.SystemUpdate
-import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -62,33 +54,33 @@ internal fun MobileMoreMenu(
                     style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
             item(key = "refresh") {
-                MobileMoreAction("새로고침", Icons.Rounded.Refresh, "mobile-more-refresh") {
+                MobileMoreAction("새로고침", cinemaIcon(CinemaGlyph.Refresh), "mobile-more-refresh") {
                     onDismiss(); onRefresh()
                 }
             }
             item(key = "appearance") {
-                MobileMoreAction("화면 색상", Icons.Rounded.Palette, "mobile-more-appearance") {
+                MobileMoreAction("화면 스타일", cinemaIcon(CinemaGlyph.Palette), "mobile-more-appearance") {
                     onDismiss(); onAppearance()
                 }
             }
             item(key = "spoiler") {
                 MobileMoreAction(if (spoilerUnlocked) "스포일러 잠그기" else "잠긴 라이브러리",
-                    if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, "mobile-more-spoiler") {
+                    cinemaIcon(if (spoilerUnlocked) CinemaGlyph.Lock else CinemaGlyph.Unlock), "mobile-more-spoiler") {
                     onDismiss(); onSpoilerAccess()
                 }
             }
             item(key = "update") {
-                MobileMoreAction("업데이트", Icons.Rounded.SystemUpdate, "mobile-more-update") {
+                MobileMoreAction("업데이트", cinemaIcon(CinemaGlyph.Update), "mobile-more-update") {
                     onDismiss(); onUpdate()
                 }
             }
             item(key = "tv-login") {
-                MobileMoreAction("TV 로그인", Icons.Rounded.QrCodeScanner, "mobile-more-tv-login") {
+                MobileMoreAction("TV 로그인", cinemaIcon(CinemaGlyph.QrCode), "mobile-more-tv-login") {
                     onDismiss(); onTvQrScan()
                 }
             }
             item(key = "account") {
-                MobileMoreAction("계정 / 로그아웃", Icons.Rounded.AccountCircle, "mobile-more-account") {
+                MobileMoreAction("계정 / 로그아웃", cinemaIcon(CinemaGlyph.Account), "mobile-more-account") {
                     onDismiss(); onLogout()
                 }
             }
@@ -101,7 +93,7 @@ private fun MobileMoreAction(label: String, icon: ImageVector, tag: String, onCl
     CompactMenuAction(onClick = onClick,
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(tag),
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(21.dp))
+        Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp))
         Spacer(Modifier.width(12.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
