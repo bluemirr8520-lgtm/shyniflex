@@ -34,6 +34,7 @@ internal fun MobileMoreMenu(
     onDismiss: () -> Unit,
     onRefresh: () -> Unit,
     onAppearance: () -> Unit,
+    onLibraryOrder: (() -> Unit)? = null,
     onUpdate: () -> Unit,
     onTvQrScan: () -> Unit = {},
     onLogout: () -> Unit,
@@ -61,6 +62,11 @@ internal fun MobileMoreMenu(
             item(key = "appearance") {
                 MobileMoreAction("화면 스타일", cinemaIcon(CinemaGlyph.Palette), "mobile-more-appearance") {
                     onDismiss(); onAppearance()
+                }
+            }
+            if (onLibraryOrder != null) item(key = "library-order") {
+                MobileMoreAction("라이브러리 순서", cinemaIcon(CinemaGlyph.Library), "mobile-more-library-order") {
+                    onDismiss(); onLibraryOrder()
                 }
             }
             item(key = "spoiler") {

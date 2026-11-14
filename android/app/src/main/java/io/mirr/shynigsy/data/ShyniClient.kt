@@ -41,8 +41,16 @@ import kotlin.coroutines.resumeWithException
 /** Keep an unexpected successful response separate from an authoritative empty history. */
 class ContinueWatchingResponseException : IOException("이어보기 응답 형식이 올바르지 않습니다. 잠시 후 새로고침해 주세요.")
 
+/** Individual View denials were already published; they must not erase other authorized shelves. */
+class RecentLibrariesIncompleteException : Exception("일부 라이브러리의 최근 작품을 불러오지 못했습니다.")
+
 /** View IDs whose prior same-account rows may remain while a Home shelf reloads. */
-data class RecentArtworkUpdate(val items: List<MediaItem>, val retainViewIds: Set<Int>)
+data class RecentArtworkUpdate(
+    val items: List<MediaItem>,
+    val retainViewIds: Set<Int>,
+    val statuses: Map<Int, RecentLibraryStatus> = emptyMap(),
+    val deniedViewIds: Set<Int> = emptySet(),
+)
 
 /** Shyni beta4 public Library View API. Section IDs never substitute for View IDs. */
 class ShyniClient(
@@ -741,6 +749,9 @@ class ShyniClient(
             val failures = arrayOfNulls<Exception>(selected.size)
             val catalogReceived = BooleanArray(selected.size)
             fun snapshot(): RecentArtworkUpdate {
+                val denied = selected.indices.filter { index ->
+                    (failures[index] as? ApiException)?.status == 403
+                }.map { selected[it].id }.toSet()
                 val retainViews = selected.indices.filter { index ->
                     if (catalogReceived[index]) false
                     else failures[index]?.let { error ->
@@ -748,7 +759,21 @@ class ShyniClient(
                             error.status in setOf(408, 425, 429) || error.status in 500..599)) || error is IOException
                     } ?: true
                 }.map { selected[it].id }.toSet()
-                return RecentArtworkUpdate(visible.filterNotNull().flatten(), retainViews)
+                val statuses = selected.indices.associate { index ->
+                    selected[index].id to when {
+                        catalogReceived[index] -> if (visible[index].isNullOrEmpty()) RecentLibraryStatus.EMPTY else RecentLibraryStatus.READY
+                        failures[index] != null -> RecentLibraryStatus.ERROR
+                        else -> RecentLibraryStatus.LOADING
+                    }
+                }
+                return RecentArtworkUpdate(visible.filterNotNull().flatten(), retainViews, statuses, denied)
+            }
+            // Expose every authorized shelf immediately, including ones queued
+            // behind the two catalog slots. This performs no additional request.
+            if (onArtworkReady != null) {
+                requireCurrent()
+                onArtworkReady(snapshot())
+                requireCurrent()
             }
             val recent = coroutineScope {
                 selected.mapIndexed { index, library -> async { try { stages.withPermit {
@@ -804,12 +829,18 @@ class ShyniClient(
                 } } catch (cancel: CancellationException) {
                     throw cancel
                 } catch (error: Exception) {
-                    // Authentication/authorization failures must cancel siblings.
-                    // Other failures in Home should leave independent shelves loading.
-                    if (onArtworkReady == null || (error is ApiException && error.status in setOf(401, 403))) throw error
+                    // An expired account cancels every shelf. In streaming Home,
+                    // a denied View only removes that View; requireCurrent below
+                    // still propagates an expired/replaced private grant globally.
+                    if (onArtworkReady == null || (error is ApiException && error.status == 401)) throw error
                     publication.withLock {
                         requireCurrent()
                         failures[index] = error
+                        if (error is ApiException && error.status == 403) {
+                            visible[index] = null
+                            completed[index] = null
+                            catalogReceived[index] = false
+                        }
                         onArtworkReady(snapshot())
                         requireCurrent()
                     }
@@ -817,6 +848,7 @@ class ShyniClient(
                 } } }.awaitAll().flatten()
             }
             requireCurrent()
+            if (failures.any { (it as? ApiException)?.status == 403 }) throw RecentLibrariesIncompleteException()
             failures.firstOrNull { it != null }?.let { throw it }
             recent
         }
@@ -1923,6 +1955,39 @@ class ShyniClient(
             "에피소드의 정체성을 확인할 수 없습니다",
             "에피소의 정체성을 확인할 수 없습니다",
         )
+    }
+
+    /** Display metadata only; do not create a session or probe every episode of a series. */
+    suspend fun detailFileInfo(item: MediaItem, selectedPartId: Int? = null): List<MediaFileInfo> {
+        if (!item.playable || item.id <= 0 || item.libraryId <= 0 || item.viewItemId?.let { it > 0 } != true ||
+            (selectedPartId != null && selectedPartId <= 0)) throw ApiException("파일 정보를 확인할 영화 또는 회차를 선택하세요.")
+        val account = token?.takeIf { it.isNotBlank() } ?: throw ApiException("로그인이 필요합니다.", 401)
+        val identity = spoilerKey()
+        val grant = if (item.isSpoiler) spoilerGrant()
+            ?: throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403) else null
+        fun validate() {
+            if (token != account) throw ApiException("로그인 정보가 변경되었습니다. 다시 여세요.", 401)
+            if (item.isSpoiler && (spoilerKey() != identity || grant == null || !SpoilerAccessRegistry.isCurrent(identity, grant)))
+                throw ApiException("스포일러 표시가 잠겼습니다. PIN으로 다시 열어 주세요.", 403)
+        }
+        return withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive(); validate()
+            val resource = selectedPartId?.toString() ?: "item/${item.id}"
+            val context = "library_view_id=${item.libraryId}&view_item_id=${item.viewItemId}"
+            // Supplemental detail work stays in the catalog lane and never obtains a playback ticket.
+            val info = mediaInfo("detail:${item.libraryId}:${item.viewItemId}:${item.id}:$resource",
+                "/libraries/${item.libraryId}/media_info/$resource?$context", item.isSpoiler, validate = ::validate)
+            currentCoroutineContext().ensureActive(); validate()
+            val files = try {
+                parseMediaFileInfo(info, item, selectedPartId)
+            } catch (error: ApiException) {
+                // A malformed response must be retryable, not retained as a two-minute error.
+                mediaInfoCache.entries.removeAll { it.value.data === info }
+                throw error
+            }
+            currentCoroutineContext().ensureActive(); validate()
+            files
+        }
     }
 
     /** Available source files supplied by Shyni; this never changes account transcode policy. */

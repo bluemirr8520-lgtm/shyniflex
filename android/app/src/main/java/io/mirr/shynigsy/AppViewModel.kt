@@ -34,6 +34,7 @@ data class AppState(
     val continueLoading: Boolean = false,
     val continueError: String? = null,
     val recentLoading: Boolean = false,
+    val recentLibraryStatus: Map<Int, RecentLibraryStatus> = emptyMap(),
     val libraries: List<Library> = emptyList(),
     val recentItems: List<MediaItem> = emptyList(),
     val continueItems: List<MediaItem> = emptyList(),
@@ -132,6 +133,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
         spoilerPromptOpen = false, spoilerError = null,
         seriesCountRevision = state.seriesCountRevision + 1,
         libraries = state.libraries.filterNot { it.isSpoiler }, recentItems = state.recentItems.filterNot { it.isSpoiler },
+        recentLibraryStatus = state.recentLibraryStatus.filterKeys { id -> state.libraries.any { it.id == id && !it.isSpoiler } },
         continueItems = state.continueItems.filterNot { it.isSpoiler },
         searchItems = state.searchItems.filterNot { it.isSpoiler }, searchFailureCount = 0, searchHydrating = false,
         continueDetails = state.continueDetails?.takeUnless { it.isSpoiler },
@@ -156,6 +158,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
 internal fun withoutStalePrivateHomeContent(state: AppState): AppState = state.copy(
     libraries = state.libraries.filterNot { it.isSpoiler },
     recentItems = state.recentItems.filterNot { it.isSpoiler },
+    recentLibraryStatus = state.recentLibraryStatus.filterKeys { id -> state.libraries.any { it.id == id && !it.isSpoiler } },
     continueItems = state.continueItems.filterNot { it.isSpoiler },
     continueDetails = state.continueDetails?.takeUnless { it.isSpoiler },
 )
@@ -180,7 +183,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var refreshJob: Job? = null
     private var revision = 0
     private var homeRefreshRevision = 0
+    private val recentRetryJobs = mutableMapOf<Int, Job>()
+    private val recentRetryOwners = mutableMapOf<Int, Long>()
+    private val recentRetryScopes = mutableMapOf<Int, Library>()
+    private var recentRetryRevision = 0L
     private var continueOwner: HomeContinueOwner? = null
+    private var recentOwner: HomeContinueOwner? = null
     private data class ContinueIdentity(val libraryId: Int, val id: Int, val type: String, val viewItemId: Int?, val isSpoiler: Boolean)
     private fun continueIdentity(item: MediaItem) = ContinueIdentity(item.libraryId, item.id, item.type, item.viewItemId, item.isSpoiler)
     private var continueDetailsJob: Job? = null
@@ -320,25 +328,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (current == revision) {
                     if (error is ApiException && error.status == 401 &&
                         (mutableState.value.loggedIn || !client?.token.isNullOrBlank())) {
-                        cancelTvQrLogin()
-                        dismissTvLoginApproval()
-                        client?.let { sessionStore.clear(it.server) }
-                        continueOwner = null
-                        collectionWatch.clear()
-                        client?.clearSpoilerGrant()
-                        clearSpoilerUi()
-                        clearContinueSelection()
-                        client = null
-                        mutableState.value = initialState.copy(
-                            server = mutableState.value.server,
-                            error = "로그인이 만료되었습니다. 다시 로그인하세요.",
-                        )
+                        expireSession()
                     } else mutableState.update { it.copy(error = error.message ?: "요청을 처리하지 못했습니다.") }
                 }
             } finally {
                 if (current == revision) mutableState.update { it.copy(busy = false, searchHydrating = false) }
             }
         }
+    }
+
+    private fun expireSession() {
+        cancelTvQrLogin()
+        dismissTvLoginApproval()
+        client?.let { sessionStore.clear(it.server) }
+        continueOwner = null
+        recentOwner = null
+        collectionWatch.clear()
+        client?.clearSpoilerGrant()
+        clearSpoilerUi()
+        clearContinueSelection()
+        client = null
+        mutableState.value = initialState.copy(server = mutableState.value.server,
+            error = "로그인이 만료되었습니다. 다시 로그인하세요.")
     }
 
     fun login(server: String, user: String, password: String) {
@@ -357,6 +368,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelDetailDiscoveryJobs(clear = true)
         collectionWatch.clear()
         continueOwner = null
+        recentOwner = null
         client?.clearSpoilerGrant()
         clearSpoilerUi()
         clearContinueSelection()
@@ -390,6 +402,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         client?.clearSpoilerGrant()
         client = null
         continueOwner = null
+        recentOwner = null
         collectionWatch.clear()
         clearSpoilerUi()
         clearContinueSelection()
@@ -605,6 +618,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         allowHomeInteraction: Boolean = true,
         prioritizePrivateCatalog: Boolean = false,
         reconcile: (AppState) -> AppState = { it }) {
+        cancelRecentRetries()
         val homeRevision = ++homeRefreshRevision
         val navigationRevision = revision
         val accessRevision = spoilerRevision
@@ -616,6 +630,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val previousContinue = mutableState.value.continueItems
         val previousRecent = mutableState.value.recentItems
         val previousOwnerMatches = continueOwner?.matches(active, homeAccountToken) == true
+        val previousRecentOwnerMatches = recentOwner?.matches(active, homeAccountToken) == true
         val knownPrivateIds = if (privateViewOwner?.matches(active, homeAccountToken) == true)
             knownPrivateViewIds.toSet() else emptySet()
         val prioritizingPrivate = prioritizePrivateCatalog && active.spoilerUnlocked
@@ -630,6 +645,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         var privateContinue: HomeContinueLoad? = if (active.spoilerUnlocked) null else HomeContinueLoad.Success(emptyList())
         var publicRecent: Pair<List<MediaItem>, String?>? = null
         var privateRecent: List<MediaItem>? = if (active.spoilerUnlocked) null else emptyList()
+        var publicRecentStatus = emptyMap<Int, RecentLibraryStatus>()
+        var privateRecentStatus = emptyMap<Int, RecentLibraryStatus>()
+        val publicRecentDenials = mutableSetOf<Int>()
+        val privateRecentDenials = mutableSetOf<Int>()
         var publicRecentComplete = false
         var privateRecentComplete = !active.spoilerUnlocked
         fun canPublishHome(): Boolean {
@@ -659,6 +678,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 active.spoilerUnlocked && accessRevision == spoilerRevision &&
                     grantRevision == SpoilerAccessRegistry.changes.value)
         }
+        fun homeRecentStatus(): Map<Int, RecentLibraryStatus> = homeLibraries().associate { library ->
+            val status = (if (library.isSpoiler) privateRecentStatus else publicRecentStatus)[library.id]
+            val complete = if (library.isSpoiler) privateRecentComplete else publicRecentComplete
+            library.id to (if (library.id in protectedRecentViews(listOf(library))) mutableState.value.recentLibraryStatus[library.id]
+                ?: RecentLibraryStatus.ERROR else status ?: if (complete) RecentLibraryStatus.ERROR else RecentLibraryStatus.LOADING)
+        }
         fun publishContinue() {
             val publicLoad = publicContinue ?: return
             if (!publicLibrariesLoaded || ordinary == null || !canPublishHome()) return
@@ -687,25 +712,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (!publicLibrariesLoaded || ordinary == null || !canPublishHome()) return
             val privateGrantCurrent = active.spoilerUnlocked && accessRevision == spoilerRevision &&
                 grantRevision == SpoilerAccessRegistry.changes.value
-            val retainedPrivate = if (previousOwnerMatches && privateGrantCurrent)
+            val retainedPrivate = if (previousRecentOwnerMatches && privateGrantCurrent)
                 previousRecent.filter { it.isSpoiler } else emptyList()
             val rows = visibleContinueWatching(publicLoad.first,
                 if (privateGrantCurrent) privateRecent ?: retainedPrivate else emptyList(),
                 homeLibraries(), privateGrantCurrent).map(::collectionWatchState)
-            mutableState.update { state -> reconcile(state.copy(recentItems = rows,
+            recentOwner = HomeContinueOwner(active, homeAccountToken)
+            mutableState.update { state -> reconcile(state.copy(recentItems =
+                mergeRetriedHomeRecent(rows, state.recentItems, homeLibraries(), protectedRecentViews(homeLibraries())),
+                recentLibraryStatus = homeRecentStatus(),
                 recentLoading = !publicRecentComplete || !privateRecentComplete,
                 error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
                     listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error)) }
         }
         fun publishLibraries() {
             if (ordinary == null || !canPublishHome()) return
-            mutableState.update { it.copy(libraries = homeLibraries()) }
+            mutableState.update { it.copy(libraries = homeLibraries(), recentLibraryStatus = homeRecentStatus()) }
             // A new private catalog can disqualify a previously known public View.
             publishContinue()
             publishRecent()
         }
         mutableState.update { it.copy(homeLoading = allowHomeInteraction, continueLoading = true,
-            continueError = null, recentLoading = true, spoilerLibrariesLoading = active.spoilerUnlocked) }
+            continueError = null, recentLoading = true, spoilerLibrariesLoading = active.spoilerUnlocked,
+            recentLibraryStatus = it.libraries.associate { library -> library.id to RecentLibraryStatus.LOADING }) }
         try {
             coroutineScope {
                 // Enqueue the requested private names before public shelves occupy the catalog lane.
@@ -734,8 +763,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             active.recentlyAdded(libraries, onArtworkReady = { update ->
                                 withContext(Dispatchers.Main.immediate) {
                                     if (canPublishHome()) {
+                                        denyRecentLibraries(update.deniedViewIds - publicRecentDenials)
+                                        publicRecentDenials.addAll(update.deniedViewIds)
+                                        publicRecentStatus = update.statuses
                                         publicRecent = mergeHomeRecent(update.items, previousRecent, libraries,
-                                            update.retainViewIds, previousOwnerMatches) to null
+                                            update.retainViewIds, previousRecentOwnerMatches) to null
                                         publishRecent()
                                     }
                                 }
@@ -744,6 +776,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         catch (cancel: CancellationException) { throw cancel }
                         catch (error: Exception) {
                             if (error is ApiException && error.status == 401) throw error
+                            if (error is ApiException && error.status == 403 && canPublishHome()) {
+                                denyRecentLibraries(libraries.map { it.id }.toSet())
+                                publicRecentStatus = libraries.associate { it.id to RecentLibraryStatus.ERROR }
+                            }
                             // Already completed shelves belong to this request;
                             // a slow/failed sibling must not erase them.
                             (if (error is ApiException && error.status == 403) emptyList() else publicRecent?.first.orEmpty()) to
@@ -807,8 +843,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                                     withContext(Dispatchers.Main.immediate) {
                                                         if (canPublishHome() && active.spoilerUnlocked &&
                                                             grantRevision == SpoilerAccessRegistry.changes.value) {
+                                                            denyRecentLibraries(update.deniedViewIds - privateRecentDenials)
+                                                            privateRecentDenials.addAll(update.deniedViewIds)
+                                                            privateRecentStatus = update.statuses
                                                             privateRecent = mergeHomeRecent(update.items, previousRecent, privateLibraries,
-                                                                update.retainViewIds, previousOwnerMatches &&
+                                                                update.retainViewIds, previousRecentOwnerMatches &&
                                                                     grantRevision == SpoilerAccessRegistry.changes.value)
                                                             publishRecent()
                                                         }
@@ -817,7 +856,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                             } catch (error: ApiException) {
                                                 // An explicit private denial is not a transient
                                                 // slow shelf; do not retain its earlier rows.
-                                                if (error.status == 403) privateRecent = emptyList()
+                                                if (error.status == 403) {
+                                                    privateRecent = emptyList()
+                                                    if (canPublishHome()) {
+                                                        denyRecentLibraries(privateLibraries.map { it.id }.toSet())
+                                                        privateRecentStatus = privateLibraries.associate { it.id to RecentLibraryStatus.ERROR }
+                                                    }
+                                                }
                                                 throw error
                                             }
                                         }
@@ -839,7 +884,113 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } finally {
             if (active === client && homeRevision == homeRefreshRevision) mutableState.update {
                 it.copy(homeLoading = false, continueLoading = false, recentLoading = false,
+                    recentLibraryStatus = it.recentLibraryStatus.mapValues { (id, status) ->
+                        if (status == RecentLibraryStatus.LOADING && id !in recentRetryOwners)
+                            RecentLibraryStatus.ERROR else status
+                    },
                     spoilerLibrariesLoading = false)
+            }
+        }
+    }
+
+    private fun cancelRecentRetries() {
+        val jobs = recentRetryJobs.values.toList()
+        recentRetryOwners.clear()
+        recentRetryJobs.clear()
+        recentRetryScopes.clear()
+        jobs.forEach { it.cancel() }
+        mutableState.update { state -> state.copy(recentLibraryStatus = state.recentLibraryStatus.mapValues { (_, status) ->
+            if (status == RecentLibraryStatus.LOADING) RecentLibraryStatus.ERROR else status
+        }) }
+    }
+
+    private fun protectedRecentViews(libraries: List<Library>): Set<Int> = libraries.filter { library ->
+        recentRetryScopes[library.id]?.let { it.type == library.type && it.isSpoiler == library.isSpoiler } == true
+    }.map { it.id }.toSet()
+
+    private fun denyRecentLibraries(ids: Set<Int>) {
+        if (ids.isEmpty()) return
+        val libraries = mutableState.value.libraries
+        ids.forEach { id ->
+            recentRetryOwners.remove(id)
+            // Fence an explicit denial against an older full-load response too.
+            // A new refresh or user retry starts a new authorization attempt.
+            val library = libraries.firstOrNull { it.id == id }
+            if (library == null) recentRetryScopes.remove(id) else recentRetryScopes[id] = library
+            recentRetryJobs.remove(id)?.cancel()
+        }
+        mutableState.update { state -> state.copy(recentItems = state.recentItems.filterNot { it.libraryId in ids },
+            recentLibraryStatus = state.recentLibraryStatus.mapValues { (id, status) ->
+                if (id in ids) RecentLibraryStatus.ERROR else status
+            }) }
+    }
+
+    /** Retry only this authorized shelf, independently of navigation and sibling requests. */
+    fun retryRecentLibrary(libraryId: Int) {
+        val active = client ?: return
+        val grantRevision = SpoilerAccessRegistry.changes.value
+        enterPrivateHomeScope(active, grantRevision)
+        val before = mutableState.value
+        val library = before.libraries.firstOrNull { it.id == libraryId && it.id > 0 && it.type in setOf("movie", "tv") } ?: return
+        if (!before.loggedIn || (library.isSpoiler && (!before.spoilerUnlocked || !active.spoilerUnlocked))) return
+        val account = active.token
+        val previousOwnerMatches = recentOwner?.matches(active, account) == true
+        val homeRevision = homeRefreshRevision
+        val owner = ++recentRetryRevision
+        recentRetryJobs.remove(libraryId)?.cancel()
+        recentRetryOwners[libraryId] = owner
+        recentRetryScopes[libraryId] = library
+        fun current(): Boolean {
+            val state = mutableState.value
+            return active === client && active.token == account && state.loggedIn &&
+                homeRevision == homeRefreshRevision && recentRetryOwners[libraryId] == owner &&
+                state.libraries.any { it.id == library.id && it.type == library.type && it.isSpoiler == library.isSpoiler } &&
+                (!library.isSpoiler || (state.spoilerUnlocked && active.spoilerUnlocked &&
+                    grantRevision == SpoilerAccessRegistry.changes.value))
+        }
+        mutableState.update { it.copy(recentLibraryStatus = it.recentLibraryStatus + (libraryId to RecentLibraryStatus.LOADING)) }
+        recentRetryJobs[libraryId] = viewModelScope.launch {
+            try {
+                active.recentlyAdded(listOf(library), onArtworkReady = { update ->
+                    withContext(Dispatchers.Main.immediate) {
+                        if (current()) {
+                            if (libraryId in update.deniedViewIds) {
+                                denyRecentLibraries(setOf(libraryId))
+                                return@withContext
+                            }
+                            val rows = mergeHomeRecent(update.items, before.recentItems, listOf(library),
+                                update.retainViewIds, previousOwnerMatches).map(::collectionWatchState)
+                            recentOwner = HomeContinueOwner(active, account)
+                            mutableState.update { state -> state.copy(
+                                recentItems = mergeRetriedHomeRecent(state.recentItems, rows, state.libraries, setOf(libraryId)),
+                                recentLibraryStatus = state.recentLibraryStatus +
+                                    (libraryId to (update.statuses[libraryId] ?: RecentLibraryStatus.ERROR))) }
+                        }
+                    }
+                })
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                if (current() && error is ApiException && error.status == 401) {
+                    expireSession()
+                    return@launch
+                }
+                if (current()) mutableState.update { state ->
+                    val denied = error is ApiException && error.status in setOf(401, 403)
+                    state.copy(recentItems = if (denied) state.recentItems.filterNot { it.libraryId == libraryId } else state.recentItems,
+                        recentLibraryStatus = state.recentLibraryStatus + (libraryId to
+                            if (!denied && state.recentLibraryStatus[libraryId] in setOf(RecentLibraryStatus.READY, RecentLibraryStatus.EMPTY))
+                                state.recentLibraryStatus.getValue(libraryId) else RecentLibraryStatus.ERROR))
+                }
+            } finally {
+                if (recentRetryOwners[libraryId] == owner) {
+                    if (!current()) recentRetryScopes.remove(libraryId)
+                    if (current()) mutableState.update { state -> state.copy(recentLibraryStatus = state.recentLibraryStatus +
+                        (libraryId to (state.recentLibraryStatus[libraryId]?.takeUnless { it == RecentLibraryStatus.LOADING }
+                            ?: RecentLibraryStatus.ERROR))) }
+                    recentRetryOwners.remove(libraryId)
+                    recentRetryJobs.remove(libraryId)
+                }
             }
         }
     }
@@ -908,6 +1059,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Drop every private screen/result before a revoked grant can leave stale content visible. */
     private fun clearSpoilerUi() {
+        cancelRecentRetries()
         cancelDetailDiscoveryJobs()
         spoilerJob?.cancel(); spoilerJob = null; spoilerRevision++
         spoilerExpiryJob?.cancel(); spoilerExpiryJob = null
@@ -1405,6 +1557,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectVersion(partId: Int?) { mutableState.update { it.copy(selectedPartId = partId) } }
 
+    /** Supplemental file metadata never blocks opening the title or starting playback. */
+    internal suspend fun detailFileInformation(item: MediaItem, partId: Int?): List<MediaFileInfo> {
+        val active = client ?: throw ApiException("로그인이 필요합니다.", 401)
+        val account = active.token
+        val identity = detailDiscoveryKey(item)
+        val privateFile = item.isSpoiler || mutableState.value.libraries.any { it.id == item.libraryId && it.isSpoiler }
+        fun validate() {
+            val current = mutableState.value
+            val visible = current.detailStack.lastOrNull()?.item
+            if (client !== active || active.token != account || !current.loggedIn ||
+                visible == null || detailDiscoveryKey(visible) != identity || current.selectedPartId != partId)
+                throw CancellationException("파일 정보 화면이 변경되었습니다.")
+            if (!item.playable || current.libraries.none { it.id == item.libraryId &&
+                    it.type == (if (item.type == "movie") "movie" else "tv") })
+                throw ApiException("파일 정보를 확인할 수 없습니다.", 403)
+            if ((item.isSpoiler || current.libraries.any { it.id == item.libraryId && it.isSpoiler }) &&
+                (!current.spoilerUnlocked || !active.spoilerUnlocked))
+                throw ApiException("스포일러 표시가 잠겼습니다.", 403)
+            if (partId != null && current.versions.none { it.partId == partId })
+                throw ApiException("선택한 파일 정보를 확인할 수 없습니다.")
+        }
+        validate()
+        val result = withTimeoutOrNull(15_000L) { active.detailFileInfo(item.copy(isSpoiler = privateFile), partId) }
+            ?: throw ApiException("파일 정보 응답이 늦습니다. 다시 시도해 주세요.", 408)
+        validate()
+        return result
+    }
+
     fun setWatched(item: MediaItem, watched: Boolean) {
         val active = client ?: return
         val snapshot = mutableState.value
@@ -1738,6 +1918,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelDetailDiscoveryJobs(clear = true)
         requestJob?.cancel(); revision++
         continueOwner = null
+        recentOwner = null
         collectionWatch.clear()
         client?.clearSpoilerGrant()
         clearSpoilerUi()

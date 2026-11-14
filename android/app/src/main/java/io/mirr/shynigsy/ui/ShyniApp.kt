@@ -121,6 +121,10 @@ import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.data.PlaybackSpec
+import io.mirr.shynigsy.data.LibraryOrderStore
+import io.mirr.shynigsy.data.applyLibraryOrder
+import io.mirr.shynigsy.data.libraryOrderScope
+import io.mirr.shynigsy.data.moveVisibleLibraryOrder
 
 private val AppBackground: Color @Composable get() = MaterialTheme.colorScheme.background
 private val Panel: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainer
@@ -154,7 +158,16 @@ fun ShyniApp(
     onUpdate: () -> Unit = {},
     onPlay: (PlaybackSpec) -> Unit,
 ) {
-    val state by viewModel.state.collectAsState()
+    val rawState by viewModel.state.collectAsState()
+    val context = LocalContext.current
+    val orderStore = remember(context.applicationContext) { LibraryOrderStore(context) }
+    val orderScope = remember(rawState.loggedIn, rawState.server, rawState.userName) {
+        if (rawState.loggedIn) libraryOrderScope(rawState.server, rawState.userName) else null
+    }
+    var orderRevision by remember { mutableStateOf(0) }
+    val savedOrder = remember(orderScope, orderRevision) { orderStore.read(orderScope) }
+    val orderedLibraries = remember(rawState.libraries, savedOrder) { applyLibraryOrder(rawState.libraries, savedOrder) }
+    val state = rawState.copy(libraries = orderedLibraries)
     val tv = LocalContext.current.isTelevision()
     val scanTvQr = rememberTvQrPhotoScanner(viewModel::receiveLocalTvQr)
     val tvScreens = rememberSaveableStateHolder()
@@ -162,6 +175,10 @@ fun ShyniApp(
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
     var appearanceOpen by rememberSaveable { mutableStateOf(false) }
     var mobileMoreOpen by rememberSaveable { mutableStateOf(false) }
+    var libraryOrderOpen by rememberSaveable(orderScope) { mutableStateOf(false) }
+    val openLibraryOrder: (() -> Unit)? = orderScope?.let {
+        { libraryPickerOpen = false; mobileMoreOpen = false; libraryOrderOpen = true }
+    }
     val appearance = LocalCinemaAppearance.current
     var watchOptions by remember { mutableStateOf<MediaItem?>(null) }
     val onWatchOptions: (MediaItem) -> Unit = { if (canChangeWatchState(it)) watchOptions = it }
@@ -172,6 +189,7 @@ fun ShyniApp(
             libraryPickerOpen = false
             mobileMoreOpen = false
             appearanceOpen = false
+            libraryOrderOpen = false
         }
     }
     LaunchedEffect(state.loggedIn, state.spoilerUnlocked, watchOptions) {
@@ -188,6 +206,7 @@ fun ShyniApp(
             mobileMoreOpen = false
             libraryPickerOpen = false
             appearanceOpen = false
+            libraryOrderOpen = false
             logoutConfirm = false
             watchOptions = null
         }
@@ -287,6 +306,7 @@ fun ShyniApp(
                             onLockSpoiler = { closeSidebar(); viewModel.lockSpoiler() },
                             onUpdate = { closeSidebar(); onUpdate() }, searchSelected = state.searchOpen,
                             onAppearance = { closeSidebar(); appearanceOpen = true },
+                            onLibraryOrder = openLibraryOrder?.let { action -> { closeSidebar(); action() } },
                             onSearch = { closeSidebar(); viewModel.openSearch() })
                         }
                         val content: @Composable () -> Unit = {
@@ -325,6 +345,7 @@ fun ShyniApp(
             onDismiss = { mobileMoreOpen = false },
             onRefresh = viewModel::refresh,
             onAppearance = { appearanceOpen = true },
+            onLibraryOrder = openLibraryOrder,
             onUpdate = onUpdate,
             onTvQrScan = scanTvQr,
             onLogout = { logoutConfirm = true },
@@ -336,6 +357,18 @@ fun ShyniApp(
         if (appearanceOpen) CinemaAppearanceSettings(initialBackground = appearance.backgroundArgb,
             onDismiss = { appearanceOpen = false },
             onApply = { color -> appearance.save(color); appearanceOpen = false })
+        if (libraryOrderOpen && state.loggedIn && orderScope != null) LibraryOrderDialog(
+            libraries = state.libraries,
+            spoilerUnlocked = state.spoilerUnlocked,
+            hasCustomOrder = savedOrder.isNotEmpty(),
+            onMove = { id, direction ->
+                val visible = state.libraries.filter { state.spoilerUnlocked || !it.isSpoiler }.map { it.id }
+                val updated = moveVisibleLibraryOrder(savedOrder, visible, id, direction)
+                if (updated != savedOrder) { orderStore.save(orderScope, updated); orderRevision++ }
+            },
+            onReset = { orderStore.reset(orderScope); orderRevision++ },
+            onDismiss = { libraryOrderOpen = false },
+        )
         if (logoutConfirm) AlertDialog(
             onDismissRequest = { logoutConfirm = false },
             title = { Text("로그아웃") },
@@ -351,6 +384,7 @@ fun ShyniApp(
             busy = state.busy && !state.homeLoading,
             onDismiss = { libraryPickerOpen = false },
             onSelect = { library -> libraryPickerOpen = false; viewModel.selectLibrary(library) },
+            onLibraryOrder = openLibraryOrder,
             spoilerAvailable = state.spoilerAvailable,
             spoilerUnlocked = state.spoilerUnlocked,
             spoilerBusy = state.spoilerBusy,
@@ -636,6 +670,7 @@ internal fun LibraryPicker(
     television: Boolean = LocalContext.current.isTelevision(),
     modifier: Modifier = Modifier,
     spoilerLibrariesLoading: Boolean = false,
+    onLibraryOrder: (() -> Unit)? = null,
 ) {
     val visibleLibraries = libraries.filter { spoilerUnlocked || !it.isSpoiler }
     if (!television) {
@@ -659,6 +694,10 @@ internal fun LibraryPicker(
                             fontWeight = FontWeight.Bold)
                         TextButton(onClick = onDismiss, modifier = Modifier.testTag("mobile-library-close")) { Text("닫기") }
                     }
+                }
+                if (onLibraryOrder != null) item(key = "order") {
+                    CompactMenuAction(onClick = onLibraryOrder, modifier = Modifier.fillMaxWidth()
+                        .testTag("mobile-library-order")) { Text("순서 변경") }
                 }
                 // Cached capability is advisory; a failed status fetch must not hide the PIN entry point.
                 item(key = "spoiler") {
@@ -704,6 +743,8 @@ internal fun LibraryPicker(
         title = { Text("라이브러리") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (onLibraryOrder != null) CompactMenuAction(onClick = onLibraryOrder,
+                modifier = Modifier.fillMaxWidth().testTag("tv-library-order")) { Text("순서 변경") }
             CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
                 enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
                 Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null)

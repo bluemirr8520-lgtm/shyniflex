@@ -79,6 +79,7 @@ import io.mirr.shynigsy.AppViewModel
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.Library
+import io.mirr.shynigsy.data.RecentLibraryStatus
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -131,7 +132,8 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
     libraries: List<Library> = emptyList(), selectedLibraryId: Int? = null, homeSelected: Boolean = true,
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
     spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
-    onSearch: () -> Unit = {}, searchSelected: Boolean = false, onAppearance: () -> Unit = {}) {
+    onSearch: () -> Unit = {}, searchSelected: Boolean = false, onAppearance: () -> Unit = {},
+    onLibraryOrder: (() -> Unit)? = null) {
     val fontScale = LocalDensity.current.fontScale
     val sidebarWidth = 216.dp + 64.dp * (fontScale - 1f).coerceIn(0f, 1f)
     // Keep focus indicators and headings inside the TV overscan-safe area.
@@ -175,6 +177,10 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                 item(key = "sidebar-appearance") {
                     TvSidebarItem("화면 스타일", cinemaIcon(CinemaGlyph.Palette), false, onAppearance, Modifier.testTag("sidebar-appearance"))
                 }
+                if (onLibraryOrder != null) item(key = "sidebar-library-order") {
+                    TvSidebarItem("라이브러리 순서", cinemaIcon(CinemaGlyph.Library), false, onLibraryOrder,
+                        Modifier.testTag("sidebar-library-order"))
+                }
                 item(key = "sidebar-update") { TvSidebarItem("업데이트", cinemaIcon(CinemaGlyph.Update), false, onUpdate) }
                 item(key = "sidebar-account") { TvSidebarItem("계정", cinemaIcon(CinemaGlyph.Account), false, onLogout) }
             }
@@ -203,6 +209,8 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
             HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
             TvSidebarItem("새로고침", cinemaIcon(CinemaGlyph.Refresh), false, onRefresh)
             TvSidebarItem("화면 스타일", cinemaIcon(CinemaGlyph.Palette), false, onAppearance, Modifier.testTag("sidebar-appearance"))
+            if (onLibraryOrder != null) TvSidebarItem("라이브러리 순서", cinemaIcon(CinemaGlyph.Library), false,
+                onLibraryOrder, Modifier.testTag("sidebar-library-order"))
             TvSidebarItem("업데이트", cinemaIcon(CinemaGlyph.Update), false, onUpdate)
             TvSidebarItem("계정", cinemaIcon(CinemaGlyph.Account), false, onLogout)
         }
@@ -405,13 +413,22 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
             }
             libraries.forEach { library ->
                 val media = recentByLibrary[library.id].orEmpty()
-                if (media.isNotEmpty()) item(key = "recent-${library.id}") {
-                    TvShelf("최근 추가된 작품 · ${library.title}", media, model, onWatchOptions,
-                        modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus)
-                            .onGloballyPositioned { shelfAttached = true } else Modifier,
-                        restoreKey = selectedKey,
-                        cinematic = true, cardWidth = homeCardWidth,
-                        onSelect = { selectedKey = tvMediaKey(it); selectedShelf = "recent-${library.id}" }, onClick = model::openItem)
+                val status = state.recentLibraryStatus[library.id]
+                    ?: if (state.recentLoading) RecentLibraryStatus.LOADING else RecentLibraryStatus.ERROR
+                item(key = "recent-${library.id}") {
+                    if (media.isEmpty()) HomeRecentLibraryStatus(library.title, status,
+                        onRetry = { model.retryRecentLibrary(library.id) },
+                        modifier = Modifier.testTag("home-recent-status-${library.id}"))
+                    else Column {
+                        TvShelf("최근 추가된 작품 · ${library.title}", media, model, onWatchOptions,
+                            modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus)
+                                .onGloballyPositioned { shelfAttached = true } else Modifier,
+                            restoreKey = selectedKey,
+                            cinematic = true, cardWidth = homeCardWidth,
+                            onSelect = { selectedKey = tvMediaKey(it); selectedShelf = "recent-${library.id}" }, onClick = model::openItem)
+                        if (status == RecentLibraryStatus.ERROR) HomeRecentLibraryRetry(
+                            onRetry = { model.retryRecentLibrary(library.id) })
+                    }
                 }
             }
             state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }

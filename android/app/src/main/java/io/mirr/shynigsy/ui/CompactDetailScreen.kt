@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,12 +48,43 @@ import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
+import io.mirr.shynigsy.data.MediaFileInfo
+import io.mirr.shynigsy.data.SpoilerAccessRegistry
 import io.mirr.shynigsy.isTelevision
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
 internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit) {
     val detail = state.detailStack.lastOrNull() ?: return
+    val grantRevision by SpoilerAccessRegistry.changes.collectAsState()
+    val fileLibraries = state.libraries.filter { it.id == detail.item.libraryId &&
+        it.type == (if (detail.item.type == "movie") "movie" else "tv") }
+    val privateFile = detail.item.isSpoiler || state.libraries.any { it.id == detail.item.libraryId && it.isSpoiler }
+    val fileAuthorized = state.loggedIn && detail.item.playable && fileLibraries.isNotEmpty() &&
+        (!privateFile || state.spoilerUnlocked)
+    val fileKey = listOf(state.server, state.userName, detailDiscoveryKey(detail.item), state.selectedPartId,
+        detail.item.navigationPartId, detail.item.playbackPartId, privateFile, fileAuthorized,
+        fileLibraries.map { it.id to it.isSpoiler }, if (privateFile) grantRevision else 0L)
+    var files by remember(fileKey) { mutableStateOf<List<MediaFileInfo>>(emptyList()) }
+    var filesLoading by remember(fileKey) { mutableStateOf(detail.item.playable) }
+    var filesError by remember(fileKey) { mutableStateOf<String?>(null) }
+    var filesRetry by remember(fileKey) { mutableStateOf(0) }
+    val fileDetailsReady = fileAuthorized && !state.busy
+    LaunchedEffect(fileKey, fileDetailsReady, filesRetry) {
+        if (!detail.item.playable || !fileDetailsReady) return@LaunchedEffect
+        filesLoading = true
+        filesError = null
+        try {
+            files = model.detailFileInformation(detail.item, state.selectedPartId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            filesError = "파일 정보를 불러오지 못했습니다. 다시 시도해 주세요."
+        } finally {
+            filesLoading = false
+        }
+    }
     CompactDetailContent(detail = detail, versions = state.versions, selectedPartId = state.selectedPartId,
         busy = state.busy && !state.homeLoading, error = state.error, spoilerUnlocked = state.spoilerUnlocked,
         onPlay = { item, startOver -> model.play(item, startOver) }, onOpenItem = model::openItem,
@@ -63,7 +95,10 @@ internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOp
         discovery = state.detailDiscovery[detailDiscoveryKey(detail.item)], libraries = state.libraries,
         onSelectActor = model::selectDetailActor, onRetryRelated = model::retryRelatedWorks,
         onSearchActorMovies = model::searchDetailActorMovies, onCancelActorMovieSearch = model::cancelDetailActorMovieSearch,
-        portrait = { actor, modifier -> Poster(detail.item, model, modifier, imageUrl = actor.portrait) })
+        portrait = { actor, modifier -> Poster(detail.item, model, modifier, imageUrl = actor.portrait) },
+        fileInformation = if (fileAuthorized) ({
+            FileInformationSection(files, filesLoading, filesError, onRetry = { filesRetry++ })
+        }) else null)
 }
 
 /** Callback-based surface also permits synthetic UI verification without accounts or a server. */
@@ -90,6 +125,7 @@ internal fun CompactDetailContent(
     onSearchActorMovies: () -> Unit = {},
     onCancelActorMovieSearch: () -> Unit = {},
     portrait: @Composable (CastMember, Modifier) -> Unit = { _, _ -> },
+    fileInformation: (@Composable () -> Unit)? = null,
 ) {
     val item = detail.item
     if (item.isSpoiler && !spoilerUnlocked) return
@@ -115,7 +151,7 @@ internal fun CompactDetailContent(
     val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty() || discoveryTargets.isNotEmpty()
     val primaryRows = if (item.playable) 1 + (if (versions.isNotEmpty()) 1 else 0) else children.size.coerceAtLeast(1)
     val discoveryIndex = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0) +
-        primaryRows + (if (item.summary.isNotBlank()) 1 else 0)
+        primaryRows + (if (item.summary.isNotBlank()) 1 else 0) + (if (item.playable && fileInformation != null) 1 else 0)
     LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId) {
         if (busy) return@LaunchedEffect
         if (!television || !hasFocusTarget || focusRequested) return@LaunchedEffect
@@ -231,6 +267,7 @@ internal fun CompactDetailContent(
                     Modifier.testTag("compact-summary-toggle")) { expanded = !expanded }
             }
         }
+        if (item.playable && fileInformation != null) item(key = "file-information") { fileInformation() }
         item(key = "discovery") {
             DetailDiscoverySections(item, detail.castMembers, frame, libraries, spoilerUnlocked, busy,
                 onSelectActor, onOpenItem, onWatchOptions, onRetryRelated, artwork, portrait,

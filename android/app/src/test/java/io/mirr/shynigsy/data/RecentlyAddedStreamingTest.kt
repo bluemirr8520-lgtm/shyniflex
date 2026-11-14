@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -63,7 +64,8 @@ class RecentlyAddedStreamingTest {
         }
         val pending = async(Dispatchers.Default) {
             client.recentlyAdded(listOf(library(8), library(9)), onArtworkReady = { update ->
-                snapshots.add(update.items.toList()); first.complete(update.items.toList())
+                snapshots.add(update.items.toList())
+                if (update.items.isNotEmpty()) first.complete(update.items.toList())
             })
         }
         try {
@@ -100,14 +102,15 @@ class RecentlyAddedStreamingTest {
             }
             try {
                 await(progressEntered)
-                assertEquals(1, snapshots.size)
-                assertNull(snapshots.single().single().watchState)
+                assertEquals(2, snapshots.size)
+                assertTrue(snapshots.first().isEmpty())
+                assertNull(snapshots.last().single().watchState)
                 if (changeAccount) client.token = "fixture-other-account"
                 releaseProgress.countDown()
                 val failure = withTimeout(10_000) { pending.await() }
                 assertTrue(failure is ApiException)
                 assertEquals(if (changeAccount) 401 else 503, (failure as ApiException).status)
-                assertEquals(if (changeAccount) 1 else 2, snapshots.size)
+                assertEquals(if (changeAccount) 2 else 3, snapshots.size)
             } finally { releaseProgress.countDown() }
         }
     }
@@ -139,6 +142,198 @@ class RecentlyAddedStreamingTest {
         } finally { releaseSlow.countDown() }
     }
 
+    @Test fun sixteenLibrariesPublishLoadingEmptyAndErrorWithoutHidingFastCatalogs() = runBlocking {
+        val slowEntered = CountDownLatch(1)
+        val releaseSlow = CountDownLatch(1)
+        val fastReady = CompletableDeferred<Unit>()
+        val snapshots = Collections.synchronizedList(mutableListOf<RecentArtworkUpdate>())
+        val emptyIds = setOf(9, 18)
+        val failedIds = setOf(10, 17)
+        val selectedIds = (8..23).toList()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val url = request.requestUrl!!
+                if (url.encodedPath == "/playback/progress") {
+                    val id = url.queryParameter("library_view_id")!!.toInt()
+                    return if (id == 12) response("{}", 503) else response(progress(id))
+                }
+                val id = url.pathSegments[1].toInt()
+                if (id == 23) {
+                    slowEntered.countDown()
+                    check(releaseSlow.await(10, TimeUnit.SECONDS))
+                }
+                return when (id) {
+                    in emptyIds -> response("[]")
+                    in failedIds -> response("{}", 503)
+                    else -> response(catalog(id))
+                }
+            }
+        }
+        val pending = async(Dispatchers.Default) {
+            runCatching {
+                client.recentlyAdded(selectedIds.map { library(it) } +
+                    listOf(library(0), Library(999, "비디오 외", "book")), onArtworkReady = { update ->
+                    snapshots.add(update)
+                    if (update.items.any { it.libraryId == 8 && it.watched }) fastReady.complete(Unit)
+                })
+            }.exceptionOrNull()
+        }
+        try {
+            withTimeout(10_000) { fastReady.await() }
+            await(slowEntered)
+            assertFalse(pending.isCompleted)
+            val initial = snapshots.first()
+            assertTrue(initial.items.isEmpty())
+            assertEquals(selectedIds, initial.statuses.keys.toList())
+            assertTrue(initial.statuses.values.all { it == RecentLibraryStatus.LOADING })
+            val partial = snapshots.last()
+            assertEquals(RecentLibraryStatus.READY, partial.statuses[8])
+            assertEquals(RecentLibraryStatus.LOADING, partial.statuses[23])
+            releaseSlow.countDown()
+            assertEquals(503, (withTimeout(10_000) { pending.await() } as ApiException).status)
+            val final = snapshots.last()
+            val expected = selectedIds.associateWith { id -> when (id) {
+                in emptyIds -> RecentLibraryStatus.EMPTY
+                in failedIds -> RecentLibraryStatus.ERROR
+                else -> RecentLibraryStatus.READY
+            } }
+            assertEquals(expected, final.statuses)
+            // A failed history join does not make a successful catalog disappear.
+            assertEquals(RecentLibraryStatus.READY, final.statuses[12])
+            assertNull(final.items.single { it.libraryId == 12 }.watchState)
+            assertEquals(failedIds, final.retainViewIds)
+            assertEquals(selectedIds.filter { it !in emptyIds && it !in failedIds }, final.items.map { it.libraryId })
+            assertTrue(snapshots.all { it.statuses.keys == selectedIds.toSet() })
+            assertEquals(28, server.requestCount)
+            val requests = List(28) { request() }
+            assertEquals(16, requests.count { it.requestUrl!!.encodedPath.startsWith("/libraries/") })
+            assertEquals(12, requests.count { it.requestUrl!!.encodedPath == "/playback/progress" })
+        } finally { releaseSlow.countDown() }
+    }
+
+    @Test fun oneCatalogOrProgressDenialRemovesOnlyThatViewWhileOtherShelvesFinish() = runBlocking {
+        for (denyProgress in listOf(false, true)) {
+            val siblingEntered = CountDownLatch(1)
+            val releaseSibling = CountDownLatch(1)
+            val denial = CompletableDeferred<RecentArtworkUpdate>()
+            val snapshots = Collections.synchronizedList(mutableListOf<RecentArtworkUpdate>())
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val url = request.requestUrl!!
+                    return when (url.encodedPath) {
+                        "/libraries/8/movies" -> if (denyProgress) response(catalog(8)) else response("{}", 403)
+                        "/libraries/9/movies" -> {
+                            siblingEntered.countDown(); check(releaseSibling.await(10, TimeUnit.SECONDS))
+                            response(catalog(9))
+                        }
+                        "/playback/progress" -> if (url.queryParameter("library_view_id") == "8")
+                            response("{}", 403) else response(progress(9))
+                        else -> response("{}", 404)
+                    }
+                }
+            }
+            val before = server.requestCount
+            val pending = async(Dispatchers.Default) {
+                runCatching { client.recentlyAdded(listOf(library(8), library(9)), onArtworkReady = { update ->
+                    snapshots.add(update)
+                    if (8 in update.deniedViewIds) denial.complete(update)
+                }) }.exceptionOrNull()
+            }
+            try {
+                await(siblingEntered)
+                val denied = withTimeout(10_000) { denial.await() }
+                assertFalse(pending.isCompleted)
+                assertEquals(setOf(8), denied.deniedViewIds)
+                assertEquals(RecentLibraryStatus.ERROR, denied.statuses[8])
+                assertEquals(RecentLibraryStatus.LOADING, denied.statuses[9])
+                assertFalse(8 in denied.retainViewIds)
+                assertTrue(denied.items.none { it.libraryId == 8 })
+                assertEquals(denyProgress, snapshots.any { update -> update.items.any { it.libraryId == 8 } })
+                releaseSibling.countDown()
+                assertTrue(withTimeout(10_000) { pending.await() } is RecentLibrariesIncompleteException)
+                val final = snapshots.last()
+                assertEquals(listOf(91), final.items.map { it.id })
+                assertTrue(final.items.single().watched)
+                assertEquals(setOf(8), final.deniedViewIds)
+                assertEquals(RecentLibraryStatus.READY, final.statuses[9])
+                assertEquals(before + if (denyProgress) 4 else 3, server.requestCount)
+            } finally { releaseSibling.countDown() }
+        }
+    }
+
+    @Test fun nonStreamingCallsStillPropagateCatalogAndProgressDenials() = runBlocking {
+        for (denyProgress in listOf(false, true)) {
+            val partials = AtomicInteger()
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.requestUrl!!.encodedPath == "/libraries/8/movies" && denyProgress) response(catalog(8))
+                    else response("{}", 403)
+            }
+            val failure = runCatching { client.recentlyAdded(listOf(library(8))) { partials.incrementAndGet() } }.exceptionOrNull()
+            assertEquals(403, (failure as ApiException).status)
+            assertEquals(0, partials.get())
+        }
+    }
+
+    @Test fun streamingAuthenticationFailureStillCancelsSiblingsWithoutAnIsolatedDenial() = runBlocking {
+        val siblingEntered = CountDownLatch(1)
+        val releaseSibling = CountDownLatch(1)
+        val snapshots = Collections.synchronizedList(mutableListOf<RecentArtworkUpdate>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl!!.encodedPath) {
+                "/libraries/8/movies" -> {
+                    check(siblingEntered.await(10, TimeUnit.SECONDS)); response("{}", 401)
+                }
+                "/libraries/9/movies" -> response(catalog(9))
+                "/playback/progress" -> {
+                    siblingEntered.countDown(); check(releaseSibling.await(10, TimeUnit.SECONDS)); response(progress(9))
+                }
+                else -> response("{}", 404)
+            }
+        }
+        val pending = async(Dispatchers.Default) {
+            runCatching { client.recentlyAdded(listOf(library(8), library(9)),
+                onArtworkReady = { snapshots.add(it) }) }.exceptionOrNull()
+        }
+        try {
+            await(siblingEntered)
+            assertEquals(401, (withTimeout(10_000) { pending.await() } as ApiException).status)
+            assertEquals(2, snapshots.size)
+            assertTrue(snapshots.all { it.deniedViewIds.isEmpty() })
+        } finally { releaseSibling.countDown() }
+    }
+
+    @Test fun anExpiredPrivateGrantPropagates403InsteadOfPublishingAViewDenial() = runBlocking {
+        val progressEntered = CountDownLatch(1)
+        val releaseProgress = CountDownLatch(1)
+        val snapshots = Collections.synchronizedList(mutableListOf<RecentArtworkUpdate>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl!!.encodedPath) {
+                "/spoiler/client/unlock" -> response("""{"token":"spc_expiring","expires_in":3}""")
+                "/libraries/8/movies" -> response(catalog(8))
+                "/playback/progress" -> {
+                    progressEntered.countDown(); check(releaseProgress.await(10, TimeUnit.SECONDS)); response("{}", 403)
+                }
+                else -> response("{}", 404)
+            }
+        }
+        client.unlockSpoiler("1234")
+        val pending = async(Dispatchers.Default) {
+            runCatching { client.recentlyAdded(listOf(library(8, true)),
+                onArtworkReady = { snapshots.add(it) }) }.exceptionOrNull()
+        }
+        try {
+            await(progressEntered)
+            assertEquals(2, snapshots.size)
+            withTimeout(5_000) { while (client.spoilerUnlocked) delay(25) }
+            releaseProgress.countDown()
+            val failure = withTimeout(10_000) { pending.await() }
+            assertEquals(403, (failure as ApiException).status)
+            assertEquals(2, snapshots.size)
+            assertTrue(snapshots.all { it.deniedViewIds.isEmpty() })
+        } finally { releaseProgress.countDown() }
+    }
+
     @Test fun privateArtworkCannotBeUpdatedAfterItsGrantIsLockedOrReplaced() = runBlocking {
         for (replaceGrant in listOf(false, true)) {
             SpoilerAccessRegistry.clearAll()
@@ -160,15 +355,16 @@ class RecentlyAddedStreamingTest {
             }
             try {
                 await(entered)
-                assertEquals(1, snapshots.size)
-                assertTrue(snapshots.single().single().isSpoiler)
-                assertNull(snapshots.single().single().watchState)
+                assertEquals(2, snapshots.size)
+                assertTrue(snapshots.first().isEmpty())
+                assertTrue(snapshots.last().single().isSpoiler)
+                assertNull(snapshots.last().single().watchState)
                 if (replaceGrant) client.unlockSpoiler("5678") else SpoilerAccessRegistry.clearAll()
                 release.countDown()
                 val failure = withTimeout(10_000) { pending.await() }
                 assertTrue(failure is ApiException)
                 assertEquals(403, (failure as ApiException).status)
-                assertEquals(1, snapshots.size)
+                assertEquals(2, snapshots.size)
             } finally { release.countDown() }
         }
     }
