@@ -36,6 +36,7 @@ import androidx.media3.common.util.UnstableApi
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import `is`.xyz.mpv.MPVLib
+import io.mirr.shynigsy.player.PictureSettings
 import java.io.File
 import java.util.Locale
 
@@ -93,6 +94,7 @@ class MpvPlayer(
     private var cues = CueGroup.EMPTY_TIME_ZERO
     private var surfaceSize = Size.ZERO
     private var configuredVideoLayout: Triple<Boolean, Boolean, Float>? = null
+    private var configuredPictureSettings = PictureSettings()
     private var firstFrame = false
     private var nativeFirstFrameSeen = false
     private var stopRequested = false
@@ -655,6 +657,7 @@ class MpvPlayer(
                 if (!isExpectedNativeSource()) return@dispatchNative
                 loaded = true
                 configuredVideoLayout?.let { setVideoLayout(it.first, it.second, it.third) }
+                applyPictureSettings()
                 durationMs = sourceDuration(MPVLib.getPropertyDouble("duration"))
                 seekable = if (isServerConverted) durationMs > 0 else MPVLib.getPropertyBoolean("seekable") == true
                 nativePaused = MPVLib.getPropertyBoolean("pause") ?: (!requestedPlay || focusSuppressed)
@@ -737,6 +740,19 @@ class MpvPlayer(
         MPVLib.setPropertyDouble("video-zoom", kotlin.math.ln(zoom.toDouble()) / kotlin.math.ln(2.0))
     }
 
+    /** Native GPU color controls affect video pixels without CPU filters or source reloads. */
+    internal fun setPictureSettings(settings: PictureSettings) {
+        configuredPictureSettings = settings.normalized()
+        applyPictureSettings()
+    }
+
+    private fun applyPictureSettings() {
+        if (!alive || released) return
+        MPVLib.setPropertyDouble("brightness", configuredPictureSettings.brightness.toDouble())
+        MPVLib.setPropertyDouble("contrast", configuredPictureSettings.contrast.toDouble())
+        MPVLib.setPropertyDouble("saturation", configuredPictureSettings.saturation.toDouble())
+    }
+
     private fun attach(surface: Surface) {
         if (!alive || !surface.isValid) return
         MPVLib.attachSurface(surface); surfaceAttached = true
@@ -744,6 +760,7 @@ class MpvPlayer(
         MPVLib.setPropertyBoolean("force-window", true)
         if (surfaceSize.width > 0 && surfaceSize.height > 0) MPVLib.setPropertyString("android-surface-size", "${surfaceSize.width}x${surfaceSize.height}")
         configuredVideoLayout?.let { setVideoLayout(it.first, it.second, it.third) }
+        applyPictureSettings()
     }
     private fun detach() {
         if (alive && surfaceAttached) {

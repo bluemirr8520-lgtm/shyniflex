@@ -148,6 +148,12 @@ class NativePlayerActivity : AppCompatActivity() {
     private var resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
     private var resizeScale = 1f
     private var resizeNotice: Toast? = null
+    private val pictureStore by lazy { PicturePresetStore(getSharedPreferences("gsy_settings", MODE_PRIVATE)) }
+    private var pictureSettings = PictureSettings()
+    private var pictureDialog: PictureSettingsDialog? = null
+    private var appliedExoPicture: PictureSettings? = null
+    private var exoPictureEffect: PictureVideoEffect? = null
+    private var exoPictureSource = ExoPictureSource.UNKNOWN
     private var player: Player? = null
     // Kept outside PlaybackSpec: it is neither a server marker nor reusable across files.
     private var chapterCreditsOwner: Player? = null
@@ -348,6 +354,7 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         savedInstanceState?.getStringArrayList("watchedReached")?.let { watchedReached.addAll(it) }
         val settings = getSharedPreferences("gsy_settings", MODE_PRIVATE)
+        pictureSettings = pictureStore.readCurrent()
         val deviceId = settings.getString("device_id", null) ?: UUID.randomUUID().toString().also {
             settings.edit().putString("device_id", it).apply()
         }
@@ -1108,7 +1115,13 @@ class NativePlayerActivity : AppCompatActivity() {
                     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
                 val data = OkHttpDataSource.Factory(http).setDefaultRequestProperties(headers)
                 ExoPlayer.Builder(this).setMediaSourceFactory(DefaultMediaSourceFactory(data))
-                    .setHandleAudioBecomingNoisy(true).build().apply { setAudioAttributes(AudioAttributes.DEFAULT, true) }
+                    .setHandleAudioBecomingNoisy(true).build().apply {
+                        try {
+                            // Prepare the effect path for in-place updates; neutral has no color adjustment.
+                            setVideoEffects(emptyList())
+                            setAudioAttributes(AudioAttributes.DEFAULT, true)
+                        } catch (error: Exception) { release(); throw error }
+                    }
             } catch (_: Exception) {
                 if (exoRestoreSubtitlePending) spec = spec.copy(subtitlesPending = true)
                 exoRestoreSubtitlePending = false
@@ -1133,6 +1146,10 @@ class NativePlayerActivity : AppCompatActivity() {
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
+        appliedExoPicture = if (created is ExoPlayer) PictureSettings() else null
+        exoPictureEffect = null
+        exoPictureSource = ExoPictureSource.UNKNOWN
+        applyPictureToPlayer()
         chapterCreditsOwner = created.takeIf { created is ExoPlayer && chapterCarry != null &&
             chapterCarry.source == originalChapterSource(spec) }
         chapterCreditsEvidence = chapterCarry.takeIf { chapterCreditsOwner === created }
@@ -1203,6 +1220,10 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 if (player !== created) return
+                if (created is ExoPlayer) {
+                    exoPictureSource = classifyExoPictureSource(tracks)
+                    applyPictureToPlayer()
+                }
                 if (created is ExoPlayer && exoValidated && !exoPlaybackTracksSafe(tracks)) {
                     fallbackFromExo(created)
                     return
@@ -1270,6 +1291,11 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (player !== created) return
+                if (created is ExoPlayer && isPictureProcessingError(error.errorCode) && !exiting && !refreshing) {
+                    toast("영상 보정을 지원하지 않아 현재 위치에서 MPV로 이어갑니다.")
+                    fallbackFromExo(created)
+                    return
+                }
                 if (mpvProbePending) {
                     mpvProbePending = false; finishMpvProbe = null
                     manualExoProbePending = false
@@ -1701,6 +1727,7 @@ class NativePlayerActivity : AppCompatActivity() {
             focusRows.clear()
             when (index) {
                 -1 -> {
+                    addRow("영상 보정", pictureSettingsLabel()) { showPictureSettings() }
                     addRow("배속", speedLabel()) { showSpeed() }
                     addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
                     addRow("재생 상태", playbackModeLabel(spec)) { showPlaybackDiagnostics() }
@@ -1730,6 +1757,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
                 }
                 1 -> {
+                    addRow("영상 보정", pictureSettingsLabel()) { showPictureSettings() }
                     addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
                     addRow("화면 크기", resizeLabel()) {
                         cycleResizeMode(); selectTab(1)
@@ -2515,6 +2543,64 @@ class NativePlayerActivity : AppCompatActivity() {
         else -> "변환을 시작하지 못했습니다. 기존 재생을 유지합니다."
     }
 
+    private fun pictureSettingsLabel(): String = builtInPicturePresets()
+        .firstOrNull { it.settings == pictureSettings }?.name ?: "사용자 조절"
+
+    private fun pictureSupportNote(): String? = if (player is ExoPlayer) when (exoPictureSource) {
+        ExoPictureSource.HDR -> "이 HDR 영상은 ExoPlayer에서 원본 색상으로 재생합니다. 보정은 MPV에서 사용할 수 있습니다."
+        ExoPictureSource.UNKNOWN -> "영상 정보를 확인하면 저장한 보정값을 적용합니다."
+        ExoPictureSource.SDR -> if (player?.isPlaying == false) "일시정지 중에는 다음 영상 프레임부터 보정값이 보입니다." else null
+    } else null
+
+    private fun showPictureSettings() {
+        if (exiting || isFinishing || isDestroyed) return
+        dismissPictureSettings()
+        pictureDialog = PictureSettingsDialog(this, television, pictureStore, current = { pictureSettings },
+            onApply = { value ->
+                if (!exiting && !isDestroyed) {
+                    pictureSettings = value.normalized()
+                    pictureStore.writeCurrent(pictureSettings)
+                    applyPictureToPlayer()
+                }
+            }, supportNote = ::pictureSupportNote).also { it.show() }
+    }
+
+    private fun dismissPictureSettings() {
+        val dialog = pictureDialog
+        pictureDialog = null
+        dialog?.dismiss()
+    }
+
+    private fun applyPictureToPlayer() {
+        when (val active = player) {
+            is MpvPlayer -> active.setPictureSettings(pictureSettings)
+            is ExoPlayer -> {
+                val desired = effectiveExoPictureSettings(pictureSettings, exoPictureSource)
+                if (desired == appliedExoPicture) return
+                try {
+                    val effect = exoPictureEffect
+                    if (effect != null) {
+                        // Keep the processing stream intact while remote keys change the GPU uniform.
+                        effect.update(desired)
+                    } else if (!desired.isNeutral) {
+                        val created = PictureVideoEffect(desired)
+                        active.setVideoEffects(listOf(created))
+                        exoPictureEffect = created
+                    }
+                    appliedExoPicture = desired
+                } catch (_: Exception) {
+                    // Post outside a tracks callback before releasing the current engine.
+                    handler.post {
+                        if (player === active && !exiting && !isDestroyed && !refreshing) {
+                            toast("영상 보정을 지원하지 않아 현재 위치에서 MPV로 이어갑니다.")
+                            fallbackFromExo(active)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private val resizeModes = listOf(AspectRatioFrameLayout.RESIZE_MODE_FIT,
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM, AspectRatioFrameLayout.RESIZE_MODE_FILL)
     private val resizeLabels = arrayOf("화면 맞춤", "화면 채움", "화면 늘림")
@@ -3169,6 +3255,9 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        appliedExoPicture = null
+        exoPictureEffect = null
+        exoPictureSource = ExoPictureSource.UNKNOWN
         chapterCreditsOwner = null
         chapterCreditsEvidence = null
         chapterCreditsRetry?.let(handler::removeCallbacks)
@@ -3239,6 +3328,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        dismissPictureSettings()
         dismissTvSubtitlePosition()
         val interruptedSpoilerRotation = spoilerRecovery != null || spoilerRotationJob?.isActive == true
         activityStarted = false
@@ -3318,6 +3408,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        dismissPictureSettings()
         dismissContinuousLoading()
         resizeNotice?.cancel()
         handler.removeCallbacksAndMessages(null); scope.cancel()
