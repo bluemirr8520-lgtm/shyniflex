@@ -248,6 +248,7 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
 internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit,
     onAppearance: () -> Unit = {}, onSearch: () -> Unit = {}) {
     val modelIsTelevision = LocalContext.current.isTelevision()
+    val controlsBusy = state.busy && !state.homeLoading
     val style = LocalCinemaStyle.current
     val continuing = remember(state.continueItems, state.spoilerUnlocked) {
         state.continueItems.filter { state.spoilerUnlocked || !it.isSpoiler }
@@ -280,7 +281,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
         selectedShelf = "continue"
         interactionRevision++
     }
-    ObserveMobileContinueShelf(continueRow, continueKeys, enabled = !modelIsTelevision && !state.busy,
+    ObserveMobileContinueShelf(continueRow, continueKeys, enabled = !modelIsTelevision && !controlsBusy,
         onBrowse = ::selectMobilePoster,
         onSettled = { key -> continuing.firstOrNull { tvMediaKey(it) == key }?.let(model::selectContinueItem) })
     LaunchedEffect(continueKeys) {
@@ -288,7 +289,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
         if (continueKeys.isEmpty()) heroResumeFocused = false
     }
     rememberContinueBackdropRotation(keys = continueKeys, selectedKey = heroItem?.let(::tvMediaKey).orEmpty(),
-        enabled = heroVisible && !state.busy && !hoveringContinue && !touchingContinue && !heroResumeFocused &&
+        enabled = heroVisible && !controlsBusy && !hoveringContinue && !touchingContinue && !heroResumeFocused &&
             !continueRow.isScrollInProgress,
         interactionRevision = interactionRevision,
         onAdvance = { heroKey = it })
@@ -375,7 +376,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                                 Modifier.fillMaxWidth().height(headerHeight))
                             if (hero != null && heroItem != null) {
                                 CinemaHomeHeroContent(hero = hero, source = heroItem, compact = compact,
-                                    busy = state.busy, onResume = model::playContinue,
+                                    busy = controlsBusy, onResume = model::playContinue,
                                     onResumeFocus = { heroResumeFocused = it }, modifier = Modifier.fillMaxSize(),
                                     onDetails = model::openItem)
                             } else CinemaHomeWelcome(compact, onSearch, Modifier.fillMaxSize())

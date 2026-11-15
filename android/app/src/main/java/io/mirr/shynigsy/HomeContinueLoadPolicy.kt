@@ -42,6 +42,7 @@ internal fun resolveHomeContinueWatching(
     sameAccountScope: Boolean,
     privateGrantUnchanged: Boolean,
     previousOwnerMatches: Boolean,
+    deniedViewIds: Set<Int> = emptySet(),
 ): List<MediaItem> {
     if (!sameAccountScope) return emptyList()
     val retained = if (previousOwnerMatches) previous else emptyList()
@@ -54,4 +55,5 @@ internal fun resolveHomeContinueWatching(
         is HomeContinueLoad.Failure -> if (privateLoad.transient) retained.filter { it.isSpoiler } else emptyList()
     } else emptyList()
     return visibleContinueWatching(publicRows, privateRows, libraries, spoilerUnlocked && privateGrantUnchanged)
+        .filterNot { it.libraryId in deniedViewIds }
 }

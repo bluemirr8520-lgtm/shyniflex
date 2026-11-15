@@ -238,7 +238,7 @@ fun ShyniApp(
                     )
                     }
                     }
-                } else if (!state.loggedIn)
+                } else if (!state.loggedIn && !state.restoringSession)
                 AppHeader(
                     loggedIn = state.loggedIn,
                     title = detail?.item?.title ?: state.library?.title,
@@ -265,6 +265,7 @@ fun ShyniApp(
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when {
+                    !state.loggedIn && state.restoringSession -> SessionRestoreScreen()
                     !state.loggedIn -> Column(Modifier.fillMaxSize()) {
                         state.tvLoginApproval?.let { pending ->
                             TvLoginPendingHint(pending, onCancel = viewModel::dismissTvLoginApproval)
@@ -406,6 +407,19 @@ fun ShyniApp(
                 watchOptions = null
                 viewModel.setWatched(item, watched)
             })
+        }
+    }
+}
+
+/** Keep login fields out of the first frame while the saved session is read off the UI thread. */
+@Composable
+private fun SessionRestoreScreen() {
+    Box(Modifier.fillMaxSize().testTag("session-restore"), contentAlignment = Alignment.Center) {
+        Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+            Text("홈을 준비하는 중입니다", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

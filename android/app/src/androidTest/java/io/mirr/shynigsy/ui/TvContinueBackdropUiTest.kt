@@ -81,6 +81,21 @@ class TvContinueBackdropUiTest {
         title = "합성 비공개 이어보기", isSpoiler = true)
     private val recent = first.copy(id = 301, viewItemId = 703, title = "순환하면 안 되는 최근 추가")
 
+    @Test fun cachedHomeActionsRemainEnabledDuringRefreshButNotPlaybackPreparation() {
+        withFixture(AppState(loggedIn = true, busy = true, homeLoading = true,
+            continueItems = listOf(first), libraries = listOf(Library(7, "합성 영화", "movie")))) { fixture ->
+            renderFocusedHome(fixture, televisionCanvas = true)
+            screen.onNodeWithTag("cinema-hero-resume").assertIsEnabled()
+            screen.onNodeWithTag("cinema-hero-details").assertIsEnabled()
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(homeLoading = false) }
+            screen.onNodeWithTag("cinema-hero-resume").assertIsNotEnabled()
+            screen.onNodeWithTag("cinema-hero-details").assertIsNotEnabled()
+            screen.runOnIdle { fixture.state.value = fixture.state.value.copy(busy = false) }
+            screen.onNodeWithTag("cinema-hero-resume").assertIsEnabled()
+            screen.onNodeWithTag("cinema-hero-details").assertIsEnabled()
+        }
+    }
+
     @Test fun threeHomeStylesChangeGeometryAndTypographyWithoutReplacingFocusedMedia() {
         val style = mutableStateOf(CinemaStyle.CINEMA)
         withFixture(AppState(loggedIn = true, continueItems = listOf(first, second),

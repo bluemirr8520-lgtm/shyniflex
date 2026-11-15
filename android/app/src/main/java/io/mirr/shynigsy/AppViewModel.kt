@@ -26,6 +26,7 @@ import java.util.UUID
 
 data class AppState(
     val loggedIn: Boolean = false,
+    val restoringSession: Boolean = false,
     val server: String = "",
     val userName: String = "",
     val busy: Boolean = false,
@@ -170,9 +171,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         settings.edit().putString("device_id", it).apply()
     }
     private val deviceName by lazy { deviceDisplayName(android.os.Build.MANUFACTURER, android.os.Build.MODEL, application.isTelevision()) }
-    private val savedSession = sessionStore.loadLast()
-    private val initialState = AppState(server = initialServerAddress(settings.getString("server", null), savedSession?.server))
-    private val mutableState = MutableStateFlow(initialState)
+    private val initialState = AppState(server = initialServerAddress(settings.getString("server", null), null))
+    private val mutableState = MutableStateFlow(initialState.copy(restoringSession = true))
     val state: StateFlow<AppState> = mutableState.asStateFlow()
     private var client: ShyniClient? = null
     private var requestJob: Job? = null
@@ -186,9 +186,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val recentRetryJobs = mutableMapOf<Int, Job>()
     private val recentRetryOwners = mutableMapOf<Int, Long>()
     private val recentRetryScopes = mutableMapOf<Int, Library>()
+    private val homeDeniedViewIds = mutableSetOf<Int>()
     private var recentRetryRevision = 0L
     private var continueOwner: HomeContinueOwner? = null
     private var recentOwner: HomeContinueOwner? = null
+    private val homeSnapshotStore = HomeSnapshotStore(application)
+    private var homeSnapshotOwner: HomeContinueOwner? = null
+    private var homeSnapshotKey: String? = null
+    private var startupTvLoginLink: TvLoginLink? = null
+    private val homeSnapshots = HomeSnapshotPersistence(viewModelScope,
+        write = { key, snapshot -> withContext(Dispatchers.IO) { homeSnapshotStore.write(key, snapshot) } },
+        clear = { withContext(Dispatchers.IO) { homeSnapshotStore.clear() } })
     private data class ContinueIdentity(val libraryId: Int, val id: Int, val type: String, val viewItemId: Int?, val isSpoiler: Boolean)
     private fun continueIdentity(item: MediaItem) = ContinueIdentity(item.libraryId, item.id, item.type, item.viewItemId, item.isSpoiler)
     private var continueDetailsJob: Job? = null
@@ -214,6 +222,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun acceptPlaybackConfirmations(events: List<PlaybackCompletionSignals.ConfirmedWatch>) {
         val active = client ?: return
+        var changed = false
         for (event in events) {
             if (event.sequence <= lastPlaybackConfirmation) continue
             lastPlaybackConfirmation = event.sequence
@@ -224,7 +233,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             confirmedPlaybackWatches[event.sequence] = event
             while (confirmedPlaybackWatches.size > 32) confirmedPlaybackWatches.remove(confirmedPlaybackWatches.keys.first())
             mutableState.update(::applyConfirmedPlaybackWatch)
+            changed = true
         }
+        if (changed) saveHomeSnapshot()
     }
     private var privateViewOwner: HomeContinueOwner? = null
     private val knownPrivateViewIds = mutableSetOf<Int>()
@@ -296,15 +307,67 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         snapshot.detailStack.any { it.item.isSpoiler })) clearSpoilerUi()
             }
         }
-        savedSession?.let { saved ->
-            launchRequest {
+        viewModelScope.launch {
+            val saved = withContext(Dispatchers.IO) { sessionStore.loadLast() }
+            // A user-started login/QR operation wins over a late disk read.
+            if (revision != 0 || client != null || mutableState.value.loggedIn) {
+                startupTvLoginLink = null
+                mutableState.update { it.copy(restoringSession = false) }
+                return@launch
+            }
+            if (saved == null) {
+                mutableState.update { it.copy(restoringSession = false) }
+                deliverStartupTvLoginLink()
+            } else launchRequest {
+              try {
                 val active = ShyniClient(saved.server, saved.token, deviceId = deviceId)
                 requireHttps(saved.server)
                 client = active
                 mutableState.update { it.copy(loggedIn = true, server = saved.server, userName = saved.userName) }
+                deliverStartupTvLoginLink()
+                val navigation = revision
+                val key = homeSnapshotScope(active.server, active.token)
+                val cached = key?.let { withContext(Dispatchers.IO) { homeSnapshotStore.read(it) } }
+                if (active !== client || navigation != revision || !mutableState.value.loggedIn) return@launchRequest
+                activateHomeSnapshot(active)
+                if (cached != null) {
+                    continueOwner = HomeContinueOwner(active, active.token)
+                    recentOwner = HomeContinueOwner(active, active.token)
+                    mutableState.update { applyConfirmedPlaybackWatch(restoreHomeSnapshot(it, cached)) }
+                    if (confirmedPlaybackWatches.isNotEmpty()) saveHomeSnapshot()
+                }
                 loadHome(active, refreshUserName = true)
+              } finally {
+                deliverStartupTvLoginLink()
+              }
             }
         }
+    }
+
+    private fun deliverStartupTvLoginLink() {
+        val link = startupTvLoginLink ?: return
+        startupTvLoginLink = null
+        receiveTvLoginLink(link)
+    }
+
+    private fun activateHomeSnapshot(active: ShyniClient) {
+        homeSnapshotOwner = HomeContinueOwner(active, active.token)
+        homeSnapshotKey = homeSnapshotScope(active.server, active.token)
+    }
+
+    private fun saveHomeSnapshot() {
+        val active = client ?: return
+        val key = homeSnapshotKey ?: return
+        if (!mutableState.value.loggedIn || homeSnapshotOwner?.matches(active, active.token) != true) return
+        val privateIds = if (privateViewOwner?.matches(active, active.token) == true) knownPrivateViewIds else emptySet()
+        homeSnapshots.save(key, homeSnapshotForPersistence(
+            withoutDeniedHomeRows(mutableState.value, homeDeniedViewIds), privateIds, System.currentTimeMillis()))
+    }
+
+    private fun clearHomeSnapshot() {
+        homeSnapshotOwner = null
+        homeSnapshotKey = null
+        homeSnapshots.clear()
     }
 
     private fun requireHttps(server: String) {
@@ -317,7 +380,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchRequest(keepCompletedEpisodePending: Boolean = false, block: suspend () -> Unit) {
         requestJob?.cancel()
         val current = ++revision
-        mutableState.update { it.copy(busy = true, error = null, homeLoading = false, searchHydrating = false,
+        mutableState.update { it.copy(busy = true, restoringSession = false, error = null, homeLoading = false, searchHydrating = false,
             completedEpisodePending = if (keepCompletedEpisodePending) it.completedEpisodePending else null) }
         requestJob = viewModelScope.launch {
             try {
@@ -338,6 +401,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun expireSession() {
+        clearHomeSnapshot()
         cancelTvQrLogin()
         dismissTvLoginApproval()
         client?.let { sessionStore.clear(it.server) }
@@ -362,6 +426,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(error = "아이디와 비밀번호를 입력하세요.") }
             return
         }
+        clearHomeSnapshot()
         mutableState.value.tvLoginApproval?.let {
             if (!sameTvLoginServer(it.link.server, server)) dismissTvLoginApproval()
         }
@@ -372,7 +437,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         client?.clearSpoilerGrant()
         clearSpoilerUi()
         clearContinueSelection()
-        mutableState.update { it.copy(continueItems = emptyList(), continueError = null) }
+        mutableState.update { it.copy(libraries = emptyList(), recentItems = emptyList(), recentLibraryStatus = emptyMap(),
+            continueItems = emptyList(), continueError = null) }
         launchRequest {
             val address = server.trim().trimEnd('/')
             requireHttps(address)
@@ -528,6 +594,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** A scanned link only stages an explicit phone confirmation; it never approves by itself. */
     fun receiveTvLoginLink(link: TvLoginLink) {
         val checked = runCatching { parseTvLoginLink(tvLoginQrUrl(link.server, link.nonce)) }.getOrNull() ?: return
+        if (mutableState.value.restoringSession) {
+            startupTvLoginLink = checked
+            return
+        }
         cancelTvQrLogin()
         dismissTvLoginApproval()
         if (!mutableState.value.loggedIn) {
@@ -588,6 +658,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             is LoginOutcome.NeedsTotp -> mutableState.update { it.copy(totpChallenge = result.challenge) }
             is LoginOutcome.Success -> {
                 clearContinueSelection()
+                activateHomeSnapshot(active)
                 sessionStore.save(active.server, result.token, result.userName)
                 settings.edit().putString("server", active.server).apply()
                 mutableState.update { it.copy(loggedIn = true, userName = result.userName,
@@ -692,7 +763,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 privateContinue ?: HomeContinueLoad.Failure(transient = true), previousContinue,
                 homeLibraries(), unlocked, sameAccountScope = active === client && mutableState.value.loggedIn,
                 privateGrantUnchanged = accessRevision == spoilerRevision && grantRevision == SpoilerAccessRegistry.changes.value,
-                previousOwnerMatches = previousOwnerMatches)
+                previousOwnerMatches = previousOwnerMatches, deniedViewIds = homeDeniedViewIds)
             val continueError = homeContinueLoadError(publicLoad, privateContinue ?: HomeContinueLoad.Success(emptyList()))
             if (selectedContinueIdentity != null && continueItems.none { continueIdentity(it) == selectedContinueIdentity }) {
                 clearContinueSelection(clearCache = false)
@@ -706,6 +777,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
                         listOfNotNull(publicRecent?.second, continueError).distinct().joinToString("\n").ifBlank { null } else state.error))
             }
+            saveHomeSnapshot()
         }
         fun publishRecent() {
             val publicLoad = publicRecent ?: return
@@ -724,10 +796,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 recentLoading = !publicRecentComplete || !privateRecentComplete,
                 error = if (navigationRevision == revision && !state.searchOpen && state.library == null && state.detailStack.isEmpty())
                     listOfNotNull(publicLoad.second, state.continueError).distinct().joinToString("\n").ifBlank { null } else state.error)) }
+            saveHomeSnapshot()
         }
         fun publishLibraries() {
             if (ordinary == null || !canPublishHome()) return
-            mutableState.update { it.copy(libraries = homeLibraries(), recentLibraryStatus = homeRecentStatus()) }
+            mutableState.update { reconcileHomeLibraryAccess(it, homeLibraries()).copy(recentLibraryStatus = homeRecentStatus()) }
+            saveHomeSnapshot()
             // A new private catalog can disqualify a previously known public View.
             publishContinue()
             publishRecent()
@@ -741,7 +815,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val priorityPrivate = if (prioritizingPrivate)
                     startPriorityHomeCatalog { active.spoilerLibraries() } else null
                 val publicLibraries = async {
-                    active.libraries().filterNot { it.isSpoiler }.also {
+                    val allowed = try { active.libraries().filterNot { it.isSpoiler } }
+                    catch (error: ApiException) {
+                        if (error.status == 403 && canPublishHome()) {
+                            ordinary = emptyList()
+                            publicLibrariesLoaded = true
+                            publishLibraries()
+                        }
+                        throw error
+                    }
+                    allowed.also {
                         if (canPublishHome()) {
                             ordinary = it
                             publicLibrariesLoaded = true
@@ -898,6 +981,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         recentRetryOwners.clear()
         recentRetryJobs.clear()
         recentRetryScopes.clear()
+        homeDeniedViewIds.clear()
         jobs.forEach { it.cancel() }
         mutableState.update { state -> state.copy(recentLibraryStatus = state.recentLibraryStatus.mapValues { (_, status) ->
             if (status == RecentLibraryStatus.LOADING) RecentLibraryStatus.ERROR else status
@@ -910,6 +994,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun denyRecentLibraries(ids: Set<Int>) {
         if (ids.isEmpty()) return
+        homeDeniedViewIds.addAll(ids)
         val libraries = mutableState.value.libraries
         ids.forEach { id ->
             recentRetryOwners.remove(id)
@@ -919,10 +1004,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (library == null) recentRetryScopes.remove(id) else recentRetryScopes[id] = library
             recentRetryJobs.remove(id)?.cancel()
         }
-        mutableState.update { state -> state.copy(recentItems = state.recentItems.filterNot { it.libraryId in ids },
+        continueDetailsCache.keys.removeAll { it.libraryId in ids }
+        if (selectedContinueIdentity?.libraryId in ids) clearContinueSelection(clearCache = false)
+        mutableState.update { state -> withoutDeniedHomeRows(state, ids).copy(
             recentLibraryStatus = state.recentLibraryStatus.mapValues { (id, status) ->
                 if (id in ids) RecentLibraryStatus.ERROR else status
             }) }
+        saveHomeSnapshot()
     }
 
     /** Retry only this authorized shelf, independently of navigation and sibling requests. */
@@ -958,6 +1046,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 denyRecentLibraries(setOf(libraryId))
                                 return@withContext
                             }
+                            if (update.statuses[libraryId] in setOf(RecentLibraryStatus.READY, RecentLibraryStatus.EMPTY))
+                                homeDeniedViewIds.remove(libraryId)
                             val rows = mergeHomeRecent(update.items, before.recentItems, listOf(library),
                                 update.retainViewIds, previousOwnerMatches).map(::collectionWatchState)
                             recentOwner = HomeContinueOwner(active, account)
@@ -965,6 +1055,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 recentItems = mergeRetriedHomeRecent(state.recentItems, rows, state.libraries, setOf(libraryId)),
                                 recentLibraryStatus = state.recentLibraryStatus +
                                     (libraryId to (update.statuses[libraryId] ?: RecentLibraryStatus.ERROR))) }
+                            saveHomeSnapshot()
                         }
                     }
                 })
@@ -1068,6 +1159,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         privateHomeScope.reset()
         clearContinueSelection()
         mutableState.update(::withoutSpoilerContent)
+        saveHomeSnapshot()
     }
 
     private fun cancelDetailDiscoveryJobs(clear: Boolean = false) {
@@ -1640,6 +1732,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             clearContinueSelection()
             mutableState.update(applyResult)
+            saveHomeSnapshot()
             // A queued playback-completion refresh waits until this confirmed change
             // has finished publishing instead of cancelling its reconciliation.
             refreshCurrent(applyResult, allowHomeInteraction = false)
@@ -1913,6 +2006,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        clearHomeSnapshot()
         cancelTvQrLogin()
         dismissTvLoginApproval()
         cancelDetailDiscoveryJobs(clear = true)
