@@ -83,7 +83,7 @@ Dependencies are declared with their versions in
 licenses and notices remain applicable:
 
 - [AndroidX / Jetpack Compose](https://android.googlesource.com/platform/frameworks/support/)
-- [AndroidX Media3](https://github.com/androidx/media), used for playback controls, the Player interface, ExoPlayer and its data-source, extractor, container, decoder, database and video-effect components
+- [AndroidX Media3](https://github.com/androidx/media), used for playback controls, the Player interface, ExoPlayer and its data-source, extractor, container, decoder and database components
 - [Kotlin](https://github.com/JetBrains/kotlin) and [kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines)
 - [OkHttp / MockWebServer](https://github.com/square/okhttp)
 - [Coil](https://github.com/coil-kt/coil)
@@ -103,18 +103,11 @@ files as well. Declaring an application license or listing upstream links alone
 does not replace those notices. Redistributors must retain them and provide
 the corresponding source for the exact binaries they distribute.
 
-Version 1.0.89 adds `androidx.media3:media3-effect:1.10.1` for video image
-adjustments. Its runtime graph also selects
-`androidx.concurrent:concurrent-futures:1.2.0` and
-`org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2`. These components use the
-Apache License, Version 2.0. Their exact source JARs, including original source
-copyright headers, are included in `jvm-source-jars/` in the corresponding-source
-bundle. The existing Apache-2.0 license text remains included. The JVM source
-manifest records each coordinate, official source URL, byte count and SHA-256;
-`jvm-source-additions-1.0.89.json` also records the SHA-1 values checked against
-the official Google Maven and Maven Central repositories. The selected 1.2.0
-concurrent-futures source replaces the previous 1.1.0 source; the native runtime
-remains unchanged.
+Version 1.0.90 removes the ExoPlayer video-effect module and restores its direct
+video output path. Brightness, contrast and saturation adjustments use MPV.
+The JVM dependency set returns to the 1.0.88 configuration; the exact source
+JARs and their coordinates, official URLs, sizes and SHA-256 values remain in
+the corresponding-source bundle. The native runtime remains unchanged.
 
 ## Synthetic media fixtures
 

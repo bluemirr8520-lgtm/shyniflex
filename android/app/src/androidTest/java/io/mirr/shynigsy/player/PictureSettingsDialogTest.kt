@@ -37,6 +37,7 @@ class PictureSettingsDialogTest {
         preferences.edit().clear().commit()
         store = PicturePresetStore(preferences)
         scenario = ActivityScenario.launch(ComponentActivity::class.java)
+        scenario.onActivity { it.setTheme(io.mirr.shynigsy.R.style.Theme_ShyniFlix) }
     }
 
     @After fun closeFixture() {

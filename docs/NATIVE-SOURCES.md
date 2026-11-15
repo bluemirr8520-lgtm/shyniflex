@@ -12,7 +12,7 @@ shyniflex 1.0.74는 공식 mpv-android **2026-09-17**의 ARM64·ARMv7·x86_64 �
 
 `app-source.zip`은 해당 릴리스의 앱 소스입니다. `source-archives/`에는 원본 mpv-android 래퍼·빌드 스크립트와 주요 네이티브 의존성 14개, 하위 모듈 7개의 소스를 보관합니다. `native-source-manifest.json`에 각 아카이브의 출처·정확한 버전 또는 커밋·SHA-256·복원 위치를 기록하고, 원본 라이선스와 고지를 보존합니다. `jvm-source-jars/`에는 실제 런타임 Maven 의존성의 정확한 소스 JAR과 버전·해시 명세를 제공합니다. AndroidX Media3 ExoPlayer와 실제로 포함된 관련 모듈의 소스도 포함합니다. 코드가 없는 충돌 방지용 Guava JAR 1개는 빈 아티팩트임을 검증해 명세에 기록했습니다. QR 코드 생성용 `com.google.zxing:core:3.5.4`의 소스 JAR과 Apache-2.0 고지도 포함합니다. 서명키와 계정·서버 자료는 포함하지 않습니다.
 
-1.0.89의 영상 밝기·대비·채도 조절에는 `androidx.media3:media3-effect:1.10.1`이 추가됩니다. 대응 소스에는 이 모듈과 실제로 선택된 `androidx.concurrent:concurrent-futures:1.2.0`, `org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2`의 정확한 소스 JAR을 포함합니다. 기존 `concurrent-futures:1.1.0` 소스는 1.2.0으로 교체합니다. `jvm-source-manifest.json`에 각 파일의 크기·SHA-256을, `jvm-source-additions-1.0.89.json`에 공식 Google Maven·Maven Central의 출처와 게시 SHA-1 대조 기록을 제공합니다. 위 1.0.74 표기는 그대로 사용하는 네이티브 런타임의 기준 배포입니다.
+1.0.90에서는 ExoPlayer의 영상 효과 모듈을 제거하고 기존 직접 출력 경로를 복원합니다. 영상 밝기·대비·채도 보정은 MPV에서 처리하며, 대응 소스의 JVM 의존성은 1.0.88과 같은 구성으로 돌아갑니다. `jvm-source-manifest.json`에 실제 포함된 모듈의 정확한 버전·출처·해시를 기록합니다. 위 1.0.74 표기는 그대로 사용하는 네이티브 런타임의 기준 배포입니다.
 
 상위 저장소의 ZIP에는 Git 하위 모듈의 실제 내용이 포함되지 않습니다. 그래서 FreeType의 dlg와 libplacebo의 glad·Jinja·MarkupSafe·fast_float·Vulkan-Headers·Nuklear를 각각의 고정 커밋으로 함께 제공합니다. Vulkan과 데모가 비활성화된 구성에서도 원본 재귀 체크아웃을 복원할 수 있도록 전체 하위 모듈을 보존합니다.
 

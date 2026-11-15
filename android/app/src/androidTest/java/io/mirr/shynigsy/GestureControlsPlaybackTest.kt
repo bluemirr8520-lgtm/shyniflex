@@ -35,6 +35,8 @@ import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.data.SubtitleTrack
 import io.mirr.shynigsy.player.Media3GestureView
 import io.mirr.shynigsy.player.NativePlayerActivity
+import io.mirr.shynigsy.player.PlaybackEnginePreference
+import io.mirr.shynigsy.player.mpv.MpvPlayer
 import io.mirr.shynigsy.player.subtitles.PlexSubtitleOverlayView
 import org.junit.Assert.*
 import org.junit.Test
@@ -144,8 +146,8 @@ class GestureControlsPlaybackTest {
             finally { focused?.recycle(); root.recycle() }
         }
         scenario.onActivity { it.findViewById<View>(R.id.player_settings).performClick() }
-        waitForWindow("settings opens with speed row focused") { focusedLabel().startsWith("배속") }
-        listOf("재생 엔진", "화면 크기", "변환 (데이터 절약)", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
+        waitForWindow("settings opens with picture row focused") { focusedLabel().startsWith("영상 보정") }
+        listOf("배속", "재생 엔진", "재생 상태", "화면 크기", "변환 (데이터 절약)", "오디오 트랙", "자막 선택", "자막 글꼴").forEach { label ->
             instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN)
             waitForWindow("settings focus reaches $label") { focusedLabel().startsWith(label) }
         }
@@ -158,14 +160,12 @@ class GestureControlsPlaybackTest {
         }
     }
 
-    @Test fun choosingEngineKeepsCurrentPlaybackAndSavesChoice() = withFixture(false) { scenario ->
-        var original: androidx.media3.common.Player? = null
+    @Test fun choosingEngineAppliesCurrentPreferenceAndRetainsSafeLocalFallback() = withFixture(false) { scenario ->
         var position = 0L
         waitFor(scenario, "source ready for engine settings") { activity ->
             val active = findView<PlayerView>(activity.findViewById(android.R.id.content))?.player
             if (active?.playbackState == Player.STATE_READY) {
                 active.pause()
-                original = active
                 position = active.currentPosition
             }
             active?.playbackState == Player.STATE_READY && !active.playWhenReady
@@ -176,10 +176,13 @@ class GestureControlsPlaybackTest {
             activeWindowChoiceLabels() == listOf("자동", "MPV", "ExoPlayer")
         }
         assertTrue(clickWindowText("ExoPlayer"))
-        waitFor(scenario, "engine choice is saved without replacing the current player") { activity ->
+        waitFor(scenario, "engine choice applies immediately while the local fixture retains its safe MPV fallback") { activity ->
             val active = findView<PlayerView>(activity.findViewById(android.R.id.content))?.player
+            val currentChoice = NativePlayerActivity::class.java.getDeclaredField("enginePreferenceForContent")
+                .apply { isAccessible = true }.get(activity)
             activity.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE).getString("playback_engine", null) == "exo" &&
-                active === original && active?.playWhenReady == false && abs(active.currentPosition - position) < 300
+                currentChoice == PlaybackEnginePreference.EXO && active is MpvPlayer &&
+                active.playbackState == Player.STATE_READY && !active.playWhenReady && abs(active.currentPosition - position) < 800
         }
     }
 
@@ -667,7 +670,7 @@ class GestureControlsPlaybackTest {
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
         val settingKeys = setOf("subtitle_vertical", "subtitle_x", "subtitle_y", "subtitle_size", "subtitle_font",
             "subtitle_horizontal_writing_x", "subtitle_horizontal_writing_y", "subtitle_vertical_writing_x", "subtitle_vertical_writing_y",
-            "playback_speed", "playback_engine", "resize_mode", "resize_scale")
+            "playback_speed", "playback_engine", "resize_mode", "resize_scale", "picture_settings_v1")
         val oldSettings = settingKeys.associateWith { settings.all[it] }
         val sessions = context.getSharedPreferences("encrypted_sessions", Context.MODE_PRIVATE)
         val server = "https://gesture-controls-test.invalid"
@@ -679,7 +682,7 @@ class GestureControlsPlaybackTest {
         try {
             settings.edit().putBoolean("subtitle_vertical", false).putInt("subtitle_x", 0).putInt("subtitle_y", 0)
                 .putInt("subtitle_size", 100).putString("subtitle_font", "system").putFloat("playback_speed", 1f)
-                .putString("playback_engine", "auto").commit()
+                .putString("playback_engine", "auto").remove("picture_settings_v1").commit()
             if (invalidMedia) clip.writeText("This synthetic fixture is not a playable media container.")
             else instrumentation.context.assets.open("media3/$asset").use { source -> clip.outputStream().use { source.copyTo(it) } }
             store.save(server, "synthetic-gesture-test-only", "테스트")

@@ -151,9 +151,6 @@ class NativePlayerActivity : AppCompatActivity() {
     private val pictureStore by lazy { PicturePresetStore(getSharedPreferences("gsy_settings", MODE_PRIVATE)) }
     private var pictureSettings = PictureSettings()
     private var pictureDialog: PictureSettingsDialog? = null
-    private var appliedExoPicture: PictureSettings? = null
-    private var exoPictureEffect: PictureVideoEffect? = null
-    private var exoPictureSource = ExoPictureSource.UNKNOWN
     private var player: Player? = null
     // Kept outside PlaybackSpec: it is neither a server marker nor reusable across files.
     private var chapterCreditsOwner: Player? = null
@@ -1000,14 +997,14 @@ class NativePlayerActivity : AppCompatActivity() {
         val account = client.token
         val generation = engineGeneration
         val key = "${current.sessionId}:${current.partId}"
-        // Freeze the choice for this item, including transport retries/conversion.
-        // A new item or a freshly opened player reads the latest preference.
+        // Keep the current choice across transport retries/conversion. An explicit
+        // engine menu selection updates it immediately for this item as well.
         val contentKey = "${current.libraryId}:${current.itemId}:${current.partId}:${current.viewItemId}"
         if (enginePreferenceContentKey != contentKey) {
             enginePreferenceContentKey = contentKey
             enginePreferenceForContent = playbackEnginePreference()
         }
-        val preference = enginePreferenceForContent
+        val preference = pictureEnginePreference(enginePreferenceForContent, pictureSettings)
         val start = engineStart(preference, forceMpvSession == key,
             current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
             pendingTextPreference != null, current.sessionId.isNullOrBlank())
@@ -1105,6 +1102,13 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean,
         chapterCarry: OriginalChapterCredits? = null, manualExo: Boolean = false, manualProbe: Boolean = false,
         sourceHasAudio: Boolean = false, headerExo: Boolean = false) {
+        // A picture choice can arrive while codec/subtitle inspection or an MPV probe is pending.
+        // Recheck here so a late handoff cannot create Exo or start another probe for corrected video.
+        if (pictureRequiresMpv(pictureSettings) &&
+            (useExo || candidate != null || manualProbe || manualExo || headerExo)) {
+            startPreparedPlayer(null, false, chapterCarry = chapterCarry)
+            return
+        }
         val headers = client.playbackHeaders(spec)
         val created: Player = try {
             if (useExo) try {
@@ -1115,13 +1119,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
                 val data = OkHttpDataSource.Factory(http).setDefaultRequestProperties(headers)
                 ExoPlayer.Builder(this).setMediaSourceFactory(DefaultMediaSourceFactory(data))
-                    .setHandleAudioBecomingNoisy(true).build().apply {
-                        try {
-                            // Prepare the effect path for in-place updates; neutral has no color adjustment.
-                            setVideoEffects(emptyList())
-                            setAudioAttributes(AudioAttributes.DEFAULT, true)
-                        } catch (error: Exception) { release(); throw error }
-                    }
+                    .setHandleAudioBecomingNoisy(true).build().apply { setAudioAttributes(AudioAttributes.DEFAULT, true) }
             } catch (_: Exception) {
                 if (exoRestoreSubtitlePending) spec = spec.copy(subtitlesPending = true)
                 exoRestoreSubtitlePending = false
@@ -1146,9 +1144,6 @@ class NativePlayerActivity : AppCompatActivity() {
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
-        appliedExoPicture = if (created is ExoPlayer) PictureSettings() else null
-        exoPictureEffect = null
-        exoPictureSource = ExoPictureSource.UNKNOWN
         applyPictureToPlayer()
         chapterCreditsOwner = created.takeIf { created is ExoPlayer && chapterCarry != null &&
             chapterCarry.source == originalChapterSource(spec) }
@@ -1177,7 +1172,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     handler.removeCallbacks(engineProbeTimeout)
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                     forceMpvSession = "${spec.sessionId}:${spec.partId}"
-                    if (manual) toast("ExoPlayer의 영상·자막을 확인하지 못해 MPV로 재생합니다.")
+                    if (manual && !pictureRequiresMpv(pictureSettings)) toast("ExoPlayer의 영상·자막을 확인하지 못해 MPV로 재생합니다.")
                     if (created.playbackState == Player.STATE_READY) acceptPreparedPlayer(created)
                     finishReplacementAfterFirstFrame(created)
                     created.playWhenReady = resumeWhenVisible && visible
@@ -1220,10 +1215,6 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 if (player !== created) return
-                if (created is ExoPlayer) {
-                    exoPictureSource = classifyExoPictureSource(tracks)
-                    applyPictureToPlayer()
-                }
                 if (created is ExoPlayer && exoValidated && !exoPlaybackTracksSafe(tracks)) {
                     fallbackFromExo(created)
                     return
@@ -1291,11 +1282,6 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onPlayerError(error: PlaybackException) {
                 if (player !== created) return
-                if (created is ExoPlayer && isPictureProcessingError(error.errorCode) && !exiting && !refreshing) {
-                    toast("영상 보정을 지원하지 않아 현재 위치에서 MPV로 이어갑니다.")
-                    fallbackFromExo(created)
-                    return
-                }
                 if (mpvProbePending) {
                     mpvProbePending = false; finishMpvProbe = null
                     manualExoProbePending = false
@@ -1443,6 +1429,7 @@ class NativePlayerActivity : AppCompatActivity() {
             val chapterCarry = chapterCreditsEvidence.takeIf {
                 chapterCreditsOwner === created && it?.source == originalChapterSource(spec)
             }
+            captureTrackPreferencesForReplacement()
             releasePlayer()
             exoRestoreSubtitlePending = pendingSubtitles
             spec = spec.copy(subtitlesPending = false)
@@ -1483,6 +1470,7 @@ class NativePlayerActivity : AppCompatActivity() {
             val pendingSubtitles = spec.subtitlesPending
             finishMpvProbe = null
             handler.removeCallbacks(engineProbeTimeout)
+            captureTrackPreferencesForReplacement()
             releasePlayer()
             exoRestoreSubtitlePending = pendingSubtitles
             spec = spec.copy(subtitlesPending = false)
@@ -1516,6 +1504,7 @@ class NativePlayerActivity : AppCompatActivity() {
             val pendingSubtitles = spec.subtitlesPending
             finishMpvProbe = null
             handler.removeCallbacks(engineProbeTimeout)
+            captureTrackPreferencesForReplacement()
             releasePlayer()
             exoRestoreSubtitlePending = pendingSubtitles
             spec = spec.copy(subtitlesPending = false)
@@ -1827,16 +1816,41 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun showPlaybackEnginePreference() {
         val choices = PlaybackEnginePreference.entries
         val selected = choices.indexOf(playbackEnginePreference())
-        val dialog = AlertDialog.Builder(this).setTitle("재생 엔진 · 현재 영상 종료 후 적용")
-            .setSingleChoiceItems(choices.map { it.label }.toTypedArray(), selected) { choice, index ->
+        val labels = choices.map {
+            if (it == PlaybackEnginePreference.EXO && pictureRequiresMpv(pictureSettings)) "ExoPlayer · 보정 해제" else it.label
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("재생 엔진 · 현재 영상에 적용")
+            .setSingleChoiceItems(labels.toTypedArray(), selected) { choice, index ->
                 val next = choices.getOrNull(index) ?: return@setSingleChoiceItems
-                getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("playback_engine", next.key).apply()
                 choice.dismiss()
-                toast(if (next == PlaybackEnginePreference.EXO)
-                    "현재 영상 종료 후 적용됩니다. 변환·미지원 영상과 자막은 MPV로 재생됩니다."
-                    else "재생 엔진은 현재 영상 종료 후 적용됩니다.")
+                applyPlaybackEnginePreference(next)
             }.setNegativeButton("취소", null).show()
+        dialog.window?.decorView?.tag = "playback-engine-choice"
         if (television) dialog.window?.setLayout(dp(360), WindowManager.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun applyPlaybackEnginePreference(next: PlaybackEnginePreference) {
+        if (exiting || isDestroyed || refreshing || navigationLoading) return
+        getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("playback_engine", next.key).apply()
+        enginePreferenceForContent = next
+        forceMpvSession = null
+        val resetPicture = next == PlaybackEnginePreference.EXO && pictureRequiresMpv(pictureSettings)
+        if (resetPicture) {
+            pictureSettings = PictureSettings()
+            pictureStore.writeCurrent(pictureSettings)
+        }
+        val active = player
+        val sameEngine = playbackEngineSettled(mpvProbePending, active is ExoPlayer && !exoValidated) &&
+            ((next == PlaybackEnginePreference.MPV && active is MpvPlayer) ||
+                (next == PlaybackEnginePreference.EXO && active is ExoPlayer))
+        if (sameEngine) {
+            applyPictureToPlayer()
+            toast("선택한 재생 엔진이 적용되어 있습니다.")
+            return
+        }
+        toast(if (resetPicture) "영상 보정을 원본으로 돌리고 현재 위치에서 ExoPlayer로 전환합니다."
+            else "현재 위치에서 ${next.label} 재생 엔진을 적용합니다.")
+        restartPlaybackAtCurrentPosition()
     }
 
     private fun selectedTrackLabel(type: Int): String {
@@ -2546,11 +2560,9 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun pictureSettingsLabel(): String = builtInPicturePresets()
         .firstOrNull { it.settings == pictureSettings }?.name ?: "사용자 조절"
 
-    private fun pictureSupportNote(): String? = if (player is ExoPlayer) when (exoPictureSource) {
-        ExoPictureSource.HDR -> "이 HDR 영상은 ExoPlayer에서 원본 색상으로 재생합니다. 보정은 MPV에서 사용할 수 있습니다."
-        ExoPictureSource.UNKNOWN -> "영상 정보를 확인하면 저장한 보정값을 적용합니다."
-        ExoPictureSource.SDR -> if (player?.isPlaying == false) "일시정지 중에는 다음 영상 프레임부터 보정값이 보입니다." else null
-    } else null
+    private fun pictureSupportNote(): String = if (pictureRequiresMpv(pictureSettings))
+        "영상 보정은 MPV에서 적용됩니다. 저장한 재생 엔진 선택은 유지됩니다."
+    else "영상 보정을 켜면 현재 위치에서 MPV로 전환합니다. 원본 재생은 선택한 엔진을 사용합니다."
 
     private fun showPictureSettings() {
         if (exiting || isFinishing || isDestroyed) return
@@ -2573,32 +2585,40 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun applyPictureToPlayer() {
         when (val active = player) {
-            is MpvPlayer -> active.setPictureSettings(pictureSettings)
-            is ExoPlayer -> {
-                val desired = effectiveExoPictureSettings(pictureSettings, exoPictureSource)
-                if (desired == appliedExoPicture) return
-                try {
-                    val effect = exoPictureEffect
-                    if (effect != null) {
-                        // Keep the processing stream intact while remote keys change the GPU uniform.
-                        effect.update(desired)
-                    } else if (!desired.isNeutral) {
-                        val created = PictureVideoEffect(desired)
-                        active.setVideoEffects(listOf(created))
-                        exoPictureEffect = created
-                    }
-                    appliedExoPicture = desired
-                } catch (_: Exception) {
-                    // Post outside a tracks callback before releasing the current engine.
-                    handler.post {
-                        if (player === active && !exiting && !isDestroyed && !refreshing) {
-                            toast("영상 보정을 지원하지 않아 현재 위치에서 MPV로 이어갑니다.")
-                            fallbackFromExo(active)
-                        }
-                    }
-                }
+            is MpvPlayer -> {
+                if (pictureRequiresMpv(pictureSettings) && mpvProbePending) finishMpvProbe?.invoke()
+                active.setPictureSettings(pictureSettings)
             }
+            is ExoPlayer -> if (pictureRequiresMpv(pictureSettings)) switchToMpvForPicture(active)
         }
+    }
+
+    private fun switchToMpvForPicture(active: ExoPlayer) {
+        if (player !== active || exiting || isDestroyed || refreshing) return
+        forceMpvSession = "${spec.sessionId}:${spec.partId}"
+        toast("영상 보정을 위해 현재 위치에서 MPV로 전환합니다.")
+        restartPlaybackAtCurrentPosition()
+    }
+
+    private fun captureTrackPreferencesForReplacement() {
+        pendingAudioPreference = selectedTrackPreference(C.TRACK_TYPE_AUDIO) ?: pendingAudioPreference
+        pendingTextPreference = if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+            selectedTrackPreference(C.TRACK_TYPE_TEXT) ?: pendingTextPreference else null
+    }
+
+    private fun restartPlaybackAtCurrentPosition() {
+        val active = player
+        val settled = playbackEngineSettled(mpvProbePending, active is ExoPlayer && !exoValidated)
+        val wasPlaying = gestures.playWhenReadyBeforeSeek ?: if (active != null && settled) active.playWhenReady else resumeWhenVisible
+        val seekTarget = gestures.cancelSeekGesture() ?: pendingSeek
+        finishRemoteSeeking()
+        if (seekTarget != null) lastPosition = seekTarget.coerceAtLeast(0) else capturePosition()
+        pendingSeek = null
+        captureTrackPreferencesForReplacement()
+        if (exoRestoreSubtitlePending && spec.subtitles.isEmpty()) spec = spec.copy(subtitlesPending = true)
+        exoRestoreSubtitlePending = false
+        settleWatchTime(false)
+        preparePlayback(wasPlaying)
     }
 
     private val resizeModes = listOf(AspectRatioFrameLayout.RESIZE_MODE_FIT,
@@ -3255,9 +3275,6 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
-        appliedExoPicture = null
-        exoPictureEffect = null
-        exoPictureSource = ExoPictureSource.UNKNOWN
         chapterCreditsOwner = null
         chapterCreditsEvidence = null
         chapterCreditsRetry?.let(handler::removeCallbacks)
