@@ -29,23 +29,41 @@ class PictureSettingsDialogTest {
     private lateinit var store: PicturePresetStore
     private var current = PictureSettings()
     private val applied = mutableListOf<PictureSettings>()
+    private var originalTouchMode = true
+    private var changedInputMode = false
 
+    @Suppress("DEPRECATION")
     @Before fun launchIsolatedApplication() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
         assertEquals("Only the isolated QA application may show picture fixtures", "io.mirr.shyniflex.spoilerqa", context.packageName)
         preferences = context.getSharedPreferences("picture-dialog-fixture", Context.MODE_PRIVATE)
         preferences.edit().clear().commit()
         store = PicturePresetStore(preferences)
         scenario = ActivityScenario.launch(ComponentActivity::class.java)
-        scenario.onActivity { it.setTheme(io.mirr.shynigsy.R.style.Theme_ShyniFlix) }
+        scenario.onActivity {
+            it.setTheme(io.mirr.shynigsy.R.style.Theme_ShyniFlix)
+            originalTouchMode = it.window.decorView.isInTouchMode
+        }
+        // This fixture explicitly creates the TV dialog on a phone. A phone's touch mode
+        // prevents its remote-only rows from receiving focus and consumes the first DPAD
+        // event merely to leave touch mode. Establish the real remote input mode first.
+        instrumentation.setInTouchMode(false)
+        changedInputMode = true
+        idle()
     }
 
+    @Suppress("DEPRECATION")
     @After fun closeFixture() {
-        if (::scenario.isInitialized) {
-            scenario.onActivity { if (::helper.isInitialized) helper.dismiss() }
-            scenario.close()
+        try {
+            if (::scenario.isInitialized) {
+                scenario.onActivity { if (::helper.isInitialized) helper.dismiss() }
+                scenario.close()
+            }
+        } finally {
+            if (::preferences.isInitialized) preferences.edit().clear().commit()
+            if (changedInputMode) InstrumentationRegistry.getInstrumentation().setInTouchMode(originalTouchMode)
         }
-        if (::preferences.isInitialized) preferences.edit().clear().commit()
     }
 
     @Test fun remoteAdjustmentsPreserveFocusAndSupportNoteWhileDownNavigates() {
@@ -161,6 +179,28 @@ class PictureSettingsDialogTest {
             helper.show()
         }
         idle()
+        awaitInitialRemoteFocus()
+    }
+
+    private fun awaitInitialRemoteFocus() {
+        val deadline = SystemClock.elapsedRealtime() + 4_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            var ready = false
+            scenario.onActivity {
+                val decor = helper.dialog.window!!.decorView
+                ready = helper.dialog.isShowing && decor.hasWindowFocus() && !decor.isInTouchMode &&
+                    view("picture-brightness").hasFocus()
+            }
+            if (ready) return
+            Thread.sleep(25)
+        }
+        scenario.onActivity {
+            val decor = helper.dialog.window!!.decorView
+            assertFalse("The TV fixture must enter remote input mode before dispatching keys", decor.isInTouchMode)
+            assertTrue("The actual dialog window must own input focus", decor.hasWindowFocus())
+            assertTrue("The production dialog must focus brightness without a synthetic key or forced focus",
+                view("picture-brightness").hasFocus())
+        }
     }
 
     private fun click(tag: String) {
