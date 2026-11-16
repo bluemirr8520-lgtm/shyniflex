@@ -36,10 +36,12 @@ import io.mirr.shynigsy.updates.UpdateViewModel
 import io.mirr.shynigsy.updates.UpdateDialog
 import io.mirr.shynigsy.data.parseTvLoginLink
 import io.mirr.shynigsy.data.MediaItem
+import io.mirr.shynigsy.data.PlaybackSpec
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppViewModel
     private lateinit var updates: UpdateViewModel
+    private val playbackOrientation by lazy { PlaybackReturnOrientation(this) }
     private val artworkBrowsingOwner = Any()
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (packageManager.canRequestPackageInstalls()) installReadyUpdate()
@@ -47,6 +49,7 @@ class MainActivity : ComponentActivity() {
     }
     private var lastCompletionRevision = 0L
     private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        playbackOrientation.playbackReturned()
         val completedEpisode = if (result.resultCode == RESULT_OK)
             result.data?.getStringExtra("completedEpisode")?.let { runCatching { MediaItem.fromJson(it) }.getOrNull() }
         else null
@@ -55,6 +58,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        playbackOrientation.restore(savedInstanceState)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT))
         // Artwork cannot redirect authenticated image requests to another origin.
@@ -108,13 +112,26 @@ class MainActivity : ComponentActivity() {
             CinemaAppearanceTheme {
             val updateState by updates.state.collectAsState()
             ShyniApp(model, onUpdate = { updates.check(manual = true) }) { spec ->
-                playback.launch(Intent(this, NativePlayerActivity::class.java)
-                    .putExtra("spec", spec.toJson())
-                    .putExtra("server", model.state.value.server))
+                launchPlayback(spec)
             }
             UpdateDialog(updateState, onInstall = ::requestUpdateInstall,
                 onCheck = { updates.check(manual = true) }, onDismiss = updates::dismiss)
             }
+        }
+    }
+
+    private fun launchPlayback(spec: PlaybackSpec) {
+        // Freeze the list's current direction before the landscape player covers it.
+        // Returning then reveals the correct direction without a second rotation.
+        playbackOrientation.beforePlayback()
+        try {
+            playback.launch(Intent(this, NativePlayerActivity::class.java)
+                .putExtra("spec", spec.toJson())
+                .putExtra("server", model.state.value.server))
+        } catch (_: RuntimeException) {
+            playbackOrientation.launchFailed()
+            android.widget.Toast.makeText(this, "재생 화면을 열지 못했습니다. 다시 시도해 주세요.",
+                android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
@@ -137,19 +154,32 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        playbackOrientation.onStop(isChangingConfigurations)
         if (::model.isInitialized) model.cancelTvQrLogin()
         ArtworkBrowsingState.process.stopped(artworkBrowsingOwner)
         super.onStop()
     }
 
     override fun onDestroy() {
+        playbackOrientation.onDestroy()
         ArtworkBrowsingState.process.stopped(artworkBrowsingOwner)
         super.onDestroy()
     }
 
     override fun onResume() {
         super.onResume()
+        playbackOrientation.onResume()
         if (::updates.isInitialized) updates.check()
+    }
+
+    override fun onPause() {
+        playbackOrientation.onPause()
+        super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        playbackOrientation.save(outState)
+        super.onSaveInstanceState(outState)
     }
 
     private fun requestUpdateInstall() {
