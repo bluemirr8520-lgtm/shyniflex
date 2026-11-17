@@ -390,7 +390,8 @@ class TvContinueBackdropUiTest {
             screen.onNodeWithTag("cinema-home-appearance").performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
                 .performKeyInput { pressKey(Key.DirectionLeft) }
             screen.waitForIdle()
-            if (screen.onAllNodesWithTag("fixture-sidebar-action").fetchSemanticsNodes().isEmpty()) {
+            val enteredFromWelcome = screen.onAllNodesWithTag("fixture-sidebar-action").fetchSemanticsNodes().isEmpty()
+            if (enteredFromWelcome) {
                 // On the compact phone canvas, the welcome action is a valid nearer Left
                 // destination. Reach the actual content boundary before expecting a drawer.
                 screen.onNodeWithTag("cinema-welcome-search").assertIsFocused()
@@ -402,7 +403,13 @@ class TvContinueBackdropUiTest {
             screen.waitUntil(3_000) { screen.onAllNodesWithTag(cardTag(first)).fetchSemanticsNodes().isNotEmpty() }
             screen.onNodeWithTag("fixture-sidebar-action").assertIsFocused().performKeyInput { pressKey(Key.DirectionRight) }
             screen.waitForIdle()
-            screen.onNodeWithTag("cinema-home-appearance").assertIsFocused()
+            if (enteredFromWelcome) {
+                // The welcome action disappears when the first poster arrives. In that case
+                // the drawer restores a live content target rather than the removed action.
+                screen.onNodeWithTag("cinema-welcome-search").assertDoesNotExist()
+                screen.onNodeWithTag("tv-drawer-body").assert(hasAnyDescendant(isFocused()))
+                screen.onNodeWithTag(cardTag(first)).assertIsNotFocused()
+            } else screen.onNodeWithTag("cinema-home-appearance").assertIsFocused()
         }
     }
 
