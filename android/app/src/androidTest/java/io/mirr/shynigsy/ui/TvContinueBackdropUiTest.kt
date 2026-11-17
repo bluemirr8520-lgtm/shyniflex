@@ -106,6 +106,7 @@ class TvContinueBackdropUiTest {
             focusCard(first)
             screen.onNodeWithTag(cardTag(first)).performKeyInput { pressKey(Key.DirectionRight) }
             screen.onNodeWithTag(cardTag(second)).assertIsFocused()
+            screen.onNodeWithTag("mobile-continue-backdrop-motion").assertDoesNotExist()
             assertEquals("Focus selects the second work before a style changes", second.title, heroTitleText())
             screen.waitUntil(3_000) {
                 val job = AppViewModel::class.java.getDeclaredField("continueDetailsJob")
@@ -123,6 +124,7 @@ class TvContinueBackdropUiTest {
                 screen.waitForIdle()
                 saveScreenshot("tv-home", "home-style-${candidate.key}.png")
                 assertEquals("Style ${candidate.key} retains the selected work", second.title, heroTitleText())
+                screen.onNodeWithTag("mobile-continue-backdrop-motion").assertDoesNotExist()
                 val card = screen.onNodeWithTag(cardTag(second)).assertIsFocused().fetchSemanticsNode().boundsInRoot
                 heroHeights += screen.onNodeWithTag("tv-continue-hero").fetchSemanticsNode().boundsInRoot.height
                 posterWidths += card.width
@@ -202,6 +204,51 @@ class TvContinueBackdropUiTest {
     private fun heroTitleText() = screen.onNodeWithTag("cinema-hero-title", useUnmergedTree = true)
         .fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
 
+    private fun backdropMotionFraction(): Float? = screen.onAllNodesWithTag("mobile-continue-backdrop-motion",
+        useUnmergedTree = true).fetchSemanticsNodes().singleOrNull()?.config?.get(ContinueBackdropSlideFraction)
+
+    @Test fun partialMobilePosterDragMovesArtworkBeforeItsTitleChangesAndSettlesCleanly() {
+        val items = (0 until 8).map { index -> first.copy(id = 101 + index, viewItemId = 701 + index,
+            title = "부분 이동 합성 작품 ${index + 1}") }
+        withFixture(AppState(loggedIn = true, continueItems = items)) { fixture ->
+            renderHome(fixture)
+            screen.onNodeWithTag("mobile-continue-backdrop-motion").assertDoesNotExist()
+            val pitch = screen.onNodeWithTag(cardTag(items[1])).fetchSemanticsNode().boundsInRoot.left -
+                screen.onNodeWithTag(cardTag(items[0])).fetchSemanticsNode().boundsInRoot.left
+            screen.mainClock.autoAdvance = false
+            val row = screen.onNodeWithTag("home-continue-row")
+            row.performTouchInput {
+                down(Offset(width * .85f, center.y))
+                moveTo(Offset(width * .85f - pitch * .35f, center.y), delayMillis = 350)
+            }
+            screen.mainClock.advanceTimeBy(64)
+            screen.waitForIdle()
+            val fraction = requireNotNull(backdropMotionFraction()) { "A partial drag must expose physical artwork motion" }
+            assertTrue("Artwork follows a partial card movement: $fraction", fraction > .05f && fraction < .5f)
+            assertEquals("The artwork starts moving before the readable poster changes", items.first().title, heroTitleText())
+            val frame = screen.onNodeWithTag("mobile-continue-backdrop-motion", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
+            val from = screen.onNodeWithTag("cinema-backdrop-slide-from", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
+            val to = screen.onNodeWithTag("cinema-backdrop-slide-to", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
+            val expectedEdge = frame.left + frame.width * (1f - fraction)
+            assertEquals("Outgoing artwork moves physically to the left", expectedEdge, from.right, 3f)
+            assertEquals("The next artwork enters at the same seam", expectedEdge, to.left, 3f)
+            assertTrue("Both physical layers are visible without leaving an empty gap", from.width > 0f && to.width > 0f)
+            assertTrue("Dragging artwork never requests playback or extra metadata", fixture.requests.isEmpty())
+            saveScreenshot("tv-continue-section", "mobile-continue-partial-slide.png")
+            row.performTouchInput { advanceEventTime(250); up() }
+            screen.mainClock.autoAdvance = true
+            screen.waitUntil(4_000) { backdropMotionFraction() == null && fixture.requests.isNotEmpty() }
+            assertTrue("The leading poster owns the settled background", heroExists(items.first()))
+            screen.onNodeWithTag("cinema-hero-art-${first.libraryId}-${first.id}", useUnmergedTree = true).assertExists()
+            screen.onNodeWithTag("cinema-hero-art-${second.libraryId}-${second.id}", useUnmergedTree = true).assertDoesNotExist()
+            assertEquals("Only settled artwork enriches its metadata", 1, fixture.requests.size)
+            assertTrue(fixture.requests.none { it.first.startsWith("/playback/") })
+        }
+    }
+
     @Test fun mobileContinueDragAndFlingFollowPostersWithoutStartingPlayback() {
         val items = (0 until 14).map { index -> first.copy(id = 101 + index, viewItemId = 701 + index,
             title = "모바일 이어보기 ${index + 1}") }
@@ -220,6 +267,7 @@ class TvContinueBackdropUiTest {
             screen.onNodeWithTag("cinema-hero-art-${duringDrag.libraryId}-${duringDrag.id}", useUnmergedTree = true)
                 .assertExists()
             assertTrue("Passing posters does not ask the server for details", fixture.requests.isEmpty())
+            assertNotNull("Backdrop motion begins while the finger is still down", backdropMotionFraction())
 
             row.performTouchInput {
                 // A real flick supplies several recent motion samples. A single late event can
@@ -234,10 +282,12 @@ class TvContinueBackdropUiTest {
             val releasePosition = row.fetchSemanticsNode().config[SemanticsProperties.HorizontalScrollAxisRange].value()
             val releaseHero = items.single { heroExists(it) }
             val frameHeroes = mutableListOf<String>()
+            val frameFractions = mutableListOf<Float>()
             repeat(10) {
                 screen.mainClock.advanceTimeByFrame()
                 screen.waitForIdle()
                 frameHeroes += heroTitleText()
+                backdropMotionFraction()?.let(frameFractions::add)
             }
             val beforeRenderFlush = heroTitleText()
             // Give layoutInfo -> snapshotFlow -> hero state a render frame as well as main-queue
@@ -256,16 +306,14 @@ class TvContinueBackdropUiTest {
             val duringFling = items.single { heroExists(it) }
             assertNotEquals("The backdrop follows the fling after release ($releasePosition -> $flingPosition)", releaseHero, duringFling)
             assertNotEquals("The browsing gesture advances beyond its initial drag", duringDrag, duringFling)
+            assertTrue("Physical backdrop translation keeps advancing through the fling", frameFractions.distinct().size > 1)
+            assertTrue(frameFractions.all { it in 0f..1f })
             screen.onNodeWithTag("cinema-hero-art-${duringFling.libraryId}-${duringFling.id}", useUnmergedTree = true)
                 .assertExists()
-            screen.mainClock.advanceTimeBy(2_500)
-            screen.waitForIdle()
-            screen.mainClock.advanceTimeByFrame()
-            screen.waitForIdle()
-            screen.waitUntil(3_000) { fixture.requests.isNotEmpty() }
+            screen.mainClock.autoAdvance = true
+            screen.waitUntil(4_000) { fixture.requests.isNotEmpty() && backdropMotionFraction() == null }
             assertEquals("Only the final visible work requests details", 1, fixture.requests.size)
             assertTrue("Browsing never starts playback", fixture.requests.none { it.first == "/playback/decision" })
-            screen.mainClock.autoAdvance = true
         }
     }
 
@@ -308,11 +356,10 @@ class TvContinueBackdropUiTest {
                 .assertDoesNotExist()
             screen.onNodeWithTag(cardTag(hidden)).assertDoesNotExist()
             row.performTouchInput { up() }
-            screen.mainClock.advanceTimeBy(2_500)
-            screen.waitForIdle()
+            screen.mainClock.autoAdvance = true
+            screen.waitUntil(4_000) { backdropMotionFraction() == null }
             assertFalse("A lingering fling cannot restore a revoked item", heroExists(hidden))
             assertTrue(fixture.requests.none { it.first == "/playback/decision" })
-            screen.mainClock.autoAdvance = true
         }
     }
 
@@ -342,6 +389,13 @@ class TvContinueBackdropUiTest {
             renderFocusedHome(fixture)
             screen.onNodeWithTag("cinema-home-appearance").performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
                 .performKeyInput { pressKey(Key.DirectionLeft) }
+            screen.waitForIdle()
+            if (screen.onAllNodesWithTag("fixture-sidebar-action").fetchSemanticsNodes().isEmpty()) {
+                // On the compact phone canvas, the welcome action is a valid nearer Left
+                // destination. Reach the actual content boundary before expecting a drawer.
+                screen.onNodeWithTag("cinema-welcome-search").assertIsFocused()
+                    .performKeyInput { pressKey(Key.DirectionLeft) }
+            }
             screen.waitUntil(3_000) { screen.onAllNodesWithTag("fixture-sidebar-action").fetchSemanticsNodes().isNotEmpty() }
             screen.onNodeWithTag("fixture-sidebar-action").assertIsFocused()
             screen.runOnIdle { fixture.state.value = fixture.state.value.copy(continueItems = listOf(first)) }
@@ -375,6 +429,7 @@ class TvContinueBackdropUiTest {
             }
             val manualReads = fixture.requests.size
             waitForHero(second)
+            screen.onNodeWithTag("mobile-continue-backdrop-motion").assertDoesNotExist()
             screen.onNodeWithTag(cardTag(first)).assertIsFocused()
             assertEquals("Only manual focus may request details", manualReads, fixture.requests.size)
             waitForHero(first)
@@ -593,8 +648,11 @@ class TvContinueBackdropUiTest {
             request.body?.writeTo(buffer)
             requests += request.url.encodedPath to buffer.readUtf8()
             // Never call proceed: the test cannot contact any account or production server.
-            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(500).message("synthetic")
-                .body("{}".toResponseBody("application/json".toMediaType())).build()
+            val versionList = request.url.encodedPath == "/playback/versions"
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(if (versionList) 200 else 500).message("synthetic")
+                .body((if (versionList) "{\"options\":[]}" else "{}")
+                    .toResponseBody("application/json".toMediaType())).build()
         }.build()
         val generated = mutableListOf<File>()
         lateinit var model: AppViewModel

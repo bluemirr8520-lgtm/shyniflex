@@ -266,6 +266,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     var heroKey by rememberSaveable { mutableStateOf("") }
     val continueKeys = continuing.map(::tvMediaKey)
     val continueRow = rememberLazyListState()
+    val mobileBackdrop = remember { MobileContinueBackdropState() }
     var heroVisible by remember { mutableStateOf(false) }
     var heroResumeFocused by remember { mutableStateOf(false) }
     var touchingContinue by remember { mutableStateOf(false) }
@@ -283,7 +284,8 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     }
     ObserveMobileContinueShelf(continueRow, continueKeys, enabled = !modelIsTelevision && !controlsBusy,
         onBrowse = ::selectMobilePoster,
-        onSettled = { key -> continuing.firstOrNull { tvMediaKey(it) == key }?.let(model::selectContinueItem) })
+        onSettled = { key -> continuing.firstOrNull { tvMediaKey(it) == key }?.let(model::selectContinueItem) },
+        backdrop = mobileBackdrop)
     LaunchedEffect(continueKeys) {
         if (heroKey !in continueKeys) heroKey = continueKeys.firstOrNull().orEmpty()
         if (continueKeys.isEmpty()) heroResumeFocused = false
@@ -367,7 +369,8 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                             finally { touchingContinue = false; interactionRevision++ }
                         }
                     }) {
-                    CinemaHomeBackdrop(hero, model, heroHeight, wide = !compact, modifier = Modifier.matchParentSize())
+                    CinemaHomeBackdrop(hero, model, heroHeight, wide = !compact, modifier = Modifier.matchParentSize(),
+                        motion = mobileBackdrop.takeUnless { modelIsTelevision || controlsBusy }, motionItems = continuing)
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                         Column(Modifier.fillMaxWidth().height(heroHeight)
                             .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
@@ -657,4 +660,4 @@ private fun TvSummaryDialog(title: String, summary: String, onDismiss: () -> Uni
     }, confirmButton = { TvAction("닫기", onClick = onDismiss) })
 }
 
-private fun tvMediaKey(item: MediaItem) = "${item.libraryId}:${item.type}:${item.id}:${item.viewItemId}:${item.isSpoiler}"
+internal fun tvMediaKey(item: MediaItem) = "${item.libraryId}:${item.type}:${item.id}:${item.viewItemId}:${item.isSpoiler}"

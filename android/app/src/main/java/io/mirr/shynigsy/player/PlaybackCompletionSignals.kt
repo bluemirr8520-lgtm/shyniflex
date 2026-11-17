@@ -17,6 +17,11 @@ object PlaybackCompletionSignals {
     private val revision = MutableStateFlow(0L)
     val changes = revision.asStateFlow()
     fun notifyChanged() { revision.update { it + 1 } }
+    private val writers = MutableStateFlow(0)
+    /** An update must not terminate the process while a player's final writes are draining. */
+    val progressWriters = writers.asStateFlow()
+    fun progressWriterStarted() { writers.update { it + 1 } }
+    fun progressWriterFinished() { writers.update { (it - 1).coerceAtLeast(0) } }
 
     data class ConfirmedWatch internal constructor(
         val sequence: Long, val scope: String, val item: MediaItem,

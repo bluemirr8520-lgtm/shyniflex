@@ -19,23 +19,31 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import io.mirr.shynigsy.AppViewModel
 import io.mirr.shynigsy.R
 import io.mirr.shynigsy.data.MediaItem
 import coil3.compose.AsyncImage
 import kotlin.math.roundToInt
+
+internal val ContinueBackdropSlideFraction = SemanticsPropertyKey<Float>("ContinueBackdropSlideFraction")
 
 /** Bundled original art is immediately available, including when the server has no resume rows. */
 @Composable
@@ -45,22 +53,41 @@ internal fun CinemaHomeBackdrop(
     heroHeight: Dp,
     wide: Boolean,
     modifier: Modifier = Modifier,
+    motion: MobileContinueBackdropState? = null,
+    motionItems: List<MediaItem> = emptyList(),
 ) {
     val style = LocalCinemaStyle.current
     val page = MaterialTheme.colorScheme.background
-    Box(modifier.testTag("tv-continue-backdrop")) {
+    val direction = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+    fun motionItem(key: String?): MediaItem? = motionItems.firstOrNull { tvMediaKey(it) == key }
+        ?.let { item -> hero?.takeIf { tvMediaKey(it) == key } ?: item }
+    val from = motionItem(motion?.fromKey)
+    val to = motionItem(motion?.toKey)
+    // Both layers are revalidated against the currently visible, authorized shelf on every
+    // composition. Relocking or changing accounts cannot animate an old private image out.
+    val sliding = motion != null && from != null && (motion.toKey == null || to != null)
+    Box(modifier.clipToBounds().testTag("tv-continue-backdrop")) {
         // Local decoding uses the same bounded image loader, keeping it off the UI thread.
         AsyncImage(model = R.drawable.cinema_paradiso_backdrop, contentDescription = null,
             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
             alignment = Alignment.CenterEnd)
-        if (hero != null && !(hero.backdrop ?: hero.poster).isNullOrBlank()) {
-            // Keep account-scoped artwork headers/cache rules; no extra request or prefetch path.
-            key(hero.libraryId, hero.id, hero.type, hero.isSpoiler, hero.backdrop ?: hero.poster) {
-                Poster(hero, model, Modifier.fillMaxSize()
-                    .testTag("cinema-hero-art-${hero.libraryId}-${hero.id}"), transparentBackground = true,
-                    imageUrl = hero.backdrop ?: hero.poster, imageAlignment = Alignment.CenterEnd)
+        if (sliding) {
+            val currentMotion = requireNotNull(motion)
+            Box(Modifier.fillMaxSize().testTag("mobile-continue-backdrop-motion").semantics {
+                this[ContinueBackdropSlideFraction] = currentMotion.fraction.value
+            }) {
+                Box(Modifier.fillMaxSize().graphicsLayer {
+                    translationX = -currentMotion.fraction.value * size.width * direction
+                }.testTag("cinema-backdrop-slide-from")) {
+                    CinemaBackdropArtwork(requireNotNull(from), model)
+                }
+                if (to != null) Box(Modifier.fillMaxSize().graphicsLayer {
+                    translationX = (1f - currentMotion.fraction.value) * size.width * direction
+                }.testTag("cinema-backdrop-slide-to")) {
+                    CinemaBackdropArtwork(to, model)
+                }
             }
-        }
+        } else if (hero != null) CinemaBackdropArtwork(hero, model)
         if (style == CinemaStyle.LOUNGE) {
             // The lounge uses the user's page color behind text, including dark custom palettes.
             // No cached bitmap tint or offscreen blur is needed when switching styles.
@@ -89,6 +116,16 @@ internal fun CinemaHomeBackdrop(
         Box(Modifier.fillMaxWidth().height(128.dp).background(Brush.verticalGradient(
             listOf(Color.Black.copy(alpha = .72f), Color.Transparent))))
         }
+    }
+}
+
+/** Both moving layers reuse the ordinary account-scoped artwork loader and image proportions. */
+@Composable
+private fun CinemaBackdropArtwork(item: MediaItem, model: AppViewModel) {
+    if ((item.backdrop ?: item.poster).isNullOrBlank()) return
+    key(item.libraryId, item.id, item.type, item.viewItemId, item.isSpoiler, item.backdrop ?: item.poster) {
+        Poster(item, model, Modifier.fillMaxSize().testTag("cinema-hero-art-${item.libraryId}-${item.id}"),
+            transparentBackground = true, imageUrl = item.backdrop ?: item.poster, imageAlignment = Alignment.CenterEnd)
     }
 }
 

@@ -26,6 +26,8 @@ import io.mirr.shynigsy.ui.ArtworkNetworkClient
 import io.mirr.shynigsy.ui.ArtworkBrowsingState
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -43,21 +45,31 @@ class MainActivity : ComponentActivity() {
     private lateinit var updates: UpdateViewModel
     private val playbackOrientation by lazy { PlaybackReturnOrientation(this) }
     private val artworkBrowsingOwner = Any()
+    private val playbackInFlight = MutableStateFlow(false)
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (packageManager.canRequestPackageInstalls()) installReadyUpdate()
-        else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.")
+        val attempt = if (::updates.isInitialized) updates.activeInstallAttempt() else null
+        if (attempt != null) {
+            if (packageManager.canRequestPackageInstalls()) installReadyUpdate(attempt)
+            else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.", attempt)
+        }
     }
     private var lastCompletionRevision = 0L
     private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        playbackInFlight.value = false
         playbackOrientation.playbackReturned()
         val completedEpisode = if (result.resultCode == RESULT_OK)
             result.data?.getStringExtra("completedEpisode")?.let { runCatching { MediaItem.fromJson(it) }.getOrNull() }
         else null
         if (completedEpisode != null) model.showCompletedEpisodeList(completedEpisode) else model.refresh()
     }
+    // Keep the existing permission/playback registry keys stable across app updates.
+    private val updateInstaller = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (::updates.isInitialized) updates.installerReturned()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        playbackInFlight.value = savedInstanceState?.getBoolean("update_playback_in_flight", false) ?: false
         playbackOrientation.restore(savedInstanceState)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT))
@@ -75,7 +87,16 @@ class MainActivity : ComponentActivity() {
         }
         model = ViewModelProvider(this)[AppViewModel::class.java]
         updates = ViewModelProvider(this)[UpdateViewModel::class.java]
+        updates.checkOnStartup()
         consumeTvLoginIntent(intent)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                combine(updates.state, model.state, playbackInFlight, PlaybackCompletionSignals.progressWriters) { update, app, playing, writers ->
+                    update.automaticInstallPending && writers == 0 && !playing && app.playback == null &&
+                        (!app.busy || app.homeLoading) && !app.spoilerBusy
+                }.collect { ready -> if (ready) requestUpdateInstall(automatic = true) }
+            }
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaybackCompletionSignals.confirmations.collect { model.acceptPlaybackConfirmations(it) }
@@ -119,7 +140,7 @@ class MainActivity : ComponentActivity() {
             ShyniApp(model, onUpdate = { updates.check(manual = true) }) { spec ->
                 launchPlayback(spec)
             }
-            UpdateDialog(updateState, onInstall = ::requestUpdateInstall,
+            UpdateDialog(updateState, onInstall = { requestUpdateInstall() },
                 onCheck = { updates.check(manual = true) }, onDismiss = updates::dismiss)
             }
         }
@@ -129,11 +150,13 @@ class MainActivity : ComponentActivity() {
         // Freeze the list's current direction before the landscape player covers it.
         // Returning then reveals the correct direction without a second rotation.
         playbackOrientation.beforePlayback()
+        playbackInFlight.value = true
         try {
             playback.launch(Intent(this, NativePlayerActivity::class.java)
                 .putExtra("spec", spec.toJson())
                 .putExtra("server", model.state.value.server))
         } catch (_: RuntimeException) {
+            playbackInFlight.value = false
             playbackOrientation.launchFailed()
             android.widget.Toast.makeText(this, "재생 화면을 열지 못했습니다. 다시 시도해 주세요.",
                 android.widget.Toast.LENGTH_LONG).show()
@@ -174,7 +197,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         playbackOrientation.onResume()
-        if (::updates.isInitialized) updates.check()
     }
 
     override fun onPause() {
@@ -183,29 +205,48 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("update_playback_in_flight", playbackInFlight.value)
         playbackOrientation.save(outState)
         super.onSaveInstanceState(outState)
     }
 
-    private fun requestUpdateInstall() {
+    private fun requestUpdateInstall(automatic: Boolean = false) {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || playbackInFlight.value ||
+            model.state.value.playback != null) return
+        val attempt = updates.beginInstall(automatic) ?: return
         if (!packageManager.canRequestPackageInstalls()) {
             try {
                 installPermission.launch(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     android.net.Uri.parse("package:$packageName")))
-            } catch (_: Exception) { updates.installError("TV 설정에서 이 앱의 설치 허용을 켠 뒤 다시 시도해 주세요.") }
-        } else installReadyUpdate()
+                updates.installerOpened(attempt)
+            } catch (_: Exception) { updates.installError("기기 설정에서 이 앱의 설치 허용을 켠 뒤 다시 시도해 주세요.", attempt) }
+        } else installReadyUpdate(attempt)
     }
 
-    private fun installReadyUpdate() {
+    private fun installReadyUpdate(attempt: Long) {
+        if (!updates.isInstallCurrent(attempt)) return
         lifecycleScope.launch {
-            val file = updates.verifiedFile() ?: return@launch
             try {
+                val file = updates.verifiedFile() ?: return@launch
+                if (!updates.isInstallCurrent(attempt)) return@launch
+                if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || playbackInFlight.value ||
+                    PlaybackCompletionSignals.progressWriters.value > 0 ||
+                    model.state.value.playback != null) {
+                    updates.deferInstall(attempt)
+                    return@launch
+                }
                 val uri = androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.updates", file)
                 val installer = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                updates.dismiss()
-                startActivity(installer)
-            } catch (_: Exception) { updates.installError("설치 화면을 열지 못했습니다. TV의 앱 설치 설정을 확인해 주세요.") }
+                updateInstaller.launch(installer)
+                updates.installerOpened(attempt)
+            } catch (cancel: CancellationException) {
+                // A rotated/backgrounded preparation has not opened an installer yet.
+                if (!isFinishing) updates.deferInstall(attempt)
+                throw cancel
+            } catch (_: Exception) {
+                updates.installError("설치 화면을 열지 못했습니다. 기기의 앱 설치 설정을 확인해 주세요.", attempt)
+            }
         }
     }
 }

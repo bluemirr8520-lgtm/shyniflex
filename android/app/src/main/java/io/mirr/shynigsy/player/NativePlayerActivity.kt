@@ -395,6 +395,7 @@ class NativePlayerActivity : AppCompatActivity() {
             SpoilerAccessRegistry.changes.collect { closeLockedSpoilerPlayback() }
         }
         hideSystemBars()
+        PlaybackCompletionSignals.progressWriterStarted()
         progressScope.launch {
             try {
                 while (true) {
@@ -504,7 +505,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 localCompletionReceipts.clear()
                 progressScope.cancel()
             }
-        }
+        }.invokeOnCompletion { PlaybackCompletionSignals.progressWriterFinished() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (continuousPrevious != null) leavePlayer()

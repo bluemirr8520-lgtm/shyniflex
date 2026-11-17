@@ -27,7 +27,7 @@ internal fun UpdateDialog(state: UpdateState, onInstall: () -> Unit, onCheck: ()
                 Text("업데이트", style = MaterialTheme.typography.titleLarge)
                 state.version?.let { Text(it, style = MaterialTheme.typography.labelLarge) }
                 Text(state.message, style = MaterialTheme.typography.bodyMedium)
-                if (state.phase == UpdatePhase.CHECKING) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (state.phase in setOf(UpdatePhase.CHECKING, UpdatePhase.INSTALLING)) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (state.phase == UpdatePhase.DOWNLOADING) {
                     LinearProgressIndicator(progress = { state.percent / 100f }, modifier = Modifier.fillMaxWidth())
                     Text("${state.percent}%", style = MaterialTheme.typography.labelMedium)

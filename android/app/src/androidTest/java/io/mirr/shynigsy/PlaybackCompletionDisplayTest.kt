@@ -154,6 +154,8 @@ class PlaybackCompletionDisplayTest {
                             model.state.value.items.singleOrNull()?.watched == true
                     }
                     assertTrue("A real completion write must reach the loopback server", fixture.completionRequested.await(2, TimeUnit.SECONDS))
+                    assertTrue("Automatic updates must wait for final writes after playback closes",
+                        PlaybackCompletionSignals.progressWriters.value > 0)
 
                     // Longer than the per-attempt request timeout: the display must survive a retry,
                     // while only raw, unconfirmed data remains eligible for snapshot persistence.
@@ -187,7 +189,8 @@ class PlaybackCompletionDisplayTest {
                         assertTrue(PlaybackCompletionSignals.confirmations.value.any { it.scope == scope })
                     }
                     waitUntil("The independent writer must finish draining after Activity destruction", 12_000) {
-                        field<CoroutineScope>(requireNotNull(completedActivity.get()), "progressScope").coroutineContext[Job]?.isActive == false
+                        field<CoroutineScope>(requireNotNull(completedActivity.get()), "progressScope").coroutineContext[Job]?.isActive == false &&
+                            PlaybackCompletionSignals.progressWriters.value == 0
                     }
                 }
                 fixture.assertHealthy()

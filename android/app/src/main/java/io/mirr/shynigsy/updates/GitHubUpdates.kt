@@ -16,7 +16,14 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
-internal class GitHubUpdates(private val context: Context) {
+/** Injectable transport boundary; the production implementation always verifies downloaded APKs. */
+internal interface UpdateSource {
+    suspend fun latest(installed: Long): UpdateCandidate?
+    suspend fun download(candidate: UpdateCandidate, progress: (Int) -> Unit): File
+    fun verify(file: File, candidate: UpdateCandidate)
+}
+
+internal class GitHubUpdates(private val context: Context) : UpdateSource {
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     private val transport = UpdateHttpTransport(http)
@@ -27,7 +34,7 @@ internal class GitHubUpdates(private val context: Context) {
         .readTimeout(5, TimeUnit.SECONDS).build(), browserTimeoutMillis = 3_000)
     private val folder = File(context.cacheDir, "updates").apply { mkdirs() }
 
-    suspend fun latest(installed: Long): UpdateCandidate? = withContext(Dispatchers.IO) {
+    override suspend fun latest(installed: Long): UpdateCandidate? = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/$UPDATE_REPOSITORY/releases?per_page=10"
         val releases = transport.response(url).use { value ->
             require(value.isSuccessful)
@@ -47,7 +54,7 @@ internal class GitHubUpdates(private val context: Context) {
         }
     }
 
-    suspend fun download(candidate: UpdateCandidate, progress: (Int) -> Unit): File = withContext(Dispatchers.IO) {
+    override suspend fun download(candidate: UpdateCandidate, progress: (Int) -> Unit): File = withContext(Dispatchers.IO) {
         val destination = File(folder, "update-${candidate.versionCode}.apk")
         if (destination.isFile && runCatching { verifyUpdateArchive(context, destination, candidate) }.isSuccess)
             return@withContext destination
@@ -82,6 +89,8 @@ internal class GitHubUpdates(private val context: Context) {
             destination
         } finally { temporary.delete() }
     }
+
+    override fun verify(file: File, candidate: UpdateCandidate) = verifyUpdateArchive(context, file, candidate)
 
     private fun limitedBody(response: Response, limit: Int): String {
         val body = requireNotNull(response.body)
