@@ -278,7 +278,8 @@ class DetailDiscoveryUiTest {
                     // Production uses a SaveableStateProvider per detail identity.
                     key(compactMediaIdentity(current.item)) {
                     CompactDetailContent(current,
-                        versions = listOf(MediaVersion(900, "합성 1080p", resolution = "1080p")), selectedPartId = null,
+                        versions = listOf(MediaVersion(900, "합성 1080p", resolution = "1080p"),
+                            MediaVersion(901, "합성 720p", resolution = "720p")), selectedPartId = null,
                         busy = busyState?.value ?: false, error = null, spoilerUnlocked = unlocked?.value ?: false,
                         onPlay = onPlay, onOpenItem = onOpen, onSelectSeason = {}, onSelectVersion = {},
                         onWatchOptions = onWatch, onWatchedChange = { _, _ -> },

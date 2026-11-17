@@ -2,6 +2,7 @@ package io.mirr.shynigsy
 
 import io.mirr.shynigsy.data.MediaDetails
 import io.mirr.shynigsy.data.MediaItem
+import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.data.Library
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -9,7 +10,8 @@ import org.junit.Test
 
 class PlaybackSelectionTest {
     private val movie = MediaItem(23, 8, "Movie", "movie", viewItemId = 501)
-    private val selected = AppState(detailStack = listOf(MediaDetails(movie)), selectedPartId = 90)
+    private val selected = AppState(detailStack = listOf(MediaDetails(movie)),
+        versions = listOf(MediaVersion(90, "1080p")), selectedPartId = 90)
 
     @Test fun versionSelectionAppliesOnlyToItsExactDetailItem() {
         assertEquals(90, selectedVersionForPlayback(selected, movie))
@@ -23,6 +25,22 @@ class PlaybackSelectionTest {
 
     @Test fun homeItemWithoutAnOpenDetailNeverInheritsStalePart() {
         assertNull(selectedVersionForPlayback(AppState(selectedPartId = 90), movie))
+    }
+
+    @Test fun removedFileOrChangedPrivacyCannotInheritSelectedVersion() {
+        assertNull(selectedVersionForPlayback(selected.copy(versions = emptyList()), movie))
+        assertNull(selectedVersionForPlayback(selected.copy(selectedPartId = 91), movie))
+        assertNull(selectedVersionForPlayback(selected, movie.copy(isSpoiler = true)))
+    }
+
+    @Test fun resolutionChoiceSourceTracksNavigationButIgnoresLoadingAndMetadataRefreshes() {
+        val source = playbackSelectionSource(selected)
+        assertEquals(source, playbackSelectionSource(selected.copy(busy = true, homeLoading = true)))
+        assertEquals(source, playbackSelectionSource(selected.copy(detailStack = listOf(MediaDetails(movie.copy(watched = true))))))
+        org.junit.Assert.assertNotEquals(source, playbackSelectionSource(selected.copy(detailStack = emptyList())))
+        org.junit.Assert.assertNotEquals(source, playbackSelectionSource(selected.copy(selectedPartId = 91)))
+        org.junit.Assert.assertNotEquals(source, playbackSelectionSource(selected.copy(libraryBrowseRevision = 1)))
+        org.junit.Assert.assertNotEquals(source, playbackSelectionSource(selected.copy(searchOpen = true, searchQuery = "새 검색")))
     }
 
     @Test fun navigationRetainsTheSearchForAnItemInTheCurrentLibraryList() {

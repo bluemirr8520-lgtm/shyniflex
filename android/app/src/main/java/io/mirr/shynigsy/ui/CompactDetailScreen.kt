@@ -50,6 +50,7 @@ import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.data.MediaFileInfo
 import io.mirr.shynigsy.data.SpoilerAccessRegistry
+import io.mirr.shynigsy.data.resolutionFolders
 import io.mirr.shynigsy.isTelevision
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -149,7 +150,8 @@ internal fun CompactDetailContent(
     var focusRequested by remember(identity, detail.selectedSeasonId, childKeys) { mutableStateOf(false) }
     var expanded by rememberSaveable(identity) { mutableStateOf(false) }
     val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty() || discoveryTargets.isNotEmpty()
-    val primaryRows = if (item.playable) 1 + (if (versions.isNotEmpty()) 1 else 0) else children.size.coerceAtLeast(1)
+    val hasResolutionChoice = remember(versions) { resolutionFolders(versions).size > 1 }
+    val primaryRows = if (item.playable) 1 + (if (hasResolutionChoice) 1 else 0) else children.size.coerceAtLeast(1)
     val discoveryIndex = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0) +
         primaryRows + (if (item.summary.isNotBlank()) 1 else 0) + (if (item.playable && fileInformation != null) 1 else 0)
     LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId) {
@@ -243,7 +245,7 @@ internal fun CompactDetailContent(
                         Modifier.fillMaxWidth().testTag("compact-detail-restart"), enabled = !busy) { onPlay(item, true) }
                 }
             }
-            if (versions.isNotEmpty()) item(key = "resolution") {
+            if (hasResolutionChoice) item(key = "resolution") {
                 ResolutionFolderSelector(versions, selectedPartId, !busy, onSelectVersion)
             }
         } else {

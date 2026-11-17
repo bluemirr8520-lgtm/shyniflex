@@ -200,7 +200,9 @@ class NativePlayerActivity : AppCompatActivity() {
     private val watchedReached = ConcurrentHashMap.newKeySet<String>()
     private val watchedConfirmed = ConcurrentHashMap.newKeySet<String>()
     private val watchedQueued = ConcurrentHashMap.newKeySet<String>()
+    private val localCompletionReceipts = ConcurrentHashMap.newKeySet<Long>()
     private val watchedAttemptAt = mutableMapOf<String, Long>()
+    private val progressChoiceRevisions = mutableMapOf<String, Long>()
     private val completionGates = mutableMapOf<String, PlaybackCompletionGate>()
     private var visible = false
     private var activityStarted = false
@@ -280,7 +282,8 @@ class NativePlayerActivity : AppCompatActivity() {
         val state: String, val watched: Long, val acknowledgement: CompletableDeferred<Boolean>? = null,
         val thresholdAttempt: Boolean = false, val completionEligible: Boolean = false,
         val authenticationEpoch: Long = 0, val accountScope: String? = null,
-        val privateGrantRevision: Long? = null, val choiceRevision: Long = 0)
+        val privateGrantRevision: Long? = null, val choiceRevision: Long = 0,
+        val localCompletionSequence: Long? = null)
 
     private data class ConversionRestore(val spec: PlaybackSpec, val position: Long, val playing: Boolean,
         val subtitle: SubtitleTrack?, val audio: PlaybackTrackPreference?, val text: PlaybackTrackPreference?,
@@ -397,9 +400,10 @@ class NativePlayerActivity : AppCompatActivity() {
                 while (true) {
                     val update = updates.next() ?: break
                     val key = watchedKey(update.spec)
-                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch)) {
+                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch) || !isProgressChoiceCurrent(update)) {
                         update.acknowledgement?.complete(false)
                         if (update.thresholdAttempt) watchedQueued.remove(key)
+                        discardLocalCompletion(update)
                         continue
                     }
                     var positionFailed = false
@@ -416,9 +420,11 @@ class NativePlayerActivity : AppCompatActivity() {
                             var committed = true
                             try {
                                 retryPlaybackProgress {
-                                    ensureProgressAuthentication(update)
-                                    client.saveProgress(update.spec, update.position, update.duration, update.state, update.watched,
-                                        completionEligible = update.completionEligible)
+                                    PlaybackCompletionSignals.withWatchMutation {
+                                        ensureProgressAuthentication(update)
+                                        client.saveProgress(update.spec, update.position, update.duration, update.state, update.watched,
+                                            completionEligible = update.completionEligible)
+                                    }
                                 }
                                 if (update.state == "completed" && playbackAuthentication.isCurrent(update.authenticationEpoch))
                                     PlaybackCompletionSignals.notifyChanged()
@@ -432,15 +438,22 @@ class NativePlayerActivity : AppCompatActivity() {
                             if (update.completionEligible) {
                                 try {
                                     retryPlaybackProgress {
-                                        ensureProgressAuthentication(update)
-                                        client.markPlaybackWatched(update.spec.copy(durationMs = update.duration))
+                                        PlaybackCompletionSignals.withWatchMutation {
+                                            ensureProgressAuthentication(update)
+                                            client.markPlaybackWatched(update.spec.copy(durationMs = update.duration))
+                                        }
                                     }
-                                    if (playbackAuthentication.isCurrent(update.authenticationEpoch) && watchedConfirmed.add(key)) {
-                                        val item = update.spec.sourceItem?.takeIf { it.id == update.spec.itemId &&
-                                            it.libraryId == update.spec.libraryId && it.viewItemId == update.spec.viewItemId }
-                                        PlaybackCompletionSignals.confirm(update.accountScope, item,
-                                            update.privateGrantRevision, update.choiceRevision)
-                                        PlaybackCompletionSignals.notifyChanged()
+                                    if (playbackAuthentication.isCurrent(update.authenticationEpoch) && isProgressChoiceCurrent(update)) {
+                                        // The watch write can succeed even when the position write failed.
+                                        // Resolve every receipt, including repeated EOF snapshots.
+                                        PlaybackCompletionSignals.acknowledgeLocal(update.localCompletionSequence)
+                                        if (watchedConfirmed.add(key)) {
+                                            val item = update.spec.sourceItem?.takeIf { it.id == update.spec.itemId &&
+                                                it.libraryId == update.spec.libraryId && it.viewItemId == update.spec.viewItemId }
+                                            PlaybackCompletionSignals.confirm(update.accountScope, item,
+                                                update.privateGrantRevision, update.choiceRevision)
+                                            PlaybackCompletionSignals.notifyChanged()
+                                        }
                                     }
                                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                                     throw cancel
@@ -448,6 +461,8 @@ class NativePlayerActivity : AppCompatActivity() {
                                     completionFailed = true
                                     logProgressFailure(PlaybackProgressFailureStage.COMPLETION, error)
                                     if (playbackAuthentication.isCurrent(update.authenticationEpoch)) watchedConfirmed.remove(key)
+                                    PlaybackCompletionSignals.failLocal(update.localCompletionSequence,
+                                        showFailure = playbackAuthentication.isCurrent(update.authenticationEpoch) && isProgressChoiceCurrent(update))
                                     committed = false
                                 }
                             }
@@ -460,14 +475,15 @@ class NativePlayerActivity : AppCompatActivity() {
                     val saved = try {
                         delivery.await()
                     } catch (cancel: kotlinx.coroutines.CancellationException) {
-                        if (playbackAuthentication.isCurrent(update.authenticationEpoch)) throw cancel
+                        if (playbackAuthentication.isCurrent(update.authenticationEpoch) && isProgressChoiceCurrent(update)) throw cancel
                         update.acknowledgement?.complete(false)
                         false
                     } finally {
                         if (progressDeliveryJob === delivery) progressDeliveryJob = null
                         if (update.thresholdAttempt) watchedQueued.remove(key)
+                        discardLocalCompletion(update)
                     }
-                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch)) continue
+                    if (!playbackAuthentication.isCurrent(update.authenticationEpoch) || !isProgressChoiceCurrent(update)) continue
                     if (saved) syncErrorShown = null
                     else {
                         val message = playbackProgressFailureMessage(positionFailed, completionFailed)
@@ -480,7 +496,14 @@ class NativePlayerActivity : AppCompatActivity() {
                         }
                     }
                 }
-            } finally { progressScope.cancel() }
+            } finally {
+                updates.close()
+                // Normal activity destruction lets this writer drain. Only a finished
+                // or cancelled writer withdraws any receipts it could not deliver.
+                PlaybackCompletionSignals.discardLocals(localCompletionReceipts.toList())
+                localCompletionReceipts.clear()
+                progressScope.cancel()
+            }
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -3069,15 +3092,33 @@ class NativePlayerActivity : AppCompatActivity() {
         val reached = completionGates[key]?.eligible == true || key in watchedReached
         if (reached) watchedReached.add(key)
         val firstThreshold = reached && key !in watchedConfirmed && watchedQueued.add(key)
-        val accepted = updates.submit(update.copy(thresholdAttempt = firstThreshold, completionEligible = reached,
+        val snapshot = update.copy(thresholdAttempt = firstThreshold, completionEligible = reached,
             authenticationEpoch = epoch, accountScope = PlaybackCompletionSignals.scope(client.server, client.token),
             privateGrantRevision = if (update.spec.sourceItem?.isSpoiler == true) SpoilerAccessRegistry.changes.value else null,
-            choiceRevision = PlaybackCompletionSignals.choiceRevision()),
-            important = firstThreshold || update.acknowledgement != null || update.state in setOf("stopped", "completed"),
-            supersedes = if (firstThreshold || update.state == "completed") { older ->
-                update.spec.sessionId != null && older.authenticationEpoch == epoch && older.spec.sessionId == update.spec.sessionId &&
-                    watchedKey(older.spec) == key
-            } else null)
+            // Activity teardown can enqueue the same EOF after a manual menu choice.
+            // All writes from this playback retain the choice revision first captured.
+            choiceRevision = progressChoiceRevisions.getOrPut(key) { PlaybackCompletionSignals.choiceRevision() })
+        fun enqueue(sequence: Long?): Boolean {
+            if (!playbackAuthentication.isCurrent(epoch)) {
+                update.acknowledgement?.complete(false)
+                return false
+            }
+            if (sequence != null) localCompletionReceipts.add(sequence)
+            val accepted = updates.submit(snapshot.copy(localCompletionSequence = sequence),
+                important = firstThreshold || update.acknowledgement != null || update.state in setOf("stopped", "completed"),
+                supersedes = if (firstThreshold || update.state == "completed") { older ->
+                    update.spec.sessionId != null && older.authenticationEpoch == epoch && older.spec.sessionId == update.spec.sessionId &&
+                        watchedKey(older.spec) == key
+                } else null)
+            if (!accepted && sequence != null) localCompletionReceipts.remove(sequence)
+            return accepted
+        }
+        val accepted = if (update.state == "completed" && reached) {
+            val item = update.spec.sourceItem?.takeIf { it.id == update.spec.itemId &&
+                it.libraryId == update.spec.libraryId && it.viewItemId == update.spec.viewItemId }
+            PlaybackCompletionSignals.acceptPending(snapshot.accountScope, item,
+                snapshot.privateGrantRevision, snapshot.choiceRevision, ::enqueue)
+        } else enqueue(null)
         if (!accepted && firstThreshold) watchedQueued.remove(key)
         // Presence is optional and must never block progress recording or playback.
         if (accepted && ::spec.isInitialized && samePlaybackPresenceSource(update.spec, spec) &&
@@ -3087,10 +3128,20 @@ class NativePlayerActivity : AppCompatActivity() {
         return accepted
     }
 
+    private fun discardLocalCompletion(update: ProgressUpdate) {
+        PlaybackCompletionSignals.discardLocal(update.localCompletionSequence)
+        update.localCompletionSequence?.let(localCompletionReceipts::remove)
+    }
+
+    private fun isProgressChoiceCurrent(update: ProgressUpdate): Boolean =
+        PlaybackCompletionSignals.isChoiceCurrent(update.accountScope, update.spec.sourceItem, update.choiceRevision)
+
     private suspend fun ensureProgressAuthentication(update: ProgressUpdate) {
         currentCoroutineContext().ensureActive()
         if (!playbackAuthentication.isCurrent(update.authenticationEpoch))
             throw kotlinx.coroutines.CancellationException("Playback authentication changed")
+        if (!isProgressChoiceCurrent(update))
+            throw kotlinx.coroutines.CancellationException("A newer manual watch choice superseded playback")
     }
 
     private fun finishCompletedPlayback() {

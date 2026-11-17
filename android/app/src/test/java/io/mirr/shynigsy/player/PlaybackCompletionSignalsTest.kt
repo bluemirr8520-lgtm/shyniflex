@@ -4,6 +4,11 @@ import io.mirr.shynigsy.data.MediaItem
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -46,5 +51,39 @@ class PlaybackCompletionSignalsTest {
             assertEquals(sequences.sorted(), sequences)
             assertEquals(16, sequences.distinct().size)
         } finally { executor.shutdownNow() }
+    }
+
+    @Test fun manualChoiceCommitsAfterAnInflightWriteAndSupersedesOlderQueuedWrites() = runBlocking {
+        val item = MediaItem(2141, 28, "fixture", "episode", viewItemId = 2051)
+        val scope = "ordered-manual-choice-fixture"
+        val oldRevision = PlaybackCompletionSignals.choiceRevision()
+        val releaseActive = CompletableDeferred<Unit>()
+        val order = mutableListOf<String>()
+        val active = async(start = CoroutineStart.UNDISPATCHED) {
+            PlaybackCompletionSignals.withWatchMutation {
+                assertTrue(PlaybackCompletionSignals.isChoiceCurrent(scope, item, oldRevision))
+                order += "active-start"
+                releaseActive.await()
+                order += "active-committed"
+            }
+        }
+        // The manual fence is recorded before waiting for the active HTTP write.
+        PlaybackCompletionSignals.invalidateForManualChoice(scope, item)
+        val manual = async(start = CoroutineStart.UNDISPATCHED) {
+            PlaybackCompletionSignals.withWatchMutation { order += "manual-unwatched" }
+        }
+        val queued = async(start = CoroutineStart.UNDISPATCHED) {
+            PlaybackCompletionSignals.withWatchMutation {
+                if (PlaybackCompletionSignals.isChoiceCurrent(scope, item, oldRevision))
+                    order += "stale-watch-write"
+                else order += "stale-skipped"
+            }
+        }
+        assertEquals(listOf("active-start"), order)
+        releaseActive.complete(Unit)
+        withTimeout(2_000) { active.await(); manual.await(); queued.await() }
+        assertEquals(listOf("active-start", "active-committed", "manual-unwatched", "stale-skipped"), order)
+        assertTrue(PlaybackCompletionSignals.isChoiceCurrent(scope,
+            item.copy(id = 2142, viewItemId = 2052), oldRevision))
     }
 }

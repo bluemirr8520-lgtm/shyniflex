@@ -6,7 +6,8 @@ internal data class ResolutionFolder(val key: String, val label: String, val ver
 
 /** UI folders preserve the authorized version rows and their server preference order. */
 internal fun resolutionFolders(versions: List<MediaVersion>): List<ResolutionFolder> =
-    versions.groupBy { version -> explicitResolutionHeight(version.resolution) ?: explicitResolutionHeight(version.label) }
+    versions.filter { it.partId > 0 }.distinctBy { it.partId }
+        .groupBy { version -> explicitResolutionHeight(version.resolution) ?: explicitResolutionHeight(version.label) }
         .entries.sortedWith(compareByDescending<Map.Entry<Int?, List<MediaVersion>>> { it.key ?: -1 })
         .map { (height, rows) ->
             ResolutionFolder(height?.let { "${it}p" } ?: "unknown", when (height) {
@@ -16,6 +17,20 @@ internal fun resolutionFolders(versions: List<MediaVersion>): List<ResolutionFol
                 else -> "${height}p"
             }, rows)
         }
+
+internal data class ResolutionPlaybackPlan(val partId: Int?, val needsChoice: Boolean)
+
+/** One resolution needs no prompt, even when the server offers several encodes of it. */
+internal fun resolutionPlaybackPlan(versions: List<MediaVersion>, selectedPartId: Int?): ResolutionPlaybackPlan {
+    val folders = resolutionFolders(versions)
+    if (folders.size == 1) return ResolutionPlaybackPlan(folders.single().versions.first().partId, needsChoice = false)
+    val selected = selectedPartId?.takeIf { id -> folders.any { folder -> folder.versions.any { it.partId == id } } }
+    if (selected != null) return ResolutionPlaybackPlan(selected, needsChoice = false)
+    return when (folders.size) {
+        0 -> ResolutionPlaybackPlan(null, needsChoice = false) // Older servers may supply only a playback decision.
+        else -> ResolutionPlaybackPlan(null, needsChoice = true)
+    }
+}
 
 private val ResolutionDimensions = Regex("""(?i)^([1-9][0-9]{1,4})\s*[x×]\s*([1-9][0-9]{1,4})$""")
 private val ResolutionHeight = Regex("""(?i)^([1-9][0-9]{1,4})[pi]$""")

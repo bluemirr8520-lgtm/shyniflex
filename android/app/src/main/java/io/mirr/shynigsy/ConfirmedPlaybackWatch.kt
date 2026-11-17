@@ -3,6 +3,24 @@ package io.mirr.shynigsy
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaWatchState
 import io.mirr.shynigsy.player.PlaybackCompletionSignals.ConfirmedWatch
+import io.mirr.shynigsy.player.PlaybackCompletionSignals.LocalCompletion
+import io.mirr.shynigsy.player.PlaybackCompletionSignals.LocalCompletionStatus
+
+/** Pending state is memory-only and belongs to the exact account, choice and private grant. */
+internal fun isCurrentLocalPlaybackCompletion(
+    event: LocalCompletion, scope: String?, choiceCurrent: Boolean, grantRevision: Long,
+    spoilerUnlocked: Boolean, nowNanos: Long = System.nanoTime(),
+): Boolean = scope != null && event.scope == scope && choiceCurrent &&
+    nowNanos >= event.createdNanos && nowNanos < event.expiresNanos &&
+    (!event.item.isSpoiler || (spoilerUnlocked && event.grantRevision == grantRevision))
+
+/** Derive visible state without promoting a pending receipt into the stored server snapshot. */
+internal fun applyLocalPlaybackCompletions(
+    state: AppState, events: Collection<LocalCompletion>, current: (LocalCompletion) -> Boolean,
+): AppState = events.fold(state) { previous, event ->
+    if (event.status != LocalCompletionStatus.FAILED && current(event)) applyConfirmedPlaybackWatch(previous, event.item)
+    else previous
+}
 
 /** A short-lived acknowledgement is not valid across accounts, grants or manual choices. */
 internal fun isCurrentPlaybackConfirmation(
@@ -35,6 +53,7 @@ internal fun applyConfirmedPlaybackWatch(state: AppState, target: MediaItem): Ap
         watched = true, resumeMs = 0, watchState = MediaWatchState.WATCHED) else candidate
     return state.copy(items = state.items.map(::updated), searchItems = state.searchItems.map(::updated),
         recentItems = state.recentItems.map(::updated), continueItems = state.continueItems.filterNot(::matches),
+        continueDetails = state.continueDetails?.takeUnless(::matches),
         detailStack = state.detailStack.map { detail -> detail.copy(item = updated(detail.item),
             children = detail.children.map(::updated), seasons = detail.seasons.map(::updated)) },
         detailDiscovery = state.detailDiscovery.mapValues { (_, detail) -> detail.copy(

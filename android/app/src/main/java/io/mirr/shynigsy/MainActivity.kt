@@ -83,6 +83,11 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PlaybackCompletionSignals.presentation.collect { model.acceptPlaybackCompletionFailures(it) }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaybackCompletionSignals.changes.combine(model.state) { revision, state -> revision to state }
                     .collect { (revision, state) ->
                     // A late progress commit must not wait behind the recent catalog.

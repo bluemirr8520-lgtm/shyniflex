@@ -13,7 +13,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -55,6 +57,7 @@ data class AppState(
     val detailStack: List<MediaDetails> = emptyList(),
     val versions: List<MediaVersion> = emptyList(),
     val selectedPartId: Int? = null,
+    val playbackResolution: PlaybackResolutionChoice? = null,
     val totpChallenge: String? = null,
     val tvQrLogin: TvQrLoginState = TvQrLoginState(),
     val tvLoginApproval: TvLoginApprovalState? = null,
@@ -114,7 +117,8 @@ internal fun selectedVersionForPlayback(state: AppState, item: MediaItem): Int? 
     val detail = state.detailStack.lastOrNull()?.item ?: return null
     return state.selectedPartId.takeIf {
         detail.playable && detail.id == item.id && detail.libraryId == item.libraryId &&
-            detail.viewItemId == item.viewItemId && detail.type == item.type
+            detail.viewItemId == item.viewItemId && detail.type == item.type && detail.isSpoiler == item.isSpoiler &&
+            it != null && it > 0 && state.versions.any { version -> version.partId == it }
     }
 }
 
@@ -148,6 +152,7 @@ internal fun withoutSpoilerContent(state: AppState): AppState {
             .filterValues { !it.parent.isSpoiler }.mapValues { it.value.withoutPrivateWorks() },
         versions = if (privateScreen) emptyList() else state.versions,
         selectedPartId = if (privateScreen) null else state.selectedPartId,
+        playbackResolution = null,
         query = if (privateScreen) "" else state.query,
         playback = state.playback?.takeUnless { it.sourceItem?.isSpoiler == true }, busy = false,
         completedEpisodePending = null,
@@ -173,7 +178,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val deviceName by lazy { deviceDisplayName(android.os.Build.MANUFACTURER, android.os.Build.MODEL, application.isTelevision()) }
     private val initialState = AppState(server = initialServerAddress(settings.getString("server", null), null))
     private val mutableState = MutableStateFlow(initialState.copy(restoringSession = true))
-    val state: StateFlow<AppState> = mutableState.asStateFlow()
+    // Pending completion is presentation only: persisted Home data still uses mutableState.
+    val state: StateFlow<AppState> = combine(mutableState, PlaybackCompletionSignals.presentation,
+        SpoilerAccessRegistry.changes) { base, receipts, grant ->
+        val active = client
+        val scope = active?.let { PlaybackCompletionSignals.scope(it.server, it.token) }
+        applyLocalPlaybackCompletions(base, receipts) { event ->
+            base.loggedIn && isCurrentLocalPlaybackCompletion(event, scope,
+                PlaybackCompletionSignals.isChoiceCurrent(event.scope, event.item, event.choiceRevision),
+                grant, base.spoilerUnlocked && active?.spoilerUnlocked == true)
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, mutableState.value)
     private var client: ShyniClient? = null
     private var requestJob: Job? = null
     private var tvQrLoginJob: Job? = null
@@ -204,9 +219,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var selectedContinueIdentity: ContinueIdentity? = null
     private var playbackOwner: HomeContinueOwner? = null
     private var playbackGrantRevision: Long? = null
+    private data class PendingResolutionRequest(
+        val choice: PlaybackResolutionChoice,
+        val owner: HomeContinueOwner,
+        val revision: Int,
+        val grant: Long,
+        val source: PlaybackSelectionSource,
+    )
+    private var pendingResolutionRequest: PendingResolutionRequest? = null
+    private var detailVersionsOwner: HomeContinueOwner? = null
+    private var detailVersionsIdentity: ContinueIdentity? = null
+    private var detailVersionsGrant: Long? = null
+    private var detailVersionsSnapshot: List<MediaVersion>? = null
     private val continueDetailsCache = linkedMapOf<ContinueIdentity, MediaItem>()
     private val collectionWatch = linkedMapOf<ContinueIdentity, Pair<MediaItem, Boolean>>()
     private var lastPlaybackConfirmation = 0L
+    private val reportedCompletionFailures = linkedSetOf<Long>()
     private val confirmedPlaybackWatches = linkedMapOf<Long, PlaybackCompletionSignals.ConfirmedWatch>()
 
     internal fun applyConfirmedPlaybackWatch(state: AppState): AppState {
@@ -236,6 +264,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             changed = true
         }
         if (changed) saveHomeSnapshot()
+    }
+
+    fun acceptPlaybackCompletionFailures(events: List<PlaybackCompletionSignals.LocalCompletion>) {
+        val active = client ?: return
+        val base = mutableState.value
+        if (!base.loggedIn) return
+        val scope = PlaybackCompletionSignals.scope(active.server, active.token)
+        val failed = events.filter { event ->
+            event.status == PlaybackCompletionSignals.LocalCompletionStatus.FAILED &&
+                event.sequence !in reportedCompletionFailures &&
+                isCurrentLocalPlaybackCompletion(event, scope,
+                    PlaybackCompletionSignals.isChoiceCurrent(event.scope, event.item, event.choiceRevision),
+                    SpoilerAccessRegistry.changes.value, base.spoilerUnlocked && active.spoilerUnlocked)
+        }
+        if (failed.isEmpty()) return
+        reportedCompletionFailures.addAll(failed.map { it.sequence })
+        while (reportedCompletionFailures.size > 32) reportedCompletionFailures.remove(reportedCompletionFailures.first())
+        mutableState.update { it.copy(error = "시청 완료 상태를 서버에 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.") }
     }
     private var privateViewOwner: HomeContinueOwner? = null
     private val knownPrivateViewIds = mutableSetOf<Int>()
@@ -378,6 +424,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun launchRequest(keepCompletedEpisodePending: Boolean = false, block: suspend () -> Unit) {
+        dismissPlaybackResolution()
         requestJob?.cancel()
         val current = ++revision
         mutableState.update { it.copy(busy = true, restoringSession = false, error = null, homeLoading = false, searchHydrating = false,
@@ -1152,6 +1199,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun clearSpoilerUi() {
         cancelRecentRetries()
         cancelDetailDiscoveryJobs()
+        detailVersionsOwner = null
+        detailVersionsIdentity = null
+        detailVersionsGrant = null
+        detailVersionsSnapshot = null
         spoilerJob?.cancel(); spoilerJob = null; spoilerRevision++
         spoilerExpiryJob?.cancel(); spoilerExpiryJob = null
         requestJob?.cancel(); revision++
@@ -1163,6 +1214,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun cancelDetailDiscoveryJobs(clear: Boolean = false) {
+        dismissPlaybackResolution()
         relatedWorksRevision++; actorWorksRevision++
         relatedWorksJob?.cancel(); relatedWorksJob = null
         actorWorksJob?.cancel(); actorWorksJob = null
@@ -1615,8 +1667,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(detailStack = it.detailStack.dropLast(1) + detail, busy = false) }
             loadDetailDiscovery(active, detail)
             if (detail.item.playable) {
-                val versions = active.versions(detail.item)
-                mutableState.update { it.copy(versions = versions) }
+                loadDetailVersions(active, detail.item)
             }
         }
     }
@@ -1647,7 +1698,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun selectVersion(partId: Int?) { mutableState.update { it.copy(selectedPartId = partId) } }
+    fun selectVersion(partId: Int?) {
+        if (partId == null || partId <= 0 || mutableState.value.versions.none { it.partId == partId }) return
+        dismissPlaybackResolution()
+        mutableState.update { it.copy(selectedPartId = partId) }
+    }
+
+    private suspend fun loadDetailVersions(active: ShyniClient, item: MediaItem) {
+        val owner = HomeContinueOwner(active, active.token)
+        val grant = SpoilerAccessRegistry.changes.value
+        val requestRevision = revision
+        val versions = active.versions(item)
+        currentCoroutineContext().ensureActive()
+        if (active !== client || !owner.matches(active, active.token) || !mutableState.value.loggedIn ||
+            requestRevision != revision || grant != SpoilerAccessRegistry.changes.value ||
+            mutableState.value.detailStack.lastOrNull()?.item?.let(::continueIdentity) != continueIdentity(item) ||
+            (item.isSpoiler && !active.spoilerUnlocked)) return
+        detailVersionsOwner = owner
+        detailVersionsIdentity = continueIdentity(item)
+        detailVersionsGrant = grant
+        detailVersionsSnapshot = versions
+        mutableState.update { it.copy(versions = versions,
+            selectedPartId = it.selectedPartId?.takeIf { id -> versions.any { version -> version.partId == id } }) }
+    }
 
     /** Supplemental file metadata never blocks opening the title or starting playback. */
     internal suspend fun detailFileInformation(item: MediaItem, partId: Int?): List<MediaFileInfo> {
@@ -1688,10 +1761,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelDetailDiscoveryJobs()
         launchRequest {
             val changed = try {
-                if (item.playable) {
-                    active.setWatched(item, watched)
-                    listOf(item.copy(watched = watched, resumeMs = 0))
-                } else active.setCollectionWatched(item, watched)
+                PlaybackCompletionSignals.withWatchMutation {
+                    if (client !== active || watchScope != PlaybackCompletionSignals.scope(active.server, active.token) ||
+                        !mutableState.value.loggedIn || (item.isSpoiler && !active.spoilerUnlocked))
+                        throw CancellationException("시청 상태 변경 계정이 바뀌었습니다.")
+                    if (item.playable) {
+                        active.setWatched(item, watched)
+                        listOf(item.copy(watched = watched, resumeMs = 0))
+                    } else active.setCollectionWatched(item, watched)
+                }
             } catch (error: Exception) {
                 if (!item.playable) {
                     val previous = collectionWatch.keys.toSet()
@@ -1744,7 +1822,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestPlayback(item, startOver, selectedVersionForPlayback(snapshot, item), navigationQueryForPlayback(snapshot, item))
     }
 
-    /** Home posters resume immediately; a previous detail screen's version is irrelevant. */
+    /** Home posters never inherit a different detail screen's file selection. */
     fun playContinue(item: MediaItem) {
         requestPlayback(item, startOver = false, partId = null, navigationQuery = "")
     }
@@ -1758,13 +1836,72 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         continueDetailsJob?.cancel()
         continueDetailsJob = null
         continueDetailsRevision++
-        launchRequest {
-            val resolved = active.playback(item, partId, deferSubtitles = true)
-            val playback = resolved.copy(sourceItem = resolved.sourceItem ?: item, navigationQuery = navigationQuery)
-            playbackOwner = HomeContinueOwner(active, active.token)
-            playbackGrantRevision = SpoilerAccessRegistry.changes.value
-            mutableState.update { it.copy(playback = if (startOver) playback.copy(resumeMs = 0) else playback) }
+        val cachedVersions = snapshot.versions.takeIf {
+            it.isNotEmpty() && it === detailVersionsSnapshot &&
+                snapshot.detailStack.lastOrNull()?.item?.let(::continueIdentity) == continueIdentity(item) &&
+                detailVersionsIdentity == continueIdentity(item) && detailVersionsOwner?.matches(active, active.token) == true &&
+                detailVersionsGrant == SpoilerAccessRegistry.changes.value
         }
+        launchRequest {
+            val owner = HomeContinueOwner(active, active.token)
+            val requestRevision = revision
+            val grant = SpoilerAccessRegistry.changes.value
+            val source = playbackSelectionSource(mutableState.value)
+            fun current() = playbackSelectionCurrent(owner, requestRevision, grant, source, item)
+            val versions = cachedVersions ?: active.versions(item)
+            currentCoroutineContext().ensureActive()
+            if (!current()) return@launchRequest
+            val plan = resolutionPlaybackPlan(versions, partId)
+            if (plan.needsChoice) {
+                val choice = PlaybackResolutionChoice(item, versions.filter { it.partId > 0 }.distinctBy { it.partId }, startOver, navigationQuery)
+                pendingResolutionRequest = PendingResolutionRequest(choice, owner, requestRevision, grant, source)
+                mutableState.update { it.copy(playbackResolution = choice) }
+            } else resolveSelectedPlayback(active, item, plan.partId, startOver, navigationQuery, ::current)
+        }
+    }
+
+    private fun playbackSelectionCurrent(owner: HomeContinueOwner, requestRevision: Int, grant: Long,
+        source: PlaybackSelectionSource, item: MediaItem): Boolean {
+        val active = client ?: return false
+        val snapshot = mutableState.value
+        return owner.matches(active, active.token) && snapshot.loggedIn && requestRevision == revision &&
+            grant == SpoilerAccessRegistry.changes.value && source == playbackSelectionSource(snapshot) &&
+            (!item.isSpoiler || (snapshot.spoilerUnlocked && active.spoilerUnlocked))
+    }
+
+    fun dismissPlaybackResolution() {
+        pendingResolutionRequest = null
+        mutableState.update { if (it.playbackResolution == null) it else it.copy(playbackResolution = null) }
+    }
+
+    fun selectPlaybackResolution(partId: Int) {
+        val pending = pendingResolutionRequest ?: return
+        val choice = pending.choice
+        val active = client ?: return
+        if (mutableState.value.playbackResolution !== choice || partId <= 0 || choice.versions.none { it.partId == partId } ||
+            !playbackSelectionCurrent(pending.owner, pending.revision, pending.grant, pending.source, choice.item)) {
+            dismissPlaybackResolution()
+            return
+        }
+        launchRequest {
+            val requestRevision = revision
+            fun current() = playbackSelectionCurrent(pending.owner, requestRevision, pending.grant, pending.source, choice.item)
+            if (current()) resolveSelectedPlayback(active, choice.item, partId, choice.startOver, choice.navigationQuery, ::current)
+        }
+    }
+
+    private suspend fun resolveSelectedPlayback(active: ShyniClient, item: MediaItem, partId: Int?, startOver: Boolean,
+        navigationQuery: String, current: () -> Boolean) {
+        val resolved = active.playback(item, partId, deferSubtitles = true)
+        currentCoroutineContext().ensureActive()
+        if (!current()) return
+        if (partId != null && resolved.partId != partId) {
+            throw ApiException("선택한 해상도의 파일이 변경되었습니다. 목록을 다시 불러오세요.", 403)
+        }
+        val playback = resolved.copy(sourceItem = resolved.sourceItem ?: item, navigationQuery = navigationQuery)
+        playbackOwner = HomeContinueOwner(active, active.token)
+        playbackGrantRevision = SpoilerAccessRegistry.changes.value
+        mutableState.update { it.copy(playback = if (startOver) playback.copy(resumeMs = 0) else playback) }
     }
 
     fun consumePlayback() { mutableState.update { it.copy(playback = null) } }
@@ -1864,6 +2001,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun searchAll(query: String) {
         val active = client ?: return
         if (!mutableState.value.loggedIn || !mutableState.value.searchOpen) return
+        dismissPlaybackResolution()
         val normalized = query.trim()
         mutableState.update { it.copy(searchQuery = normalized, searchItems = emptyList(), searchFailureCount = 0, searchHydrating = false,
             detailStack = emptyList(), versions = emptyList(), selectedPartId = null) }
@@ -1991,8 +2129,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     mutableState.update { reconcile(it.copy(detailStack = it.detailStack.dropLast(1) + detail)) }
                     loadDetailDiscovery(active, detail, reconcile)
                     if (item.playable) {
-                        val versions = active.versions(item)
-                        mutableState.update { it.copy(versions = versions) }
+                        loadDetailVersions(active, item)
                     }
                 } else if (snapshot.searchOpen) loadSearch(active, snapshot.searchQuery, reconcile)
                 else snapshot.library?.let { library ->

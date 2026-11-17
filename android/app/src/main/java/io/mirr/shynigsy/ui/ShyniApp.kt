@@ -125,6 +125,7 @@ import io.mirr.shynigsy.data.LibraryOrderStore
 import io.mirr.shynigsy.data.applyLibraryOrder
 import io.mirr.shynigsy.data.libraryOrderScope
 import io.mirr.shynigsy.data.moveVisibleLibraryOrder
+import io.mirr.shynigsy.data.resolutionFolders
 
 private val AppBackground: Color @Composable get() = MaterialTheme.colorScheme.background
 private val Panel: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainer
@@ -336,6 +337,11 @@ fun ShyniApp(
                     LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 }
             }
+        }
+        if (state.loggedIn) state.playbackResolution?.let { pending ->
+            ResolutionPlaybackDialog(pending.item.title, pending.versions, enabled = !state.busy,
+                onSelect = viewModel::selectPlaybackResolution, onDismiss = viewModel::dismissPlaybackResolution,
+                television = tv)
         }
         if (state.loggedIn) state.tvLoginApproval?.let { pending ->
             TvLoginApprovalDialog(pending, accountServer = state.server, userName = state.userName,
@@ -938,7 +944,7 @@ private fun DetailScreen(
         }
         if (error != null) item { ErrorMessage(error) }
         if (item.playable) {
-            if (versions.isNotEmpty()) item {
+            if (resolutionFolders(versions).size > 1) item {
                 ResolutionFolderSelector(versions, selectedPart, enabled = !busy, onSelect = viewModel::selectVersion)
             }
             item {

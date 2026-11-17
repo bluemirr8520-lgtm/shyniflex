@@ -48,7 +48,7 @@ internal fun watchIdentitiesConflict(a: WatchIdentity, b: WatchIdentity): Boolea
     return a.id == b.id
 }
 
-/** Ignore stale UI confirmations only; server write ordering remains unchanged. */
+/** Fence stale display receipts and queued writes after a newer manual choice. */
 internal class PlaybackWatchChoiceEpoch {
     private val lock = Any()
     private val choices = mutableMapOf<WatchIdentity, Long>()
