@@ -43,6 +43,16 @@ class DeferredSubtitleSelectionTest {
         assertNull(deferredSubtitleSelection(prefetched, null, null, true, true, false, true))
     }
 
+    @Test fun prefetchedEmbeddedTextDoesNotOverrideExternalSelectionOrDisabledState() {
+        val embedded = SubtitleTrack(3, "내장 한국어", "https://test.invalid/3", language = "ko",
+            source = "embedded", format = "subrip", streamIndex = 4)
+        val preloaded = spec.copy(subtitles = listOf(embedded, english), subtitlesPending = false,
+            selectedSubtitleId = embedded.id)
+        assertEquals(embedded, deferredSubtitleSelection(preloaded, null, null, true, false, false, true))
+        assertEquals(english, deferredSubtitleSelection(preloaded, english.id, null, true, true, false, true))
+        assertNull(deferredSubtitleSelection(preloaded, null, null, false, true, false, true))
+    }
+
     @Test fun oldResultsCannotCrossPlaybackOrAuthorizationChanges() {
         val pending = spec.copy(subtitlesPending = true, sessionId = "session", progressToken = "grant")
         assertTrue(sameDeferredSubtitleSource(pending, pending))

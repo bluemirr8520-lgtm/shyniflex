@@ -25,7 +25,7 @@ class MpvEngineOptionsTest {
                 assertEquals("Automatic decoder fallback must be configured", 3, MPVLib.getPropertyInt("options/hwdec-software-fallback"))
                 val count = (MPVLib.getPropertyInt("decoder-list/count") ?: 0).coerceIn(0, 4096)
                 val codecs = (0 until count).mapNotNull { MPVLib.getPropertyString("decoder-list/$it/codec") }.toSet()
-                for (codec in listOf("h264", "hevc", "av1", "vp9", "vvc"))
+                for (codec in listOf("h264", "hevc", "av1", "vp9", "vvc", "wmv1", "wmv2", "wmv3", "vc1", "wmav1", "wmav2", "wmapro", "wmalossless"))
                     assertTrue("The bundled FFmpeg must include the $codec decoder", codec in codecs)
                 File(context.getExternalFilesDir(null), "mpv-codec-inventory.txt").writeText(
                     "MPV: ${MPVLib.getPropertyString("mpv-version")}\nThreads: $threads\nForward cache: $forward\nBack cache: $backward\nDecoders:\n" + codecs.sorted().joinToString("\n"))

@@ -54,6 +54,16 @@ class PlaybackSubtitleInspectionTest {
             listOf(embedded, embedded.copy(id = 8, streamIndex = 5, format = "tx3g"))))
     }
 
+    @Test fun acceptsSingleIdentifiedEmbeddedSubripAndWebvttButNotMismatches() {
+        for (format in listOf("srt", "subrip", "vtt", "webvtt")) {
+            val embedded = SubtitleTrack(7, "embedded", "https://example.invalid/sub", source = "embedded", streamIndex = 4, format = format)
+            val raw = JSONArray("""[{"id":7,"source":"embedded","format":"$format","stream_index":4}]""")
+            assertTrue(areRawSubtitlesSafeForExo(raw, listOf(embedded)))
+            assertFalse(areRawSubtitlesSafeForExo(raw, listOf(embedded.copy(format = "mov_text"))))
+            assertFalse(areRawSubtitlesSafeForExo(raw, listOf(embedded.copy(streamIndex = 5))))
+        }
+    }
+
     @Test fun inspectionReusesOneAuthorizedRequestAndLeavesOrdinaryContractIntact() = runBlocking {
         val server = MockWebServer(); server.start()
         try {

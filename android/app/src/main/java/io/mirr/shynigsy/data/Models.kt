@@ -190,6 +190,9 @@ data class PlaybackSpec(
     val aacConversionContext: Boolean = false,
     /** Subtitle metadata is being loaded after the player starts. */
     val subtitlesPending: Boolean = false,
+    /** Format observations for the exact part selected by playback/decision. */
+    val sourceContainer: String? = null,
+    val sourceVideoCodec: String? = null,
 ) {
     /** Show the work name in playback controls while keeping the episode's own metadata intact. */
     val controllerTitle: String
@@ -224,6 +227,7 @@ data class PlaybackSpec(
         put("markers", JSONArray(markers.map { it.asJson() }))
         put("selectedAudioCodec", selectedAudioCodec); put("aacConversionContext", aacConversionContext)
         put("subtitlesPending", subtitlesPending)
+        put("sourceContainer", sourceContainer); put("sourceVideoCodec", sourceVideoCodec)
     }.toString()
 
     companion object {
@@ -262,6 +266,8 @@ data class PlaybackSpec(
                 selectedAudioCodec = json.stringOrNull("selectedAudioCodec"),
                 aacConversionContext = json.opt("aacConversionContext") == true,
                 subtitlesPending = json.opt("subtitlesPending") == true,
+                sourceContainer = json.stringOrNull("sourceContainer"),
+                sourceVideoCodec = json.stringOrNull("sourceVideoCodec"),
             )
         }
     }

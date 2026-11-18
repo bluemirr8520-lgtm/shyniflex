@@ -41,7 +41,7 @@ class AutomaticEngineSelectionTest {
         assertFalse(isSafeExoHeaderProbe(info, header.copy(audioProfile = "HE-AAC"), emptyList()))
         val subtitle = SubtitleTrack(9, "한국어", "https://example.invalid/sub", source = "embedded", format = "mov_text", streamIndex = 4)
         assertFalse(isSafeExoHeaderProbe(info, header, listOf(subtitle)))
-        assertTrue(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 4), listOf(subtitle)))
+        assertTrue(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 4, subtitleCodec = "mov_text"), listOf(subtitle)))
         assertFalse(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 5), listOf(subtitle)))
         assertFalse(isSafeExoHeaderProbe(info, header.copy(subtitleStreamIndex = 4), emptyList()))
         // The previous decoded path still requires independent decoded color/profile evidence.
@@ -112,7 +112,7 @@ class AutomaticEngineSelectionTest {
 
     @Test fun embeddedMovTextRequiresMatchingNativeIndexAndSingleSupportedExoTrack() {
         val text = SubtitleTrack(9, "한국어", "https://example.invalid/sub", source = "embedded", format = "mov_text", streamIndex = 4)
-        val verified = probe.copy(tracks = probe.tracks.copy(subtitleStreamIndex = 4))
+        val verified = probe.copy(tracks = probe.tracks.copy(subtitleStreamIndex = 4, subtitleCodec = "mov_text"))
         assertTrue(isPotentialExoCandidate(spec.copy(selectedSubtitleId = 9), info.copy(subtitleFormats = listOf("tx3g")), listOf(text), true))
         assertTrue(isSafeExoProbe(info, verified, supported, listOf(text)))
         assertFalse(isSafeExoProbe(info, probe, supported, listOf(text)))
@@ -130,6 +130,39 @@ class AutomaticEngineSelectionTest {
         assertFalse(extractedTracksSafe(listOf(video, audio, tx3g.copy(mime = MimeTypes.TEXT_SSA)), true))
         assertFalse(extractedTracksSafe(listOf(video, audio, tx3g, tx3g), true))
         assertFalse(extractedTracksSafe(listOf(video, audio, tx3g), false))
+    }
+
+    @Test fun embeddedSrtAndWebVttRequireCodecAndIdentityAcrossAllThreeSources() {
+        val video = ExtractedTrack(C.TRACK_TYPE_VIDEO, MimeTypes.VIDEO_H264, true, true, "avc1.640028", width = 1920, height = 1080)
+        val audio = ExtractedTrack(C.TRACK_TYPE_AUDIO, MimeTypes.AUDIO_AAC, true, true, "mp4a.40.2", 2)
+        for ((format, mime) in listOf("srt" to MimeTypes.APPLICATION_SUBRIP, "webvtt" to MimeTypes.TEXT_VTT)) {
+            val track = SubtitleTrack(9, "한국어", "https://example.invalid/sub", source = "embedded", format = format, streamIndex = 4)
+            val kind = if (format == "srt") "srt" else "vtt"
+            val evidence = probe.copy(tracks = probe.tracks.copy(subtitleStreamIndex = 4, subtitleCodec = kind))
+            val native = ExtractedTrack(C.TRACK_TYPE_TEXT, mime, true, false)
+            assertTrue(isPotentialExoCandidate(spec.copy(selectedSubtitleId = 9), info.copy(container = "mkv", subtitleFormats = listOf(format)), listOf(track), true))
+            assertTrue(isSafeExoHeaderProbe(info, evidence.tracks, listOf(track)))
+            assertTrue(isSafeExoProbe(info, evidence, supported, listOf(track)))
+            assertFalse(isSafeExoProbe(info, evidence.copy(tracks = evidence.tracks.copy(subtitleCodec = "mov_text")), supported, listOf(track)))
+            assertFalse(isSafeExoHeaderProbe(info, evidence.tracks.copy(subtitleStreamIndex = 5), listOf(track)))
+            assertTrue(extractedTracksSafe(listOf(video, audio, native), true, format))
+            assertTrue(headerExtractedTracksSafe(listOf(video, audio, native), true, format))
+            assertTrue(manuallyExtractedTracksSafe(listOf(video, audio, native), true, true, format))
+            assertTrue(extractedTracksSafe(listOf(video, audio, native.copy(mime = MimeTypes.APPLICATION_MEDIA3_CUES, codecs = mime)), true, format))
+            assertFalse(extractedTracksSafe(listOf(video, audio, native.copy(mime = MimeTypes.APPLICATION_TX3G)), true, format))
+            assertFalse(extractedTracksSafe(listOf(video, audio, native, native), true, format))
+            assertFalse(extractedTracksSafe(listOf(video, audio, native.copy(supported = false)), true, format))
+        }
+    }
+
+    @Test fun resumeRequiresMpvForEmbeddedTextOnly() {
+        val embedded = SubtitleTrack(9, "embedded", "https://example.invalid/sub", source = "embedded", format = "subrip", streamIndex = 4)
+        assertFalse(requiresMpvForEmbeddedTextResume(listOf(embedded), 0))
+        assertTrue(requiresMpvForEmbeddedTextResume(listOf(embedded), 1))
+        assertTrue(requiresMpvForEmbeddedTextResume(listOf(embedded.copy(format = "webvtt")), 600))
+        assertFalse(requiresMpvForEmbeddedTextResume(listOf(embedded.copy(format = "mov_text")), 600))
+        assertFalse(requiresMpvForEmbeddedTextResume(listOf(embedded.copy(source = "external")), 600))
+        assertFalse(requiresMpvForEmbeddedTextResume(emptyList(), 600))
     }
 
     @Test fun networkAndPermissionErrorsDoNotSwitchEngine() {

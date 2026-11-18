@@ -1,5 +1,7 @@
 package io.mirr.shynigsy.player
 
+import io.mirr.shynigsy.data.sourceNeedsNativeEngine
+
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -46,6 +48,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import io.mirr.shynigsy.player.mpv.MpvPlayer
+import io.mirr.shynigsy.player.mpv.exoNativeSubtitleKind
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.AspectRatioFrameLayout
 import io.mirr.shynigsy.R
@@ -169,6 +172,9 @@ class NativePlayerActivity : AppCompatActivity() {
     private var enginePreferenceContentKey: String? = null
     private var enginePreferenceForContent = PlaybackEnginePreference.AUTO
     private var exoValidated = false
+    private var pendingExoTextSeekTarget: Long? = null
+    private var pendingExoTextSeekIntent: Boolean? = null
+    private var committedExoTextSeekIntent: Boolean? = null
     private var forceMpvSession: String? = null
     private var mpvProbePending = false
     private var mpvProbeJob: Job? = null
@@ -297,7 +303,7 @@ class NativePlayerActivity : AppCompatActivity() {
             val active = player
             if (active != null) samplePlaybackDiagnostics(active)
             if (active != null && playbackEngineSettled(mpvProbePending, active is ExoPlayer && !exoValidated) &&
-                !refreshing && !gestures.isSeekGestureActive && active.reconcilePlaybackCompletion()) {
+                !refreshing && !gestures.isSeekGestureActive && !isExoEmbeddedSeekPending(active) && active.reconcilePlaybackCompletion()) {
                 finishCompletedPlayback()
                 return
             }
@@ -568,8 +574,17 @@ class NativePlayerActivity : AppCompatActivity() {
         gestures = Media3GestureView(this).apply {
             onControllerToggle = { if (playerView.isControllerFullyVisible) playerView.hideController() else playerView.showController() }
             onLockedTap = ::showUnlockControl
-            onSeekCommitted = { target -> completionGate().seek(target); pendingSeek = target; lastPosition = target; updateSubtitleText(); refreshSegmentActions() }
-            onSeekSettled = { target -> pendingSeek = null; lastPosition = target; updateSubtitleText(); refreshSegmentActions(); enqueueProgress(if (player?.isPlaying == true) "playing" else "paused") }
+            onSeekCommitted = { target ->
+                completionGate().seek(target); pendingSeek = target; lastPosition = target; updateSubtitleText(); refreshSegmentActions()
+                if (player is ExoPlayer && requiresMpvForEmbeddedTextResume(spec.subtitles, 1))
+                    committedExoTextSeekIntent = gestures.playWhenReadyBeforeSeek
+            }
+            onSeekSettled = { target ->
+                pendingSeek = null; lastPosition = target; updateSubtitleText(); refreshSegmentActions()
+                enqueueProgress(if (player?.isPlaying == true) "playing" else "paused")
+                (player as? ExoPlayer)?.let { scheduleEmbeddedTextMpvAfterSeek(it, target) }
+                committedExoTextSeekIntent = null
+            }
             onGestureActive = { active ->
                 playerGestureActive = active
                 if (active) {
@@ -587,7 +602,11 @@ class NativePlayerActivity : AppCompatActivity() {
             onSubtitleDragEnd = ::finishSubtitleDrag
             onSeekFailed = { target ->
                 lastPosition = target; pendingSeek = target
-                if (!spoilerPreparing) showError("이동한 위치를 불러오지 못했습니다. 이 위치에서 다시 재생해 주세요.")
+                val active = player as? ExoPlayer
+                if (active != null && requiresMpvForEmbeddedTextResume(spec.subtitles, 1))
+                    scheduleEmbeddedTextMpvAfterSeek(active, target, committedExoTextSeekIntent)
+                else if (!spoilerPreparing) showError("이동한 위치를 불러오지 못했습니다. 이 위치에서 다시 재생해 주세요.")
+                committedExoTextSeekIntent = null
             }
         }
         root.addView(gestures, FrameLayout.LayoutParams(-1, -1))
@@ -1031,7 +1050,8 @@ class NativePlayerActivity : AppCompatActivity() {
         val preference = pictureEnginePreference(enginePreferenceForContent, pictureSettings)
         val start = engineStart(preference, forceMpvSession == key,
             current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
-            pendingTextPreference != null, current.sessionId.isNullOrBlank())
+            pendingTextPreference != null, current.sessionId.isNullOrBlank(),
+            nativeFormat = sourceNeedsNativeEngine(current.sourceContainer, current.sourceVideoCodec, current.selectedAudioCodec))
         if (start == EngineStart.MPV || start == EngineStart.SAFE_MPV) {
             if (start == EngineStart.SAFE_MPV) toast("이 재생에는 MPV가 필요해 MPV로 재생합니다.")
             startPreparedPlayer(null, false)
@@ -1130,6 +1150,14 @@ class NativePlayerActivity : AppCompatActivity() {
         // Recheck here so a late handoff cannot create Exo or start another probe for corrected video.
         if (pictureRequiresMpv(pictureSettings) &&
             (useExo || candidate != null || manualProbe || manualExo || headerExo)) {
+            startPreparedPlayer(null, false, chapterCarry = chapterCarry)
+            return
+        }
+        // Exo's Matroska seek can skip a subtitle that started in an earlier
+        // cluster. Resume in MPV, whose demuxer retains the active subtitle.
+        if ((useExo || candidate != null || manualProbe || manualExo || headerExo) &&
+            requiresMpvForEmbeddedTextResume(spec.subtitles, lastPosition)) {
+            forceMpvSession = "${spec.sessionId}:${spec.partId}"
             startPreparedPlayer(null, false, chapterCarry = chapterCarry)
             return
         }
@@ -1283,10 +1311,12 @@ class NativePlayerActivity : AppCompatActivity() {
                     }
                     acceptPreparedPlayer(created)
                 } else if (state == Player.STATE_ENDED && !exiting && !refreshing) {
+                    if (created is ExoPlayer && requiresMpvForEmbeddedTextResume(spec.subtitles, 1) &&
+                        (pendingExoTextSeekTarget != null || gestures.isSeekGestureActive)) return
                     if (mpvProbePending) { finishMpvProbe?.invoke(); return }
                     if (created is ExoPlayer && !exoValidated) { fallbackFromExo(created); return }
                     handler.post {
-                        if (player === created && !exiting && !refreshing && created.reconcilePlaybackCompletion())
+                        if (player === created && !exiting && !refreshing && !isExoEmbeddedSeekPending(created) && created.reconcilePlaybackCompletion())
                             finishCompletedPlayback()
                     }
                 }
@@ -1360,6 +1390,8 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 if (reason == Player.DISCONTINUITY_REASON_SEEK && externalSubtitleId == null) subtitleOverlay.subtitleText = ""
                 if (reason == Player.DISCONTINUITY_REASON_SEEK) updateSubtitleText()
+                if (reason == Player.DISCONTINUITY_REASON_SEEK && created is ExoPlayer &&
+                    !gestures.isSeekGestureActive) scheduleEmbeddedTextMpvAfterSeek(created, newPosition.positionMs)
                 refreshSegmentActions()
             }
         })
@@ -1404,22 +1436,51 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun fallbackFromExo(active: Player) {
+        fallbackFromExoAtPosition(active, null)
+    }
+
+    private fun isExoEmbeddedSeekPending(active: Player): Boolean = active is ExoPlayer &&
+        requiresMpvForEmbeddedTextResume(spec.subtitles, 1) &&
+        (pendingExoTextSeekTarget != null || gestures.isSeekGestureActive)
+
+    private fun scheduleEmbeddedTextMpvAfterSeek(active: ExoPlayer, positionMs: Long, playIntent: Boolean? = null) {
+        if (player !== active || !exoValidated || !requiresMpvForEmbeddedTextResume(spec.subtitles, 1)) return
+        val alreadyPosted = pendingExoTextSeekTarget != null
+        pendingExoTextSeekTarget = positionMs.coerceAtLeast(0)
+        pendingExoTextSeekIntent = playIntent
+        if (alreadyPosted) return
+        val generation = engineGeneration
+        handler.post {
+            if (player !== active || engineGeneration != generation) return@post
+            val target = pendingExoTextSeekTarget
+            val playing = pendingExoTextSeekIntent
+            pendingExoTextSeekTarget = null
+            pendingExoTextSeekIntent = null
+            if (target != null && !gestures.isSeekGestureActive)
+                fallbackFromExoAtPosition(active, target, playing)
+        }
+    }
+
+    private fun fallbackFromExoAtPosition(active: Player, requestedPosition: Long?, playIntent: Boolean? = null) {
         if (active !is ExoPlayer || player !== active || exiting || isDestroyed || refreshing) return
         if (manualExoInUse) toast("이 영상 또는 자막을 ExoPlayer에서 지원하지 않아 MPV로 재생합니다.")
-        val playing = if (exoValidated) active.playWhenReady else resumeWhenVisible
+        val playing = playIntent ?: if (!visible || !exoValidated) resumeWhenVisible else active.playWhenReady
         // Before track validation Exo's default position can still be zero;
         // preserve the authorized resume point until it has a valid timeline.
-        lastPosition = exoFallbackPosition(lastPosition, active.currentPosition, exoValidated, playbackFirstFrameReported)
+        lastPosition = requestedPosition ?: exoFallbackPosition(lastPosition, active.currentPosition, exoValidated, playbackFirstFrameReported)
         if (exoRestoreSubtitlePending && spec.subtitles.isEmpty()) spec = spec.copy(subtitlesPending = true)
         exoRestoreSubtitlePending = false
         forceMpvSession = "${spec.sessionId}:${spec.partId}"
         preparePlayback(playing)
     }
 
-    private fun exoPlaybackTracksSafe(tracks: androidx.media3.common.Tracks): Boolean =
-        if (manualExoInUse) manualExoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle), manualExoSourceHasAudio)
-        else if (headerExoInUse) exoHeaderTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))
-        else exoTracksSafe(tracks, spec.subtitles.any(::exoEmbeddedSubtitle))
+    private fun exoPlaybackTracksSafe(tracks: androidx.media3.common.Tracks): Boolean {
+        val embedded = spec.subtitles.singleOrNull(::exoEmbeddedSubtitle)
+        val expected = embedded != null
+        return if (manualExoInUse) manualExoTracksSafe(tracks, expected, manualExoSourceHasAudio, embedded?.format)
+        else if (headerExoInUse) exoHeaderTracksSafe(tracks, expected, embedded?.format)
+        else exoTracksSafe(tracks, expected, embedded?.format)
+    }
 
     private fun acceptPreparedPlayer(created: Player) {
         if (player !== created || exiting || isDestroyed) return
@@ -1435,6 +1496,7 @@ class NativePlayerActivity : AppCompatActivity() {
     /** Probe with MPV's raw track list before Exo, which can hide unknown MP4 subtitle tracks. */
     private fun checkMpvProbe(created: MpvPlayer, candidate: PlaybackCodecInfo) {
         if (!mpvProbePending || mpvHeaderHandoffPending || player !== created || mpvProbeJob?.isActive == true || exiting || isDestroyed) return
+        if (requiresMpvForEmbeddedTextResume(spec.subtitles, lastPosition)) { finishMpvProbe?.invoke(); return }
         val evidence = created.exoProbeEvidence() ?: run { finishMpvProbe?.invoke(); return }
         val revision = engineGeneration
         val current = spec
@@ -1467,10 +1529,13 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun checkMpvHeaderProbe(created: MpvPlayer, candidate: PlaybackCodecInfo) {
         if (!mpvProbePending || mpvHeaderHandoffPending || player !== created ||
             mpvProbeJob?.isActive == true || exiting || isDestroyed || !visible) return
+        if (requiresMpvForEmbeddedTextResume(spec.subtitles, lastPosition)) { finishMpvProbe?.invoke(); return }
         val embedded = spec.subtitles.filter(::exoEmbeddedSubtitle).mapNotNull { it.streamIndex }
         val tracks = created.exoHeaderEvidence()
         val audio = created.manualExoEvidence(embedded, spec.selectedAudioStreamIndex, spec.selectedAudioStreamOrdinal)
-        val accepted = tracks != null && audio?.hasAudio == true && isSafeExoHeaderProbe(candidate, tracks, spec.subtitles)
+        val accepted = tracks != null && audio?.hasAudio == true &&
+            audio.subtitleCodec == exoNativeSubtitleKind(spec.subtitles.singleOrNull(::exoEmbeddedSubtitle)?.format) &&
+            isSafeExoHeaderProbe(candidate, tracks, spec.subtitles)
         if (spec.sourceItem?.isSpoiler == false)
             Log.i("ShyniflexPlayback", "stage=header_checked mode=auto accepted=$accepted")
         if (!accepted) {
@@ -1507,12 +1572,16 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun checkManualMpvProbe(created: MpvPlayer, fromHeaders: Boolean = false) {
         if (!manualExoProbePending || !mpvProbePending || player !== created || exiting || isDestroyed ||
             !visible || closeLockedSpoilerPlayback()) return
+        if (requiresMpvForEmbeddedTextResume(spec.subtitles, lastPosition)) { finishMpvProbe?.invoke(); return }
         val embedded = spec.subtitles.filter(::exoEmbeddedSubtitle).mapNotNull { it.streamIndex }
         val evidence = created.manualExoEvidence(embedded, spec.selectedAudioStreamIndex,
             spec.selectedAudioStreamOrdinal)
         if (fromHeaders && spec.sourceItem?.isSpoiler == false)
             Log.i("ShyniflexPlayback", "stage=header_checked mode=manual accepted=${evidence != null}")
-        if (evidence == null) { finishMpvProbe?.invoke(); return }
+        if (evidence == null || evidence.subtitleCodec !=
+            exoNativeSubtitleKind(spec.subtitles.singleOrNull(::exoEmbeddedSubtitle)?.format)) {
+            finishMpvProbe?.invoke(); return
+        }
         val revision = engineGeneration
         val source = spec
         val account = client.token
@@ -1910,7 +1979,7 @@ class NativePlayerActivity : AppCompatActivity() {
             .filter { it.isEmbedded }.mapNotNull { track ->
                 (track.streamIndex?.takeIf { it >= 0 }?.let(active::subtitleTrackIdForStreamIndex)
                     ?: if (active is ExoPlayer && exoEmbeddedSubtitle(track) && nativeText.size == 1 &&
-                        nativeText.single().first.getTrackFormat(nativeText.single().second).let { exoMovTextMime(it.sampleMimeType, it.codecs) })
+                        nativeText.single().first.getTrackFormat(nativeText.single().second).let { exoSubtitleMimeMatches(track.format, it.sampleMimeType, it.codecs) })
                         nativeText.single().first.getTrackFormat(nativeText.single().second).id else null)
                     ?.takeIf { it in nativeIds }?.let { track.id to it }
             }.toMap() else emptyMap()
@@ -2751,8 +2820,18 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.subtitleView?.setCues(emptyList())
         if (track.isEmbedded) {
             externalSubtitleId = null; embeddedServerSubtitleId = track.id; pendingEmbeddedSubtitle = track
+            // A reselected in-band cue may have begun in an earlier cluster.
+            if (active is ExoPlayer && exoValidated &&
+                requiresMpvForEmbeddedTextResume(listOf(track), active.currentPosition)) {
+                scheduleEmbeddedTextMpvAfterSeek(active, active.currentPosition)
+                return
+            }
             active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_TEXT).setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                // MPV's native tracks are resolved after load. For a verified Exo
+                // source, keep text enabled from prepare so early subtitle samples
+                // are not discarded before Media3 publishes the track group.
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, active !is ExoPlayer || !exoEmbeddedSubtitle(track)).build()
             resolvePendingEmbeddedSubtitle()
         } else {
             externalSubtitleId = track.id
@@ -2780,7 +2859,7 @@ class NativePlayerActivity : AppCompatActivity() {
         val matched = nativeId?.let { id -> pairs.indexOfFirst { (group, index) ->
             group.getTrackFormat(index).id == id
         }.takeIf { it >= 0 } } ?: if (active is ExoPlayer && exoEmbeddedSubtitle(track) && pairs.size == 1 &&
-            options.single().supported && options.single().originalMimeType == MimeTypes.APPLICATION_TX3G) 0
+            options.single().supported && exoSubtitleMimeMatches(track.format, options.single().originalMimeType, null)) 0
         else embeddedSubtitleIndex(track, options)
         if (matched != null) {
             pendingEmbeddedSubtitle = null
@@ -3345,6 +3424,9 @@ class NativePlayerActivity : AppCompatActivity() {
         mpvProbeJob?.cancel(); mpvProbeJob = null
         finishMpvProbe = null; mpvProbePending = false
         exoValidated = false
+        pendingExoTextSeekTarget = null
+        pendingExoTextSeekIntent = null
+        committedExoTextSeekIntent = null
         exoRestoreSubtitlePending = false
         dismissTvSubtitlePosition()
         cancelPlaybackMetadata()
@@ -3415,7 +3497,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (closeLockedSpoilerPlayback()) return
         if (endingAfterCompletion || exiting) return
         if (!refreshing && playbackEngineSettled(mpvProbePending, player is ExoPlayer && !exoValidated) &&
-            player?.reconcilePlaybackCompletion() == true) {
+            player?.let { !isExoEmbeddedSeekPending(it) && it.reconcilePlaybackCompletion() } == true) {
             finishCompletedPlayback()
             return
         }

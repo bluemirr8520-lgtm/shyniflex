@@ -904,7 +904,7 @@ class MpvPlayer(
             }
             else -> when (codec) {
                 "ass", "ssa" -> MimeTypes.TEXT_SSA; "subrip", "srt" -> MimeTypes.APPLICATION_SUBRIP
-                "webvtt" -> MimeTypes.TEXT_VTT; "hdmv_pgs_subtitle" -> MimeTypes.APPLICATION_PGS
+                "webvtt", "webvtt-webm" -> MimeTypes.TEXT_VTT; "hdmv_pgs_subtitle" -> MimeTypes.APPLICATION_PGS
                 "dvd_subtitle" -> MimeTypes.APPLICATION_VOBSUB; "dvb_subtitle" -> MimeTypes.APPLICATION_DVBSUBS
                 "eia_608" -> MimeTypes.APPLICATION_CEA608; "eia_708" -> MimeTypes.APPLICATION_CEA708
                 else -> MimeTypes.APPLICATION_SUBRIP

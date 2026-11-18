@@ -28,7 +28,8 @@ internal fun areRawSubtitlesSafeForExo(value: Any, tracks: List<SubtitleTrack>):
         when (source) {
             "external" -> if (format !in setOf("srt", "subrip", "ass", "ssa", "vtt", "webvtt", "smi", "sami", "ttml", "dfxp")) return false
             "embedded", "internal" -> {
-                if (format !in setOf("mov_text", "tx3g") || ++embeddedCount > 1) return false
+                if (format !in setOf("mov_text", "tx3g", "srt", "subrip", "vtt", "webvtt") || ++embeddedCount > 1) return false
+                if (tracks[index].format?.trim()?.lowercase(Locale.ROOT) != format) return false
                 val stream = try { java.math.BigDecimal(row.opt("stream_index").toString()).intValueExact() }
                     catch (_: Exception) { return false }
                 if (stream < 0 || tracks[index].streamIndex != stream) return false

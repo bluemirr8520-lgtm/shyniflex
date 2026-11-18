@@ -12,6 +12,7 @@ import io.mirr.shynigsy.data.PlaybackSpec
 import io.mirr.shynigsy.data.SubtitleTrack
 import io.mirr.shynigsy.player.mpv.MpvExoProbe
 import io.mirr.shynigsy.player.mpv.MpvExoTrackEvidence
+import io.mirr.shynigsy.player.mpv.exoNativeSubtitleKind
 import io.mirr.shynigsy.player.subtitles.isEmbedded
 import java.util.Locale
 
@@ -30,7 +31,11 @@ internal fun exoExternalSubtitleFormat(format: String?): Boolean =
     exoExternalSubtitleKind(format)?.let { it != "mov_text" } == true
 
 internal fun exoEmbeddedSubtitle(subtitle: SubtitleTrack): Boolean = subtitle.isEmbedded &&
-    exoExternalSubtitleKind(subtitle.format) == "mov_text" && subtitle.streamIndex?.let { it >= 0 } == true
+    exoNativeSubtitleKind(subtitle.format) != null && subtitle.streamIndex?.let { it >= 0 } == true
+
+/** In-band Matroska subtitle samples can start before a resumed seek cluster. */
+internal fun requiresMpvForEmbeddedTextResume(subtitles: List<SubtitleTrack>, positionMs: Long): Boolean =
+    positionMs > 0 && subtitles.any { exoEmbeddedSubtitle(it) && exoNativeSubtitleKind(it.format) in setOf("srt", "vtt") }
 
 /** A candidate still requires an independent native track probe before Exo can start. */
 internal fun isPotentialExoCandidate(spec: PlaybackSpec, info: PlaybackCodecInfo?, subtitles: List<SubtitleTrack>?,
@@ -74,7 +79,8 @@ internal fun isPotentialExoCandidate(spec: PlaybackSpec, info: PlaybackCodecInfo
 internal fun isSafeExoHeaderProbe(info: PlaybackCodecInfo, tracks: MpvExoTrackEvidence,
     subtitles: List<SubtitleTrack>): Boolean {
     val embedded = subtitles.filter(::exoEmbeddedSubtitle)
-    if (embedded.size > 1 || tracks.subtitleStreamIndex != embedded.singleOrNull()?.streamIndex) return false
+    if (embedded.size > 1 || tracks.subtitleStreamIndex != embedded.singleOrNull()?.streamIndex ||
+        tracks.subtitleCodec != exoNativeSubtitleKind(embedded.singleOrNull()?.format)) return false
     fun normalize(value: String?) = value?.trim()?.lowercase(Locale.ROOT)
     val profile = normalize(tracks.videoProfile)
     val audioProfile = normalize(tracks.audioProfile)
@@ -100,7 +106,8 @@ internal fun isSafeExoProbe(info: PlaybackCodecInfo, probe: MpvExoProbe,
     // Media3 may omit unsupported tracks: require a unique server stream index
     // to agree with the independently observed MPV track before handoff.
     val embedded = subtitles.filter(::exoEmbeddedSubtitle)
-    if (embedded.size > 1 || tracks.subtitleStreamIndex != embedded.singleOrNull()?.streamIndex) return false
+    if (embedded.size > 1 || tracks.subtitleStreamIndex != embedded.singleOrNull()?.streamIndex ||
+        tracks.subtitleCodec != exoNativeSubtitleKind(embedded.singleOrNull()?.format)) return false
     val profile = normalize(tracks.videoProfile) ?: return false
     val audioProfile = normalize(tracks.audioProfile)
     val serverProfile = normalize(info.videoProfile)
@@ -151,15 +158,22 @@ internal data class ExtractedTrack(val type: Int, val mime: String?, val support
     val colorTransfer: Int? = null, val lumaBitDepth: Int? = null, val chromaBitDepth: Int? = null,
     val hdrStaticInfoPresent: Boolean = false)
 
-internal fun exoMovTextMime(mime: String?, codecs: String?): Boolean =
-    mime == MimeTypes.APPLICATION_TX3G ||
-        (mime == MimeTypes.APPLICATION_MEDIA3_CUES && codecs == MimeTypes.APPLICATION_TX3G)
+internal fun exoSubtitleMimeMatches(kind: String?, mime: String?, codecs: String?): Boolean {
+    val expected = when (exoNativeSubtitleKind(kind)) {
+        "mov_text" -> MimeTypes.APPLICATION_TX3G
+        "srt" -> MimeTypes.APPLICATION_SUBRIP
+        "vtt" -> MimeTypes.TEXT_VTT
+        else -> return false
+    }
+    return mime == expected || (mime == MimeTypes.APPLICATION_MEDIA3_CUES && codecs == expected)
+}
 
-internal fun extractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean = false): Boolean {
+internal fun extractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean = false,
+    embeddedFormat: String? = if (embeddedExpected) "mov_text" else null): Boolean {
     if (tracks.any { it.type == C.TRACK_TYPE_IMAGE || it.type == C.TRACK_TYPE_UNKNOWN }) return false
     val text = tracks.filter { it.type == C.TRACK_TYPE_TEXT }
     if (text.size != (if (embeddedExpected) 1 else 0)) return false
-    if (text.any { !it.supported || !exoMovTextMime(it.mime, it.codecs) }) return false
+    if (text.any { !it.supported || !exoSubtitleMimeMatches(embeddedFormat, it.mime, it.codecs) }) return false
     val video = tracks.filter { it.type == C.TRACK_TYPE_VIDEO }
     val audio = tracks.filter { it.type == C.TRACK_TYPE_AUDIO }
     if (video.size != 1 || audio.size != 1) return false
@@ -169,18 +183,20 @@ internal fun extractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected:
         a.codecs?.trim()?.lowercase(Locale.ROOT) == "mp4a.40.2" && a.channels in setOf(1, 2)
 }
 
-internal fun exoTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false): Boolean = extractedTracksSafe(tracks.groups.flatMap { group ->
+internal fun exoTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false,
+    embeddedFormat: String? = if (embeddedExpected) "mov_text" else null): Boolean = extractedTracksSafe(tracks.groups.flatMap { group ->
     (0 until group.length).map { index ->
         val format = group.getTrackFormat(index)
         ExtractedTrack(group.type, format.sampleMimeType, group.isTrackSupported(index), group.isTrackSelected(index),
             format.codecs, format.channelCount.takeIf { it > 0 })
     }
-}, embeddedExpected)
+}, embeddedExpected, embeddedFormat)
 
 /** AVC baseline/main/high are 8-bit profiles; reject high-10/422/444 and missing
  * codec profile evidence. Container color hints must not positively identify HDR. */
-internal fun headerExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean = false): Boolean {
-    if (!extractedTracksSafe(tracks, embeddedExpected)) return false
+internal fun headerExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean = false,
+    embeddedFormat: String? = if (embeddedExpected) "mov_text" else null): Boolean {
+    if (!extractedTracksSafe(tracks, embeddedExpected, embeddedFormat)) return false
     val video = tracks.single { it.type == C.TRACK_TYPE_VIDEO }
     val codec = video.codecs?.trim()?.lowercase(Locale.ROOT) ?: return false
     val parts = codec.split('.')
@@ -200,7 +216,8 @@ internal fun headerExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExp
     return true
 }
 
-internal fun exoHeaderTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false): Boolean =
+internal fun exoHeaderTracksSafe(tracks: Tracks, embeddedExpected: Boolean = false,
+    embeddedFormat: String? = if (embeddedExpected) "mov_text" else null): Boolean =
     headerExtractedTracksSafe(tracks.groups.flatMap { group ->
         (0 until group.length).map { index ->
             val format = group.getTrackFormat(index)
@@ -212,12 +229,12 @@ internal fun exoHeaderTracksSafe(tracks: Tracks, embeddedExpected: Boolean = fal
                 color?.lumaBitdepth?.takeUnless { it == -1 }, color?.chromaBitdepth?.takeUnless { it == -1 },
                 color?.hdrStaticInfo != null)
         }
-    }, embeddedExpected)
+    }, embeddedExpected, embeddedFormat)
 
 /** Manual Exo may support codecs beyond the conservative automatic selection.
  * Still reject missing/unsupported native text tracks instead of silently hiding subtitles. */
 internal fun manuallyExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedExpected: Boolean,
-    sourceHasAudio: Boolean): Boolean {
+    sourceHasAudio: Boolean, embeddedFormat: String? = if (embeddedExpected) "mov_text" else null): Boolean {
     if (tracks.any { it.type == C.TRACK_TYPE_UNKNOWN }) return false
     val video = tracks.filter { it.type == C.TRACK_TYPE_VIDEO }
     val audio = tracks.filter { it.type == C.TRACK_TYPE_AUDIO }
@@ -226,17 +243,18 @@ internal fun manuallyExtractedTracksSafe(tracks: List<ExtractedTrack>, embeddedE
         (audio.isNotEmpty() && audio.none { it.selected && it.supported })) return false
     if (tracks.any { it.selected && !it.supported && it.type in setOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO) }) return false
     return text.size == (if (embeddedExpected) 1 else 0) &&
-        text.all { it.supported && exoMovTextMime(it.mime, it.codecs) }
+        text.all { it.supported && exoSubtitleMimeMatches(embeddedFormat, it.mime, it.codecs) }
 }
 
-internal fun manualExoTracksSafe(tracks: Tracks, embeddedExpected: Boolean, sourceHasAudio: Boolean): Boolean =
+internal fun manualExoTracksSafe(tracks: Tracks, embeddedExpected: Boolean, sourceHasAudio: Boolean,
+    embeddedFormat: String? = if (embeddedExpected) "mov_text" else null): Boolean =
     manuallyExtractedTracksSafe(tracks.groups.flatMap { group ->
         (0 until group.length).map { index ->
             val format = group.getTrackFormat(index)
             ExtractedTrack(group.type, format.sampleMimeType, group.isTrackSupported(index),
                 group.isTrackSelected(index), format.codecs, format.channelCount.takeIf { it > 0 })
         }
-    }, embeddedExpected, sourceHasAudio)
+    }, embeddedExpected, sourceHasAudio, embeddedFormat)
 
 /** Network, permission and TLS errors are never treated as codec failures. */
 internal fun shouldFallbackFromExo(errorCode: Int): Boolean = errorCode in setOf(

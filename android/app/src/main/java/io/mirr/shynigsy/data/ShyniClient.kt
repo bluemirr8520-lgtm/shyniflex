@@ -2224,7 +2224,13 @@ class ShyniClient(
         val viewItemId = recovered?.third ?: decision?.intOrNull("view_item_id") ?: item.viewItemId
         val contextParameters = stage("재생 방식 확인") { contextQuery(context, viewId, viewItemId) }
         val transcode = decision?.optJSONObject("transcode")
-        val mode = transcode?.stringOrNull("mode")
+        val proposedMode = transcode?.stringOrNull("mode")
+        // MPV supports the original legacy formats. Browser-oriented remuxing can discard
+        // VC-1 video and leave an audio-only stream. Obtain the same original-file ticket
+        // used by the explicit Original action; all server authorization still applies.
+        val nativeOriginal = preferNativeOriginal(proposedMode, selected?.stringOrNull("container"),
+            selected?.stringOrNull("video_codec"), selected?.stringOrNull("audio_codec"))
+        val mode = proposedMode.takeUnless { nativeOriginal }
         val ticketPath = if (mode != null) "/playback/transcode-ticket/$selectedPart?$contextParameters&mode=${encode(mode)}"
             else "/stream-ticket/$selectedPart?$contextParameters"
         // The decision authorizes these account/View-scoped reads independently of ticket issuance.
@@ -2296,8 +2302,8 @@ class ShyniClient(
         } }
         val streamUrl = if (mode != null) {
             val parameters = mutableListOf("ticket=${encode(ticket)}", "mode=${encode(mode)}")
-            transcode.intOrNull("max_height")?.let { parameters += "max_height=$it" }
-            if (!transcode.isNull("audio_stream_index")) parameters += "audio_stream_index=${transcode.optInt("audio_stream_index")}"
+            transcode?.intOrNull("max_height")?.let { parameters += "max_height=$it" }
+            if (transcode != null && !transcode.isNull("audio_stream_index")) parameters += "audio_stream_index=${transcode.optInt("audio_stream_index")}"
             absoluteUrl("/transcode/$selectedPart?${parameters.joinToString("&")}")
         } else absoluteUrl("/stream/$selectedPart?ticket=${encode(ticket)}")
         stage("재생 권한 확인") { requireCurrentAuthorization() }
@@ -2308,7 +2314,8 @@ class ShyniClient(
         val effectiveResume = if ((progress?.watchedState() ?: item.watched) || (duration > 0 && resume >= duration)) 0L else resume
         return PlaybackSpec(item.title, streamUrl, emptyMap(), item.id, viewId, selectedPart,
             effectiveResume,
-            duration, subs, sessionId, context, viewItemId, decision?.stringOrNull("decision") ?: if (recovered != null) "direct_play" else null,
+            duration, subs, sessionId, context, viewItemId,
+            if (nativeOriginal || recovered != null) "direct_play" else decision?.stringOrNull("decision"),
             decision?.optJSONObject("client_playback_hints")?.optBoolean("prefer_software_decode") == true,
             selectedAudioStreamIndex = decision?.indexOrNull("selected_audio_stream_index"),
             selectedAudioStreamOrdinal = if (mode != null) 0 else decision?.indexOrNull("selected_audio_stream_ordinal"),
@@ -2326,7 +2333,9 @@ class ShyniClient(
                     else -> null
                 }),
             markers = PlaybackMarker.parse(JSONArray(item.markers.map { it.asJson() }), duration),
-            subtitlesPending = deferSubtitles)
+            subtitlesPending = deferSubtitles,
+            sourceContainer = selected?.stringOrNull("container"),
+            sourceVideoCodec = selected?.stringOrNull("video_codec"))
     }
 
     /** Load subtitles for the exact source already authorized by playback(). */

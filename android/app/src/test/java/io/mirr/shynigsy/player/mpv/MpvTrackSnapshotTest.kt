@@ -20,7 +20,7 @@ class MpvTrackSnapshotTest {
         val subtitle = """{"id":3,"type":"sub","codec":"mov_text","ff-index":4}"""
         assertEquals(MpvManualExoEvidence(true), MpvTrackSnapshot.manualExoEvidence("[$video,$audio]", emptyList(), 1, 0))
         assertEquals(MpvManualExoEvidence(false), MpvTrackSnapshot.manualExoEvidence("[$video]", emptyList(), null, null))
-        assertEquals(MpvManualExoEvidence(true), MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(4), 1, 0))
+        assertEquals(MpvManualExoEvidence(true, "mov_text"), MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(4), 1, 0))
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", emptyList(), null, null))
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(5), null, null))
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,${subtitle.replace("mov_text", "ass")} ]", listOf(4), null, null))
@@ -30,6 +30,22 @@ class MpvTrackSnapshotTest {
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$audio]", emptyList(), null, null))
         assertNull(MpvTrackSnapshot.manualExoEvidence(null, emptyList(), null, null))
         assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,{\"id\":7,\"type\":\"unknown\"}]", emptyList(), 1, 0))
+    }
+
+    @Test fun nativeEvidenceKeepsTextCodecAsWellAsIndex() {
+        val video = """{"id":1,"type":"video","codec":"h264","selected":true}"""
+        val audio = """{"id":2,"type":"audio","codec":"aac","selected":true}"""
+        for ((nativeCodec, expected) in listOf("subrip" to "srt", "webvtt" to "vtt", "tx3g" to "mov_text")) {
+            val subtitle = """{"id":3,"type":"sub","codec":"$nativeCodec","ff-index":4}"""
+            val probe = MpvTrackSnapshot.exoEvidence("[$video,$audio,$subtitle]")!!
+            assertEquals(4, probe.subtitleStreamIndex)
+            assertEquals(expected, probe.subtitleCodec)
+            assertEquals(expected, MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(4), null, null)?.subtitleCodec)
+            assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$subtitle]", listOf(5), null, null))
+        }
+        val unsupported = """{"id":3,"type":"sub","codec":"webvtt-webm","ff-index":4}"""
+        assertNull(MpvTrackSnapshot.exoEvidence("[$video,$audio,$unsupported]"))
+        assertNull(MpvTrackSnapshot.manualExoEvidence("[$video,$audio,$unsupported]", listOf(4), null, null))
     }
 
     @Test fun exoProbeRequiresExactlyTwoKnownNativeTracksAndNeverDropsSubtitles() {

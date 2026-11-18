@@ -24,6 +24,7 @@ internal data class MpvNativeTrack(
 internal data class MpvExoTrackEvidence(
     val videoProfile: String?, val audioProfile: String?, val width: Int?, val height: Int?,
     val frameRate: Double?, val audioChannels: Int?, val subtitleStreamIndex: Int? = null,
+    val subtitleCodec: String? = null,
 )
 
 internal data class MpvExoProbe(
@@ -32,7 +33,16 @@ internal data class MpvExoProbe(
     val frameRate: Double?,
 )
 
-internal data class MpvManualExoEvidence(val hasAudio: Boolean)
+internal data class MpvManualExoEvidence(val hasAudio: Boolean, val subtitleCodec: String? = null)
+
+internal fun exoNativeSubtitleKind(codec: String?): String? = when (codec?.trim()?.lowercase(java.util.Locale.ROOT)) {
+    "mov_text", "tx3g" -> "mov_text"
+    "srt", "subrip" -> "srt"
+    // mpv's webvtt-webm corresponds to WebM D_WEBVTT tracks which the
+    // Media3 Matroska extractor does not expose; retain MPV for those.
+    "vtt", "webvtt" -> "vtt"
+    else -> null
+}
 
 internal object MpvTrackSnapshot {
     /** Header-indexed files expose their tracks before video decoding. Live/PES
@@ -54,6 +64,7 @@ internal object MpvTrackSnapshot {
             val rows = JSONArray(value)
             if (rows.length() !in 1..256) return null
             val indices = mutableListOf<Int>()
+            var subtitleCodec: String? = null
             var videos = 0
             val audioIndices = mutableListOf<Int?>()
             for (index in 0 until rows.length()) {
@@ -64,7 +75,7 @@ internal object MpvTrackSnapshot {
                 if (type == "video" && row.opt("external") != true) videos++
                 if (type == "audio" && row.opt("external") != true) audioIndices.add(row.integer("ff-index"))
                 if (type == "sub" && row.opt("external") != true) {
-                    if ((row.opt("codec") as? String)?.lowercase(java.util.Locale.ROOT) !in setOf("mov_text", "tx3g")) return null
+                    subtitleCodec = exoNativeSubtitleKind(row.opt("codec") as? String) ?: return null
                     indices.add(row.integer("ff-index")?.takeIf { it >= 0 } ?: return null)
                 }
             }
@@ -74,7 +85,7 @@ internal object MpvTrackSnapshot {
                 (expectedAudioOrdinal != null && (audioIndices.isEmpty() || expectedAudioOrdinal != 0)) ||
                 (expectedAudioIndex != null && audioIndices.singleOrNull() != expectedAudioIndex)) return null
             if (indices.size == expected.size && indices.toSet() == expected.toSet())
-                MpvManualExoEvidence(audioIndices.isNotEmpty()) else null
+                MpvManualExoEvidence(audioIndices.isNotEmpty(), subtitleCodec) else null
         } catch (_: Exception) { null }
     }
 
@@ -95,7 +106,7 @@ internal object MpvTrackSnapshot {
                 when {
                     type == "video" && codec in setOf("h264", "avc") && video == null && row.opt("selected") == true -> video = row
                     type == "audio" && codec == "aac" && audio == null && row.opt("selected") == true -> audio = row
-                    type == "sub" && codec in setOf("mov_text", "tx3g") && subtitle == null &&
+                    type == "sub" && exoNativeSubtitleKind(codec) != null && subtitle == null &&
                         row.integer("ff-index")?.let { it >= 0 } == true -> subtitle = row
                     else -> return null
                 }
@@ -105,7 +116,8 @@ internal object MpvTrackSnapshot {
             val fps = (v.opt("demux-fps") as? Number)?.toDouble()?.takeIf { it.isFinite() && it > 0 }
             MpvExoTrackEvidence(v.opt("codec-profile") as? String, a.opt("codec-profile") as? String,
                 v.integer("demux-w"), v.integer("demux-h"), fps,
-                a.integer("audio-channels") ?: a.integer("demux-channel-count"), subtitle?.integer("ff-index"))
+                a.integer("audio-channels") ?: a.integer("demux-channel-count"), subtitle?.integer("ff-index"),
+                exoNativeSubtitleKind(subtitle?.opt("codec") as? String))
         } catch (_: Exception) { null }
     }
 
