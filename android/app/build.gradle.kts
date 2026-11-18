@@ -18,6 +18,17 @@ val targetAbi = providers.gradleProperty("shyniflexTargetAbi").orNull
 require(targetAbi == null || targetAbi in runtimeAbis) { "Unsupported shyniflexTargetAbi" }
 val applicationPackage = providers.gradleProperty("shyniflexApplicationId").orElse("io.mirr.shyniflex").get()
 require(applicationPackage in listOf("io.mirr.shyniflex", "io.mirr.shyniflex.renewed")) { "Unsupported application ID" }
+// Provider policy requires one registered application key, not user-created keys.
+val subtitleServiceProperties = Properties().apply {
+    val source = File(rootProject.rootDir, ".local/opensubtitles.properties")
+    if (source.exists()) source.inputStream().use { load(it) }
+}
+val subtitleApplicationKey = providers.environmentVariable("SHYNIFLEX_OPENSUBTITLES_API_KEY")
+    .orNull?.trim()?.takeIf { it.isNotEmpty() }
+    ?: subtitleServiceProperties.getProperty("apiKey", "").trim()
+require(subtitleApplicationKey.isEmpty() || Regex("[A-Za-z0-9_-]{8,256}").matches(subtitleApplicationKey)) {
+    "Invalid OpenSubtitles application key format"
+}
 
 android {
     namespace = "io.mirr.shynigsy"
@@ -27,8 +38,9 @@ android {
         manifestPlaceholders["shyniAppLabel"] = "@string/app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = 95
-        versionName = "1.0.94"
+        versionCode = 96
+        versionName = "1.0.95"
+        buildConfigField("String", "OPENSUBTITLES_API_KEY", "\"$subtitleApplicationKey\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
     }

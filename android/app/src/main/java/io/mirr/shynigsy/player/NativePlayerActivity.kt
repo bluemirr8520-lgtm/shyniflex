@@ -52,6 +52,7 @@ import io.mirr.shynigsy.player.mpv.exoNativeSubtitleKind
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.AspectRatioFrameLayout
 import io.mirr.shynigsy.R
+import io.mirr.shynigsy.BuildConfig
 import io.mirr.shynigsy.deviceDisplayName
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.data.PlaybackSpec
@@ -130,6 +131,15 @@ class NativePlayerActivity : AppCompatActivity() {
     private lateinit var errorText: TextView
     private lateinit var subtitleOverlay: PlexSubtitleOverlayView
     private var subtitleTimeline: SubtitleTimeline? = null
+    private val localSubtitleStore by lazy { LocalSubtitleStore(applicationContext) }
+    private var localSubtitleOwnerKey: String? = null
+    private var localSubtitleRecord: LocalSubtitleRecord? = null
+    private var localSubtitleActiveId: String? = null
+    private var localSubtitleTimeline: SubtitleTimeline? = null
+    private var localSubtitleReadJob: Job? = null
+    private var localSubtitleLaunchOwner: String? = null
+    private var localSubtitleLaunchRevision = 0
+    private var localSubtitleChoiceRevision = 0
     private var subtitleJob: Job? = null
     private var subtitleListJob: Job? = null
     private var subtitleListFailed = false
@@ -283,6 +293,12 @@ class NativePlayerActivity : AppCompatActivity() {
             }
         }
     }
+    private val localSubtitlePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        receiveLocalSubtitleResult(result.resultCode, result.data)
+    }
+    private val onlineSubtitlePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        receiveLocalSubtitleResult(result.resultCode, result.data)
+    }
 
     private data class ProgressUpdate(val spec: PlaybackSpec, val position: Long, val duration: Long,
         val state: String, val watched: Long, val acknowledgement: CompletableDeferred<Boolean>? = null,
@@ -329,7 +345,8 @@ class NativePlayerActivity : AppCompatActivity() {
                     lastSyncAt = SystemClock.elapsedRealtime()
                 }
             }
-            val needsSubtitleUpdates = externalSubtitleId != null && subtitleTimeline != null &&
+            val needsSubtitleUpdates = ((externalSubtitleId != null && subtitleTimeline != null) ||
+                (localSubtitleActiveId != null && localSubtitleTimeline != null)) &&
                 (active?.isPlaying == true || gestures.isSeekGestureActive)
             val markerDelay = if (active != null && prepared && !refreshing && !navigationLoading && !conversionLoading &&
                 !playerGestureActive && !gestures.isSeekGestureActive && !gestures.locked)
@@ -1026,6 +1043,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun preparePlayback(autoStart: Boolean) {
+        ensureLocalSubtitleSource()
         prepared = false
         releasePlayer()
         diagnosticStartedAt = SystemClock.elapsedRealtime()
@@ -1076,7 +1094,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     return@launch
                 }
                 spec = spec.copy(subtitles = inspected.tracks, subtitlesPending = false)
-                val preferred = deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
+                val preferred = if (localSubtitleActiveId != null) null else deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
                     subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null, true)
                 deferredSubtitlePreference = null
                 if (preferred != null) {
@@ -1127,7 +1145,7 @@ class NativePlayerActivity : AppCompatActivity() {
             if (adopted != null) {
                 spec = spec.copy(subtitles = adopted.subtitles, subtitlesPending = false)
                 val savedId = embeddedServerSubtitleId ?: externalSubtitleId
-                val preferred = deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
+                val preferred = if (localSubtitleActiveId != null) null else deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
                     subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null, true)
                 deferredSubtitlePreference = null
                 if (preferred != null) {
@@ -1273,7 +1291,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 resolvePendingEmbeddedSubtitle()
                 restorePendingTextPreference()
-                if (awaitingEmbeddedSubtitle && externalSubtitleId == null) selectEmbeddedSubtitleFallback()
+                if (awaitingEmbeddedSubtitle && externalSubtitleId == null && localSubtitleActiveId == null) selectEmbeddedSubtitleFallback()
                 renderEmbeddedCues(created.currentCues)
                 if (initialAudioApplied) return
                 val audioTracks = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.flatMap { group ->
@@ -1399,13 +1417,14 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.player = created
         gestures.attachPlayer(created)
         created.trackSelectionParameters = created.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitlesEnabled || externalSubtitleId != null).build()
-        if (subtitlesEnabled) {
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitlesEnabled || externalSubtitleId != null || localSubtitleActiveId != null).build()
+        if (subtitlesEnabled && localSubtitleActiveId == null) {
             val selectedId = embeddedServerSubtitleId ?: externalSubtitleId
             selectedId?.let { id -> spec.subtitles.firstOrNull { it.id == id }?.let(::selectServerSubtitle) }
         }
         created.prepare()
         created.playWhenReady = resumeWhenVisible && visible && created !is ExoPlayer && !mpvProbePending
+        if (localSubtitleActiveId != null) { renderEmbeddedCues(created.currentCues); updateSubtitleText() }
     }
 
     private fun onPlayerInitializationFailure() {
@@ -1831,7 +1850,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     addRow("자막 위치") { showSubtitlePosition() }
                     addRow("자막 정렬") { showSubtitleAlignment() }
                     addRow("자막 모양") { showSubtitleAppearance() }
-                    if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
+                    if (externalSubtitleId != null || localSubtitleActiveId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
                     addRow("싱크 다시 맞추기") { resynchronize() }
                 }
                 0 -> {
@@ -1858,7 +1877,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     addRow("자막 위치", if (television) "방향별 위치 조절" else "길게 눌러 이동") { showSubtitlePosition() }
                     addRow("자막 정렬") { showSubtitleAlignment() }
                     addRow("자막 모양") { showSubtitleAppearance() }
-                    if (externalSubtitleId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
+                    if (externalSubtitleId != null || localSubtitleActiveId != null) addRow("자막 싱크", String.format(Locale.KOREAN, "%+.1f초", subtitleOffsetMs / 1000.0)) { showSubtitleOffset() }
                 }
             }
             if (television) {
@@ -1949,6 +1968,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun selectedTrackLabel(type: Int): String {
         if (type == C.TRACK_TYPE_TEXT) {
             if (!subtitlesEnabled) return "끔"
+            localSubtitleRecord?.takeIf { it.id == localSubtitleActiveId }?.let { return it.label }
             spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) }
                 ?.let { return it.label }
         }
@@ -1960,6 +1980,108 @@ class NativePlayerActivity : AppCompatActivity() {
             format.language?.lowercase(Locale.ROOT)?.substringBefore('-')) {
             "ko", "kor" -> "한국어"; "en", "eng" -> "영어"; "ja", "jpn" -> "일본어"
             null, "und" -> "자동"; else -> format.language.orEmpty()
+        }
+    }
+
+    private fun ensureLocalSubtitleSource() {
+        val next = localSubtitleOwner(client.server, client.token, spec)
+        if (next == localSubtitleOwnerKey) return
+        localSubtitleReadJob?.cancel()
+        val wasActive = localSubtitleActiveId != null
+        localSubtitleOwnerKey = next; localSubtitleRecord = null
+        localSubtitleActiveId = null; localSubtitleTimeline = null
+        localSubtitleChoiceRevision++
+        if (wasActive) { subtitleManuallySelected = false; subtitleOverlay.subtitleText = "" }
+        val owner = next ?: return
+        val revision = localSubtitleChoiceRevision
+        val account = client.token
+        localSubtitleReadJob = scope.launch {
+            val record = try { withContext(Dispatchers.IO) {
+                LocalSubtitleWrites.awaitPending()
+                localSubtitleStore.find(owner)
+            } }
+                catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+                catch (_: Exception) { null }
+            if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
+            localSubtitleRecord = record
+            if (record?.selected == true) loadLocalSubtitle(owner, record, revision, account)
+        }
+    }
+
+    private fun localSubtitleCurrent(owner: String, account: String?): Boolean =
+        !exiting && !isDestroyed && ::spec.isInitialized && ::client.isInitialized && client.token == account &&
+            owner == localSubtitleOwnerKey && owner == localSubtitleOwner(client.server, account, spec) &&
+            !closeLockedSpoilerPlayback()
+
+    private fun loadLocalSubtitle(owner: String, record: LocalSubtitleRecord, revision: Int, account: String?) {
+        localSubtitleReadJob?.cancel()
+        localSubtitleReadJob = scope.launch {
+            try {
+                val timeline = withContext(Dispatchers.IO) { SubtitleTimeline(localSubtitleStore.load(owner, record.id)) }
+                if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
+                clearExternalSubtitle(); externalSubtitleId = null; embeddedServerSubtitleId = null
+                pendingTextPreference = null; awaitingEmbeddedSubtitle = false
+                localSubtitleRecord = record.copy(selected = true)
+                localSubtitleActiveId = record.id; localSubtitleTimeline = timeline
+                subtitlesEnabled = true; subtitleManuallySelected = true
+                player?.let { active ->
+                    active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                    renderEmbeddedCues(active.currentCues)
+                }
+                updateSubtitleText()
+                LocalSubtitleWrites.select(localSubtitleStore, owner, record.id, true)
+            } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+              catch (_: Exception) { if (localSubtitleCurrent(owner, account) && revision == localSubtitleChoiceRevision) toast("저장된 자막을 불러오지 못했습니다.") }
+        }
+    }
+
+    private fun deactivateLocalSubtitle() {
+        localSubtitleChoiceRevision++
+        localSubtitleReadJob?.cancel(); localSubtitleReadJob = null
+        val owner = localSubtitleOwnerKey
+        val record = localSubtitleRecord
+        if (owner != null && record != null && (record.selected || localSubtitleActiveId == record.id))
+            LocalSubtitleWrites.select(localSubtitleStore, owner, record.id, false)
+        else if (owner != null && record == null) {
+            val revision = localSubtitleChoiceRevision
+            val account = client.token
+            LocalSubtitleWrites.deselectCurrent(localSubtitleStore, owner) { success ->
+                if (success) handler.post {
+                    if (localSubtitleCurrent(owner, account) && localSubtitleChoiceRevision == revision && localSubtitleRecord == null)
+                        scope.launch {
+                            val current = withContext(Dispatchers.IO) { localSubtitleStore.find(owner) }
+                            if (localSubtitleCurrent(owner, account) && localSubtitleChoiceRevision == revision && localSubtitleRecord == null)
+                                localSubtitleRecord = current
+                        }
+                }
+            }
+        }
+        localSubtitleRecord = record?.copy(selected = false)
+        localSubtitleActiveId = null; localSubtitleTimeline = null
+    }
+
+    private fun receiveLocalSubtitleResult(resultCode: Int, data: Intent?) {
+        if (resultCode != RESULT_OK) return
+        val owner = data?.getStringExtra(SubtitleImportActivity.EXTRA_OWNER_KEY) ?: return
+        val id = data.getStringExtra(SubtitleImportActivity.EXTRA_SUBTITLE_ID) ?: return
+        if (owner != localSubtitleOwnerKey || (localSubtitleLaunchOwner != null && owner != localSubtitleLaunchOwner)) return
+        if (localSubtitleLaunchOwner != null && localSubtitleLaunchRevision != localSubtitleChoiceRevision) {
+            LocalSubtitleWrites.select(localSubtitleStore, owner, id, false)
+            return
+        }
+        if (!localSubtitleCurrent(owner, client.token)) return
+        val account = client.token
+        val revision = ++localSubtitleChoiceRevision
+        localSubtitleReadJob?.cancel()
+        localSubtitleReadJob = scope.launch {
+            try {
+                val record = withContext(Dispatchers.IO) { localSubtitleStore.find(owner) }
+                if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision || record?.id != id) return@launch
+                localSubtitleRecord = record
+                loadLocalSubtitle(owner, record, revision, account)
+            } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+              catch (_: Exception) { if (localSubtitleCurrent(owner, account)) toast("불러온 자막을 확인하지 못했습니다.") }
         }
     }
 
@@ -1994,7 +2116,7 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             spec.subtitles.forEach { track ->
                 val selectedId = embeddedServerSubtitleId ?: externalSubtitleId
-                val selected = subtitlesEnabled && (selectedId == track.id ||
+                val selected = subtitlesEnabled && localSubtitleActiveId == null && (selectedId == track.id ||
                     (selectedId == null && aliases[track.id]?.let { it in selectedNativeIds } == true))
                 choices += TrackChoice(subtitleMenuLabel(track.label, track.language, track.format ?: track.mimeType,
                     if (track.isEmbedded) "서버 내장" else "서버 외부", track.forced == true, track.sdh == true), selected) {
@@ -2006,6 +2128,47 @@ class NativePlayerActivity : AppCompatActivity() {
                 choices += TrackChoice(if (subtitleListFailed) "서버 자막 다시 불러오기" else "서버 자막 불러오는 중", false, changesSelection = false) {
                     if (subtitleListFailed) loadDeferredSubtitles(active)
                     else toast("서버 자막을 불러오고 있습니다.")
+                }
+            }
+            localSubtitleRecord?.let { record ->
+                choices += TrackChoice("불러온 자막 · ${record.label}", subtitlesEnabled && localSubtitleActiveId == record.id, changesSelection = false) {
+                    val owner = localSubtitleOwnerKey ?: return@TrackChoice
+                    val revision = ++localSubtitleChoiceRevision
+                    subtitleManuallySelected = true
+                    loadLocalSubtitle(owner, record, revision, client.token)
+                }
+                choices += TrackChoice("불러온 자막 삭제", false, changesSelection = false) {
+                    val owner = localSubtitleOwnerKey ?: return@TrackChoice
+                    localSubtitleChoiceRevision++; localSubtitleReadJob?.cancel()
+                    if (localSubtitleActiveId == record.id) {
+                        localSubtitleActiveId = null; localSubtitleTimeline = null
+                        subtitlesEnabled = false; subtitleOverlay.subtitleText = ""; subtitleOverlay.visibility = View.GONE
+                        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                    }
+                    localSubtitleRecord = null
+                    LocalSubtitleWrites.remove(localSubtitleStore, owner, record.id) { success ->
+                        if (!success) handler.post { if (!exiting && !isDestroyed && localSubtitleOwnerKey == owner) toast("자막을 삭제하지 못했습니다.") }
+                    }
+                }
+            }
+            choices += TrackChoice("자막 파일 불러오기", false, changesSelection = false) {
+                val owner = localSubtitleOwnerKey ?: return@TrackChoice
+                localSubtitleLaunchOwner = owner; localSubtitleLaunchRevision = localSubtitleChoiceRevision
+                try { localSubtitlePicker.launch(Intent(this, SubtitleImportActivity::class.java).putExtra(SubtitleImportActivity.EXTRA_OWNER_KEY, owner)) }
+                catch (_: Exception) { toast("파일 선택 화면을 열지 못했습니다.") }
+            }
+            if (BuildConfig.OPENSUBTITLES_API_KEY.isNotBlank()) choices += TrackChoice("온라인 자막 검색", false, changesSelection = false) {
+                val owner = localSubtitleOwnerKey ?: return@TrackChoice
+                localSubtitleLaunchOwner = owner; localSubtitleLaunchRevision = localSubtitleChoiceRevision
+                try { onlineSubtitlePicker.launch(OnlineSubtitleActivity.createIntent(this, owner, spec)) }
+                catch (_: Exception) { toast("온라인 자막 검색을 열지 못했습니다.") }
+            }
+            choices += TrackChoice("웹에서 자막 검색", false, changesSelection = false) {
+                handler.post {
+                    if (!exiting && !isDestroyed && !closeLockedSpoilerPlayback()) {
+                        subtitleDialog?.dismiss(); subtitleDialog = showSubtitleWebSearch(this, spec)
+                    }
                 }
             }
         }
@@ -2024,7 +2187,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 else listOfNotNull(format.label, language, format.codecs ?: format.sampleMimeType?.substringAfter('/'))
                     .filter { it.isNotBlank() }.distinct().joinToString(" · ").ifBlank { "트랙 ${choices.size + 1}" }
                 choices += TrackChoice(label, group.isTrackSelected(index) && (type != C.TRACK_TYPE_TEXT ||
-                    (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null))) {
+                    (subtitlesEnabled && localSubtitleActiveId == null && externalSubtitleId == null && embeddedServerSubtitleId == null))) {
                     if (type == C.TRACK_TYPE_TEXT) {
                         subtitleManuallySelected = true
                         subtitlesEnabled = true; externalSubtitleId = null; clearExternalSubtitle()
@@ -2043,7 +2206,10 @@ class NativePlayerActivity : AppCompatActivity() {
             if (player === active && !exiting && (type != C.TRACK_TYPE_TEXT ||
                     (!gestures.locked && !playerGestureActive && !refreshing && !conversionLoading &&
                         !navigationLoading && !closeLockedSpoilerPlayback()))) {
-                if (type == C.TRACK_TYPE_TEXT && choices[index].changesSelection) pendingTextPreference = null
+                if (type == C.TRACK_TYPE_TEXT && choices[index].changesSelection) {
+                    pendingTextPreference = null
+                    deactivateLocalSubtitle()
+                }
                 choices[index].apply()
             }
             dialog.dismiss()
@@ -2122,7 +2288,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun restorePendingTextPreference() {
         val preference = pendingTextPreference ?: return
         val active = player ?: return
-        if (!subtitlesEnabled || externalSubtitleId != null || embeddedServerSubtitleId != null) {
+        if (!subtitlesEnabled || externalSubtitleId != null || embeddedServerSubtitleId != null || localSubtitleActiveId != null) {
             pendingTextPreference = null; return
         }
         val tracks = active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }.flatMap { group ->
@@ -2369,7 +2535,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (!isCurrent() || closeLockedSpoilerPlayback()) return@launch
                 spec = spec.copy(subtitles = tracks, subtitlesPending = false)
                 val savedId = embeddedServerSubtitleId ?: externalSubtitleId
-                val preferred = deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
+                val preferred = if (localSubtitleActiveId != null) null else deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
                     subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null,
                     subtitleSelectionRevision == selectionRevision)
                 deferredSubtitlePreference = null
@@ -2695,7 +2861,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun captureTrackPreferencesForReplacement() {
         pendingAudioPreference = selectedTrackPreference(C.TRACK_TYPE_AUDIO) ?: pendingAudioPreference
-        pendingTextPreference = if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+        pendingTextPreference = if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null && localSubtitleActiveId == null)
             selectedTrackPreference(C.TRACK_TYPE_TEXT) ?: pendingTextPreference else null
     }
 
@@ -2880,14 +3046,14 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun renderEmbeddedCues(cues: androidx.media3.common.text.CueGroup) {
         if (::gestures.isInitialized && gestures.isSubtitleGestureActive) return
         val active = player ?: return
-        val route = mpvSubtitleController.update(active, subtitlesEnabled, externalSubtitleId != null,
+        val route = mpvSubtitleController.update(active, subtitlesEnabled, externalSubtitleId != null || localSubtitleActiveId != null,
             cues.cues.any { it.text != null })
         // Bitmap subtitles are drawn by MPV on the video surface. Plain text
         // belongs to the exact Shyni Player horizontal/vertical Canvas renderer.
         playerView.subtitleView?.visibility = View.GONE
         subtitleOverlay.visibility = if (route.showOverlay) View.VISIBLE else View.GONE
         if (!route.showOverlay) subtitleOverlay.subtitleText = ""
-        else if (externalSubtitleId == null) subtitleOverlay.subtitleText =
+        else if (externalSubtitleId == null && localSubtitleActiveId == null) subtitleOverlay.subtitleText =
             cues.cues.mapNotNull { it.text?.toString() }.joinToString("\n\n")
     }
 
@@ -2917,9 +3083,10 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun updateSubtitleText() {
         if (::gestures.isInitialized && gestures.isSubtitleGestureActive) return
-        if (subtitlesEnabled && externalSubtitleId != null) {
+        if (subtitlesEnabled && (externalSubtitleId != null || localSubtitleActiveId != null)) {
             val position = gestures.pendingSeekPositionMs ?: player?.currentPosition ?: lastPosition
-            subtitleOverlay.subtitleText = subtitleTimeline?.textAt((position + subtitleOffsetMs).coerceAtLeast(0)).orEmpty()
+            val timeline = if (localSubtitleActiveId != null) localSubtitleTimeline else subtitleTimeline
+            subtitleOverlay.subtitleText = timeline?.textAt((position + subtitleOffsetMs).coerceAtLeast(0)).orEmpty()
         }
     }
 
@@ -3108,7 +3275,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun showSubtitleOffset() {
-        if (externalSubtitleId == null) { toast("서버 자막을 선택한 뒤 싱크를 조절할 수 있습니다."); return }
+        if (externalSubtitleId == null && localSubtitleActiveId == null) { toast("텍스트 자막을 선택한 뒤 싱크를 조절할 수 있습니다."); return }
         AlertDialog.Builder(this).setTitle("자막 싱크: ${String.format(Locale.KOREAN, "%+.1f", subtitleOffsetMs / 1000.0)}초")
             .setItems(arrayOf("0.5초 앞당기기", "0.5초 늦추기", "기본값")) { _, index ->
                 subtitleOffsetMs = when (index) { 0 -> subtitleOffsetMs + 500; 1 -> subtitleOffsetMs - 500; else -> 0 }

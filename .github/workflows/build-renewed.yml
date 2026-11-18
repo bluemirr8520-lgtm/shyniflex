@@ -39,6 +39,8 @@ jobs:
           git restore -- android/app/src/main/assets/licenses/NATIVE-RUNTIME.txt
       - name: Build signed APK
         shell: pwsh
+        env:
+          SHYNIFLEX_OPENSUBTITLES_API_KEY: ${{ secrets.SHYNIFLEX_OPENSUBTITLES_API_KEY }}
         run: |
           $signRoot = Join-Path $env:RUNNER_TEMP 'shyniflex-signing'
           $gradle = Join-Path $env:RUNNER_TEMP 'gradle-8.13/bin/gradle.bat'

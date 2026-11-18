@@ -1,0 +1,25 @@
+# 수동 자막과 온라인 검색
+
+재생 화면의 **자막** 메뉴에서 다음 기능을 사용합니다.
+
+- **자막 파일 불러오기**: 기기의 문서 선택기로 SRT, ASS/SSA, VTT, SMI/SAMI, TTML/DFXP 파일을 선택합니다.
+- **웹에서 자막 검색**: 검색어를 확인하고 브라우저에서 검색합니다. TV에서는 검색용 QR도 표시합니다. 다운로드한 파일은 자막 파일 불러오기로 적용합니다.
+- **앱에서 자막 찾기**: OpenSubtitles의 한국어·영어·전체 자막을 검색하고, 결과를 선택해 다운로드합니다. 배포 앱에 서비스 등록 키가 있어야 이용할 수 있습니다.
+
+불러온 자막은 해당 계정·영상에 연결해 기기 내부에 저장합니다. MPV와 ExoPlayer 모두 공통 자막 화면으로 표시하며 기존 폰트·색상·정렬·위치·시간 조정을 사용합니다. 다른 영상에 자동 적용하지 않습니다. 파일은 8 MiB까지 허용하며 압축 파일은 먼저 풀어야 합니다. 앱 내부 자막 저장 공간이 64 MiB를 넘으면 오래된 다른 영상의 자막부터 정리합니다. 기기의 원본 자막 파일은 삭제하지 않습니다.
+
+취소하거나 잘못된 파일을 선택하면 기존 자막을 유지합니다. 앱을 벗어날 때 스포일러를 잠그는 설정은 그대로 적용됩니다. 외부 문서 선택기나 브라우저로 이동해 재생이 닫힌 경우, 같은 영상을 다시 열면 성공적으로 저장한 자막을 적용합니다.
+
+## 앱 배포자의 OpenSubtitles 등록
+
+OpenSubtitles는 앱마다 개발자가 등록한 API 키를 포함하도록 요구합니다. 일반 사용자에게 각자 키를 발급받도록 요구하지 않습니다.
+
+1. [OpenSubtitles API Consumers](https://www.opensubtitles.com/consumers)에서 **shyniflex** 앱을 등록합니다.
+2. 로컬 빌드는 `android/.local/opensubtitles.properties`의 `apiKey=` 뒤에 앱 키를 넣습니다. 이 파일은 Git에서 제외됩니다. 계정 비밀번호나 로그인 토큰을 넣지 않습니다.
+3. GitHub Actions는 저장소 secret `SHYNIFLEX_OPENSUBTITLES_API_KEY`를 사용합니다.
+
+앱 등록 키는 APK에 포함되는 앱 식별 값입니다. 계정 비밀번호·개인 로그인 토큰을 앱 키로 사용하면 안 됩니다. 키가 없으면 로컬 파일·웹 검색은 이용할 수 있지만 앱 안의 검색·다운로드는 활성화되지 않습니다.
+
+사용자는 필요할 때 앱 안에서 OpenSubtitles 계정에 로그인할 수 있습니다. 로그인 토큰은 Android Keystore를 사용해 암호화하며 비밀번호는 저장하지 않습니다. Shyni 서버의 로그인 정보는 OpenSubtitles에 전달하지 않습니다. 검색을 누를 때 작품명·언어·시즌·회차·연도만 해당 서비스에 전송합니다. 다운로드는 사용자가 최종 선택했을 때만 요청하며 서비스의 계정별 한도가 적용됩니다.
+
+참고: [공식 시작 안내](https://opensubtitles.tawk.help/article/getting-started), [앱별 API 키 정책](https://forum.opensubtitles.com/t/apikey-for-player-video/7998), [API 문서](https://ai.opensubtitles.com/api-docs).

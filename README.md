@@ -10,6 +10,8 @@ webOS판은 앱 ID `io.mirr.shyniflex.webos`로 Android판과 같은 Shyni 로�
 
 ## Android
 
+재생 화면의 **자막 → 자막 파일 불러오기**에서 기기에 저장한 SRT·ASS/SSA·VTT·SMI/SAMI·TTML/DFXP 자막을 추가할 수 있습니다. **웹에서 자막 검색**은 작품명·회차로 검색어를 준비하며, Android TV에서는 휴대폰 검색용 QR도 제공합니다. 불러온 자막은 해당 영상에 저장해 MPV와 ExoPlayer에서 공통 자막 설정으로 표시합니다. [수동 자막 사용·온라인 서비스 연동 안내](docs/MANUAL-SUBTITLES.md)를 참고하세요.
+
 WMV/ASF의 VC-1·WMA Pro와 AVI·FLV·MPEG-TS 같은 일반 영상 형식은 MPV의 FFmpeg 디코더로 재생합니다. 서버가 해당 형식에 호환용 리먹스·오디오 변환을 제안해도 원본 재생 티켓을 받아 직접 재생하며, 원본 접근 권한과 명시적인 영상 변환은 그대로 적용합니다. ExoPlayer를 저장해 둔 경우에도 이 형식은 MPV로 바로 엽니다.
 
 ExoPlayer는 서버의 외부 텍스트 자막과 정확히 식별된 단일 내장 mov_text·SRT/SubRip 자막을 지원합니다. 내장 자막은 서버의 스트림 번호·형식, MPV의 실제 트랙, ExoPlayer의 추출 형식을 대조한 뒤 표시합니다. 내장 SRT의 이어보기·탐색은 앞 구간에서 시작한 긴 자막이 누락되지 않도록 같은 위치에서 MPV로 재생합니다. 다중 내장·이미지 자막과 ExoPlayer가 읽지 못하는 형식도 MPV를 사용합니다.

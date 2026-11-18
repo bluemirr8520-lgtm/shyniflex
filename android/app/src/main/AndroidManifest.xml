@@ -20,6 +20,8 @@
         <activity android:name="io.mirr.shynigsy.player.NativePlayerActivity" android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize"
             android:screenOrientation="sensorLandscape" />
+        <activity android:name="io.mirr.shynigsy.player.SubtitleImportActivity" android:exported="false" />
+        <activity android:name="io.mirr.shynigsy.player.OnlineSubtitleActivity" android:exported="false" />
         <activity android:name="io.mirr.shynigsy.MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
