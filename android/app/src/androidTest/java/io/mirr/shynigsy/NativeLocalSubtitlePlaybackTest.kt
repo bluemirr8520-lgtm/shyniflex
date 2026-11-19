@@ -235,11 +235,13 @@ class NativeLocalSubtitlePlaybackTest {
     @Suppress("UNCHECKED_CAST") private fun <T> field(activity: NativePlayerActivity, name: String): T =
         NativePlayerActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.get(activity) as T
 
-    private class Fixture(private val clip: ByteArray) : AutoCloseable {
+    internal class Fixture(private val clip: ByteArray, private val subtitleBody: ByteArray? = null) : AutoCloseable {
         private val listener = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 200 }
         private val workers = Executors.newCachedThreadPool { task -> Thread(task, "local-caption-http").apply { isDaemon = true } }
         private val sockets = Collections.synchronizedSet(mutableSetOf<Socket>())
         private val failure = AtomicReference<Throwable?>()
+        val subtitleRequests = java.util.concurrent.atomic.AtomicInteger()
+        @Volatile var subtitleRows = JSONArray().toString()
         val origin get() = "http://127.0.0.1:${listener.localPort}"
         private val accept = thread(name = "local-caption-accept", isDaemon = true) {
             while (!listener.isClosed) try {
@@ -268,7 +270,11 @@ class NativeLocalSubtitlePlaybackTest {
                 val path = Uri.parse(request[1]).path.orEmpty()
                 when {
                     path.startsWith("/stream/") -> { media = true; video(connection, request[0], headers["range"]) }
-                    path.startsWith("/subtitles/") -> reply(connection, "application/json", JSONArray().toString().toByteArray())
+                    path in setOf("/external-subtitle.srt", "/subtitles/raw/9", "/subtitles/track/9.vtt") && subtitleBody != null -> {
+                        subtitleRequests.incrementAndGet()
+                        reply(connection, "application/x-subrip", subtitleBody)
+                    }
+                    path.startsWith("/subtitles/") -> reply(connection, "application/json", subtitleRows.toByteArray())
                     path == "/playback/progress" -> reply(connection, "application/json", "{\"ok\":true}".toByteArray())
                     else -> reply(connection, "application/json", "{}".toByteArray(), "404 Not Found")
                 }

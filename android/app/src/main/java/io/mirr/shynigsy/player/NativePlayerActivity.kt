@@ -140,6 +140,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private var localSubtitleLaunchOwner: String? = null
     private var localSubtitleLaunchRevision = 0
     private var localSubtitleChoiceRevision = 0
+    private var restoredLocalSubtitleId: String? = null
+    private var subtitlePolicyContentKey: String? = null
     private var subtitleJob: Job? = null
     private var subtitleListJob: Job? = null
     private var subtitleListFailed = false
@@ -309,7 +311,8 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private data class ConversionRestore(val spec: PlaybackSpec, val position: Long, val playing: Boolean,
         val subtitle: SubtitleTrack?, val audio: PlaybackTrackPreference?, val text: PlaybackTrackPreference?,
-        val audioIndex: Int?, val duration: Long)
+        val audioIndex: Int?, val duration: Long, val subtitleEnabled: Boolean, val subtitleManual: Boolean,
+        val localSubtitle: String?)
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -391,11 +394,13 @@ class NativePlayerActivity : AppCompatActivity() {
         resizeMode = settings.getInt("resize_mode", AspectRatioFrameLayout.RESIZE_MODE_FIT)
             .takeIf { it in resizeModes } ?: AspectRatioFrameLayout.RESIZE_MODE_FIT
         resizeScale = settings.getFloat("resize_scale", 1f).takeIf { it in setOf(1f, 1.1f, 1.25f, 1.5f) } ?: 1f
-        subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", true) ?: true
+        subtitlePolicyContentKey = subtitlePlaybackContentKey(spec)
+        subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", defaultSubtitlesEnabled(spec)) ?: defaultSubtitlesEnabled(spec)
         subtitleManuallySelected = savedInstanceState?.getBoolean("subtitleManuallySelected", false) ?: false
-        externalSubtitleId = if (savedInstanceState != null) savedInstanceState.getInt("externalSubtitle", -1).takeIf { it >= 0 }
-            else preferredSubtitle(spec)?.id
-        embeddedServerSubtitleId = savedInstanceState?.getInt("embeddedSubtitle", -1)?.takeIf { it >= 0 }
+        restoredLocalSubtitleId = savedInstanceState?.getString("localSubtitle")
+        externalSubtitleId = if (!subtitlesEnabled) null else if (savedInstanceState != null)
+            savedInstanceState.getInt("externalSubtitle", -1).takeIf { it >= 0 } else preferredSubtitle(spec)?.id
+        embeddedServerSubtitleId = savedInstanceState?.getInt("embeddedSubtitle", -1)?.takeIf { subtitlesEnabled && it >= 0 }
         subtitleOffsetMs = savedInstanceState?.getLong("subtitleOffset", 0) ?: 0
         subtitleFont = settings.getString("subtitle_font", "system") ?: "system"
         subtitleAppearance = PlexSubtitleAppearance(sizePercent = settings.getInt("subtitle_size", 100),
@@ -1043,6 +1048,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun preparePlayback(autoStart: Boolean) {
+        ensureSubtitleDefaults()
         ensureLocalSubtitleSource()
         prepared = false
         releasePlayer()
@@ -1983,6 +1989,21 @@ class NativePlayerActivity : AppCompatActivity() {
         }
     }
 
+    /** A ticket/engine change belongs to the same viewing; a different file gets its own default. */
+    private fun subtitlePlaybackContentKey(source: PlaybackSpec): String =
+        if (source.partId > 0) "${source.libraryId}:${source.partId}"
+        else "${source.libraryId}:${source.itemId}:${source.viewItemId}:${source.url}"
+
+    private fun ensureSubtitleDefaults() {
+        val next = subtitlePlaybackContentKey(spec)
+        if (subtitlePolicyContentKey == next) return
+        subtitlePolicyContentKey = next
+        subtitlesEnabled = defaultSubtitlesEnabled(spec)
+        subtitleManuallySelected = false; restoredLocalSubtitleId = null
+        clearExternalSubtitle(); externalSubtitleId = if (subtitlesEnabled) preferredSubtitle(spec)?.id else null
+        pendingTextPreference = null; deferredSubtitlePreference = null
+    }
+
     private fun ensureLocalSubtitleSource() {
         val next = localSubtitleOwner(client.server, client.token, spec)
         if (next == localSubtitleOwnerKey) return
@@ -1991,7 +2012,7 @@ class NativePlayerActivity : AppCompatActivity() {
         localSubtitleOwnerKey = next; localSubtitleRecord = null
         localSubtitleActiveId = null; localSubtitleTimeline = null
         localSubtitleChoiceRevision++
-        if (wasActive) { subtitleManuallySelected = false; subtitleOverlay.subtitleText = "" }
+        if (wasActive) subtitleOverlay.subtitleText = ""
         val owner = next ?: return
         val revision = localSubtitleChoiceRevision
         val account = client.token
@@ -2004,7 +2025,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 catch (_: Exception) { null }
             if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
             localSubtitleRecord = record
-            if (record?.selected == true) loadLocalSubtitle(owner, record, revision, account)
+            val restoreManualChoice = subtitlesEnabled && record?.id == restoredLocalSubtitleId
+            if (record?.selected == true && (defaultSubtitlesEnabled(spec) || restoreManualChoice))
+                loadLocalSubtitle(owner, record, revision, account)
         }
     }
 
@@ -2020,9 +2043,10 @@ class NativePlayerActivity : AppCompatActivity() {
                 val timeline = withContext(Dispatchers.IO) { SubtitleTimeline(localSubtitleStore.load(owner, record.id)) }
                 if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
                 clearExternalSubtitle(); externalSubtitleId = null; embeddedServerSubtitleId = null
-                pendingTextPreference = null; awaitingEmbeddedSubtitle = false
+                pendingTextPreference = null; deferredSubtitlePreference = null; awaitingEmbeddedSubtitle = false
                 localSubtitleRecord = record.copy(selected = true)
                 localSubtitleActiveId = record.id; localSubtitleTimeline = timeline
+                restoredLocalSubtitleId = record.id
                 subtitlesEnabled = true; subtitleManuallySelected = true
                 player?.let { active ->
                     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
@@ -2037,6 +2061,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun deactivateLocalSubtitle() {
+        restoredLocalSubtitleId = null
         localSubtitleChoiceRevision++
         localSubtitleReadJob?.cancel(); localSubtitleReadJob = null
         val owner = localSubtitleOwnerKey
@@ -2134,12 +2159,14 @@ class NativePlayerActivity : AppCompatActivity() {
                 choices += TrackChoice("불러온 자막 · ${record.label}", subtitlesEnabled && localSubtitleActiveId == record.id, changesSelection = false) {
                     val owner = localSubtitleOwnerKey ?: return@TrackChoice
                     val revision = ++localSubtitleChoiceRevision
+                    deferredSubtitlePreference = null
                     subtitleManuallySelected = true
                     loadLocalSubtitle(owner, record, revision, client.token)
                 }
                 choices += TrackChoice("불러온 자막 삭제", false, changesSelection = false) {
                     val owner = localSubtitleOwnerKey ?: return@TrackChoice
                     localSubtitleChoiceRevision++; localSubtitleReadJob?.cancel()
+                    restoredLocalSubtitleId = null
                     if (localSubtitleActiveId == record.id) {
                         localSubtitleActiveId = null; localSubtitleTimeline = null
                         subtitlesEnabled = false; subtitleOverlay.subtitleText = ""; subtitleOverlay.visibility = View.GONE
@@ -2207,7 +2234,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     (!gestures.locked && !playerGestureActive && !refreshing && !conversionLoading &&
                         !navigationLoading && !closeLockedSpoilerPlayback()))) {
                 if (type == C.TRACK_TYPE_TEXT && choices[index].changesSelection) {
-                    pendingTextPreference = null
+                    pendingTextPreference = null; deferredSubtitlePreference = null
                     deactivateLocalSubtitle()
                 }
                 choices[index].apply()
@@ -2359,10 +2386,10 @@ class NativePlayerActivity : AppCompatActivity() {
                 gestures.playWhenReadyBeforeSeek ?: active.playWhenReady,
                 spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
                 selectedTrackPreference(C.TRACK_TYPE_AUDIO),
-                if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+                if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null && localSubtitleActiveId == null)
                     selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
                 if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
-                lastDuration)
+                lastDuration, subtitlesEnabled, subtitleManuallySelected, localSubtitleActiveId)
         }
         val previous = snapshot()
         spoilerRecovery = previous
@@ -2588,10 +2615,10 @@ class NativePlayerActivity : AppCompatActivity() {
         val previous = ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition, wasPlaying,
             spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
             selectedTrackPreference(C.TRACK_TYPE_AUDIO),
-            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null && localSubtitleActiveId == null)
                 selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
             if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
-            lastDuration)
+            lastDuration, subtitlesEnabled, subtitleManuallySelected, localSubtitleActiveId)
         enqueueProgress(if (completed) "completed" else "stopped")
         navigationLoading = true; refreshing = true
         conversionResumeWhenVisible = wasPlaying; resumeWhenVisible = wasPlaying
@@ -2698,10 +2725,10 @@ class NativePlayerActivity : AppCompatActivity() {
         val snapshot = ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition, wasPlaying,
             spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
             selectedTrackPreference(C.TRACK_TYPE_AUDIO),
-            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null && localSubtitleActiveId == null)
                 selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
             if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
-            lastDuration)
+            lastDuration, subtitlesEnabled, subtitleManuallySelected, localSubtitleActiveId)
         settleWatchTime(false); enqueueProgress("paused")
         refreshing = true; conversionLoading = true
         conversionResumeWhenVisible = snapshot.playing; resumeWhenVisible = snapshot.playing
@@ -2743,19 +2770,21 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun applyConversionPlayback(refreshed: PlaybackSpec, previous: ConversionRestore) {
+        val sameSource = subtitlePlaybackContentKey(refreshed) == subtitlePlaybackContentKey(previous.spec)
+        subtitlePolicyContentKey = subtitlePlaybackContentKey(refreshed)
+        subtitlesEnabled = if (sameSource) previous.subtitleEnabled else defaultSubtitlesEnabled(refreshed)
+        subtitleManuallySelected = sameSource && previous.subtitleManual
+        restoredLocalSubtitleId = previous.localSubtitle.takeIf { sameSource && subtitlesEnabled }
         clearExternalSubtitle(); externalSubtitleId = null
-        subtitleManuallySelected = refreshed.subtitlesPending && previous.text != null
-        deferredSubtitlePreference = if (refreshed.subtitlesPending) previous.subtitle else null
-        val nativeText = previous.text.takeUnless { refreshed.isServerConversion }
+        deferredSubtitlePreference = previous.subtitle.takeIf { subtitlesEnabled && refreshed.subtitlesPending }
+        val nativeText = previous.text.takeIf { subtitlesEnabled && !refreshed.isServerConversion && restoredLocalSubtitleId == null }
         val preferredText = previous.subtitle ?: previous.text?.let { preference ->
             matchingPlaybackTrack(preference, refreshed.subtitles.map { PlaybackTrackPreference(it.language, it.title ?: it.label) })
                 ?.let(refreshed.subtitles::get)
         }
-        val subtitle = if (!subtitlesEnabled || nativeText != null) null else
+        val subtitle = if (!subtitlesEnabled || nativeText != null || restoredLocalSubtitleId != null) null else
             replacementSubtitle(preferredText, refreshed.subtitles) ?: preferredSubtitle(refreshed)
         spec = refreshed.copy(resumeMs = previous.position)
-        val sameSource = refreshed.itemId == previous.spec.itemId && refreshed.partId == previous.spec.partId &&
-            refreshed.libraryId == previous.spec.libraryId && refreshed.viewItemId == previous.spec.viewItemId
         lastDuration = maxOf(0L, refreshed.durationMs, if (sameSource) previous.duration else 0L)
         playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
         externalSubtitleId = subtitle?.takeUnless { it.isEmbedded }?.id
@@ -2796,6 +2825,9 @@ class NativePlayerActivity : AppCompatActivity() {
             } catch (_: kotlinx.coroutines.CancellationException) {
             } catch (_: Exception) {
                 spec = previous.spec; lastPosition = previous.position; lastDuration = previous.duration
+                subtitlePolicyContentKey = subtitlePlaybackContentKey(spec)
+                subtitlesEnabled = previous.subtitleEnabled; subtitleManuallySelected = previous.subtitleManual
+                restoredLocalSubtitleId = previous.localSubtitle.takeIf { subtitlesEnabled }
                 playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
                 clearExternalSubtitle()
                 externalSubtitleId = previous.subtitle?.takeUnless { it.isEmbedded }?.id
@@ -2940,6 +2972,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun loadExternalSubtitle(track: SubtitleTrack) {
+        if (!subtitlesEnabled || localSubtitleActiveId != null) return
         pendingEmbeddedSubtitle = null; embeddedServerSubtitleId = null; externalSubtitleId = track.id
         awaitingEmbeddedSubtitle = false
         subtitleJob?.cancel(); val revision = ++subtitleSelectionRevision
@@ -3008,6 +3041,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun resolvePendingEmbeddedSubtitle() {
+        if (!subtitlesEnabled || localSubtitleActiveId != null) { pendingEmbeddedSubtitle = null; return }
         val track = pendingEmbeddedSubtitle ?: return
         val active = player ?: return
         if (active.currentTracks.groups.isEmpty()) return
@@ -3058,6 +3092,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun selectEmbeddedSubtitleFallback() {
+        if (!subtitlesEnabled || localSubtitleActiveId != null) { awaitingEmbeddedSubtitle = false; return }
         val active = player ?: return
         awaitingEmbeddedSubtitle = active.currentTracks.groups.isEmpty()
         if (awaitingEmbeddedSubtitle) {
@@ -3437,10 +3472,10 @@ class NativePlayerActivity : AppCompatActivity() {
         val previous = ConversionRestore(specWithCurrentSourceAudioCodec(), lastPosition, false,
             spec.subtitles.firstOrNull { it.id == (embeddedServerSubtitleId ?: externalSubtitleId) },
             selectedTrackPreference(C.TRACK_TYPE_AUDIO),
-            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null)
+            if (subtitlesEnabled && externalSubtitleId == null && embeddedServerSubtitleId == null && localSubtitleActiveId == null)
                 selectedTrackPreference(C.TRACK_TYPE_TEXT) else null,
             if (spec.isServerConversion) spec.selectedAudioStreamIndex else active.selectedAudioStreamIndex() ?: spec.selectedAudioStreamIndex,
-            lastDuration)
+            lastDuration, subtitlesEnabled, subtitleManuallySelected, localSubtitleActiveId)
         continuousPrevious = previous
         val completionQueued = submitProgress(ProgressUpdate(previous.spec, lastPosition, lastDuration, "completed", watchedMs))
         if (!completionQueued) {
@@ -3719,6 +3754,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 gestures.playWhenReadyBeforeSeek ?: desiredPlayback else resumeWhenVisible)
             outState.putBoolean("subtitles", subtitlesEnabled); outState.putInt("externalSubtitle", externalSubtitleId ?: -1)
             outState.putBoolean("subtitleManuallySelected", subtitleManuallySelected)
+            outState.putString("localSubtitle", localSubtitleActiveId ?: restoredLocalSubtitleId)
             outState.putInt("embeddedSubtitle", embeddedServerSubtitleId ?: -1)
             outState.putLong("subtitleOffset", subtitleOffsetMs)
         }

@@ -459,6 +459,7 @@ class ShyniClient(
                                     (episode.isSpoiler || privateCatalog) == current.isSpoiler
                                 if (episode.id == current.id && !sameShow) invalidCurrentEpisode = true
                                 row to episode.copy(showTitle = episode.showTitle ?: current.showTitle.takeIf { sameShow })
+                                    .let { if (sameShow) it.inheritMediaOrigin(current) else it }
                             }
                         }.toList()
                     // Keep positive privacy and explicit show/View evidence for the
@@ -1176,6 +1177,7 @@ class ShyniClient(
             val children = rows(request("/libraries/${item.libraryId}/shows/${item.id}/seasons?platform=mobile", spoiler = item.isSpoiler))
                 .map { parseMedia(it, item.libraryId, "season").let { season ->
                     season.copy(showId = item.id, showTitle = season.showTitle ?: fresh.title, isSpoiler = item.isSpoiler)
+                        .inheritMediaOrigin(fresh)
                 } }
             MediaDetails(fresh, children, castMembers = cast)
         }
@@ -1187,6 +1189,7 @@ class ShyniClient(
                 val batch = rows(request("/libraries/${item.libraryId}/shows/$showId/seasons/${item.id}/episodes?limit=100&offset=$offset", spoiler = item.isSpoiler))
                     .map { parseMedia(it, item.libraryId, "episode").let { episode ->
                         episode.copy(showId = showId, showTitle = episode.showTitle ?: item.showTitle, isSpoiler = item.isSpoiler)
+                            .inheritMediaOrigin(item)
                     } }
                 episodes.addAll(batch)
                 offset += batch.size
@@ -1865,7 +1868,7 @@ class ShyniClient(
             var result = item.copy(
                 backdrop = item.backdrop ?: show.backdrop,
                 showTitle = item.showTitle ?: show.title,
-            )
+            ).inheritMediaOrigin(show)
             val seasonNumber = item.seasonNumber
             if (seasonNumber != null) {
                 val seasons = rows(request("/libraries/${item.libraryId}/shows/$showId/seasons?platform=mobile", responseLimit = 2L * 1024 * 1024, spoiler = item.isSpoiler))
@@ -2735,7 +2738,9 @@ class ShyniClient(
                 !row.isNull("position_ms") || row.watchedState() == false -> MediaWatchState.UNWATCHED
                 else -> previous?.watchState
             }, row.numberOrNull("episode_count")?.takeIf { it >= 0 } ?: previous?.episodeCount,
-            mediaAddedAt(row) ?: previous?.addedAtMs)
+            mediaAddedAt(row) ?: previous?.addedAtMs,
+            mediaProductionCountries(row).ifEmpty { previous?.productionCountries.orEmpty() },
+            mediaOriginalLanguage(row) ?: previous?.originalLanguage)
     }
 
     private fun JSONObject.watchedState(): Boolean? = when {

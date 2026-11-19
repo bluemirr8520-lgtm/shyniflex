@@ -23,6 +23,9 @@ internal fun deferredSubtitleSelection(
 ): SubtitleTrack? {
     if (!enabled || !selectionUnchanged) return null
     if (savedId != null) return spec.subtitles.firstOrNull { it.id == savedId }
-    if (manuallySelected || nativePreferencePending) return null
+    if (nativePreferencePending) return null
+    // A transport refresh may give the explicitly chosen subtitle a new ID.
+    // Only restore that carried choice; never guess a default for a manual choice.
+    if (manuallySelected) return previous?.let { replacementSubtitle(it, spec.subtitles) }
     return replacementSubtitle(previous, spec.subtitles) ?: preferredSubtitle(spec)
 }

@@ -35,6 +35,14 @@ class DeferredSubtitleSelectionTest {
         assertNull(choose(savedId = 999, manual = true))
     }
 
+    @Test fun explicitChoiceCanRestoreAfterRefreshButDoesNotBecomeAutomaticSelection() {
+        assertEquals(english, choose(previous = english.copy(id = 99), manual = true))
+        assertNull(choose(previous = english.copy(language = "fr", label = "French"), manual = true))
+        assertNull(choose(previous = english, manual = true, enabled = false))
+        assertNull(choose(previous = english, manual = true, nativePending = true))
+        assertNull(choose(previous = english, manual = true, unchanged = false))
+    }
+
     @Test fun prefetchedSelectionRetainsServerChoiceAndUserDisable() {
         val prefetched = spec.copy(subtitlesPending = false, selectedSubtitleId = english.id)
         assertEquals(english, deferredSubtitleSelection(prefetched, null, null, true, false, false, true))

@@ -74,6 +74,8 @@ data class MediaItem(
     val watchState: MediaWatchState? = null,
     val episodeCount: Int? = null,
     val addedAtMs: Long? = null,
+    val productionCountries: List<String> = emptyList(),
+    val originalLanguage: String? = null,
 ) {
     val playable: Boolean get() = type == "movie" || type == "episode"
 
@@ -93,6 +95,7 @@ data class MediaItem(
         put("year", year); put("genres", JSONArray(genres))
         put("watchState", watchState?.name); put("episodeCount", episodeCount)
         put("addedAtMs", addedAtMs)
+        put("productionCountries", JSONArray(productionCountries)); put("originalLanguage", originalLanguage)
     }
 
     companion object {
@@ -115,6 +118,8 @@ data class MediaItem(
             value.stringOrNull("watchState")?.let { runCatching { MediaWatchState.valueOf(it) }.getOrNull() },
             value.indexOrNull("episodeCount"),
             value.stringOrNull("addedAtMs")?.toLongOrNull(),
+            mediaProductionCountries(value),
+            mediaOriginalLanguage(value),
         )
     }
 }

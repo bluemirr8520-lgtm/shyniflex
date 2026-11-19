@@ -109,6 +109,8 @@ private fun displayItem(item: MediaItem): MediaItem = item.copy(
     year = item.year?.takeIf { it in 1..9999 }, episodeCount = item.episodeCount?.takeIf { it >= 0 },
     addedAtMs = item.addedAtMs?.takeIf { it >= 0 },
     genres = item.genres.mapNotNull { optionalText(it, 60) }.distinct().take(12),
+    productionCountries = item.productionCountries.mapNotNull(::normalizedProductionCountry).distinct().take(16),
+    originalLanguage = item.originalLanguage?.let { mediaOriginalLanguage(JSONObject().put("originalLanguage", it)) },
     isSpoiler = false, markers = emptyList(), folderKey = null, navigationPartId = null, playbackPartId = null,
 )
 
@@ -149,6 +151,7 @@ private fun encodeItem(item: MediaItem): JSONObject = JSONObject().apply {
     put("showTitle", item.showTitle); put("displaySubtitle", item.displaySubtitle); put("year", item.year)
     put("genres", JSONArray(item.genres)); put("watchState", item.watchState?.name)
     put("episodeCount", item.episodeCount); put("addedAtMs", item.addedAtMs); put("isSpoiler", false)
+    put("productionCountries", JSONArray(item.productionCountries)); put("originalLanguage", item.originalLanguage)
 }
 
 internal fun decodeHomeSnapshot(scope: String, bytes: ByteArray, nowMs: Long): HomeSnapshot? = runCatching {
@@ -205,6 +208,11 @@ private fun decodeItem(row: JSONObject): MediaItem {
     if (row.has("watchState") && !row.isNull("watchState")) MediaWatchState.valueOf(row.requiredText("watchState"))
     val genres = row.getJSONArray("genres")
     require(genres.length() <= 12 && (0 until genres.length()).all { genres.opt(it) is String })
+    if (row.has("productionCountries")) {
+        val countries = row.getJSONArray("productionCountries")
+        require(countries.length() <= 16 && (0 until countries.length()).all { countries.opt(it) is String })
+    }
+    if (row.has("originalLanguage") && !row.isNull("originalLanguage")) row.requiredText("originalLanguage")
     // A record cannot inject a file hint or markers even if a newer model gains extra fields.
     return MediaItem.fromJson(row).copy(markers = emptyList(), folderKey = null, navigationPartId = null, playbackPartId = null)
 }

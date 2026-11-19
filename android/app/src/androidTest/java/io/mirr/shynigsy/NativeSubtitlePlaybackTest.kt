@@ -240,8 +240,14 @@ class NativeSubtitlePlaybackTest {
                     }
                     openSubtitleMenu(scenario)
                     val fullKorean = "한국어 · SRT · 서버 내장"
+                    val expectedChoices = buildList {
+                        addAll(listOf("자막 끄기", "$fullKorean · 강제", fullKorean, "영어 · SRT · 서버 내장"))
+                        add("자막 파일 불러오기")
+                        if (BuildConfig.OPENSUBTITLES_API_KEY.isNotBlank()) add("온라인 자막 검색")
+                        add("웹에서 자막 검색")
+                    }
                     assertEquals("An exact native alias must appear once, while both Korean tracks remain distinct",
-                        listOf("자막 끄기", "$fullKorean · 강제", fullKorean, "영어 · SRT · 서버 내장"), subtitleChoices().map { it.first })
+                        expectedChoices, subtitleChoices().map { it.first })
                     assertEquals(listOf(fullKorean), subtitleChoices().filter { it.second }.map { it.first })
                     assertTrue(clickSubtitleChoice("자막 끄기"))
                     scenario.onActivity { activity ->
