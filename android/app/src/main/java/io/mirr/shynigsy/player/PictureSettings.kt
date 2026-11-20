@@ -26,6 +26,19 @@ internal fun builtInPicturePresets(): List<PicturePreset> = listOf(
     PicturePreset("builtin_soft", "부드럽게", PictureSettings(2, -10, -8)),
 )
 
+/** App-authored three-axis approximations inspired by LG's mode descriptions, not LG calibration or algorithms. */
+internal fun lgInspiredPicturePresets(): List<PicturePreset> = listOf(
+    PicturePreset("lg_standard", "표준", PictureSettings()),
+    PicturePreset("lg_vivid", "선명한 영상", PictureSettings(3, 10, 12)),
+    PicturePreset("lg_cinema", "영화", PictureSettings(-2, 4, -3)),
+    PicturePreset("lg_sports", "스포츠", PictureSettings(2, 6, 8)),
+    PicturePreset("lg_game", "게임", PictureSettings(0, 3, 2)),
+    PicturePreset("lg_bright_room", "밝은 공간", PictureSettings(8, 2, 2)),
+    PicturePreset("lg_dark_room", "어두운 공간", PictureSettings(-3, -2, -2)),
+    // Neutral color processing is intentional; certified FILMMAKER MODE also controls features outside this app.
+    PicturePreset("lg_filmmaker", "필름메이커 느낌", PictureSettings()),
+)
+
 internal fun normalizedPicturePresetName(value: String): String {
     require(value.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }) {
         "이름에 줄바꿈이나 제어 문자를 사용할 수 없습니다."

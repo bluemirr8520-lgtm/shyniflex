@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inspector.WindowInspector
 import android.widget.ListView
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -50,16 +51,18 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 /** Decodes synthetic video through the real player Activity; never opens an account or remote server. */
 @RunWith(AndroidJUnit4::class)
 class PicturePlaybackRegressionTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
-    @Test fun brightPresetReplacesVisibleExoWithVisibleMpvAndPreservesPausedPlayback() = withFixture { fixture, settings ->
+    @Test fun firstBrightPresetEnablesVisibleExoEffectsAndPreservesPausedPlayback() = withFixture { fixture, settings ->
         launch(fixture).use { scenario ->
             awaitVisibleAndPause(scenario, useExo = true)
             assertRenderedColor(scenario)
+            val originalFrame = awaitFrame(scenario, "The original Exo frame must be visible") { it.coloredSamples > 15 }
             var oldPosition = 0L
             lateinit var oldPlayer: Player
             scenario.onActivity { activity ->
@@ -74,10 +77,10 @@ class PicturePlaybackRegressionTest {
                 assertTrue(dialog.window!!.decorView.findViewWithTag<View>("picture-builtin-builtin_bright").performClick())
                 assertTrue(dialog.window!!.decorView.findViewWithTag<View>("picture-close").performClick())
             }
-            waitFor(scenario, "The selected preset must replace Exo with a ready, visible MPV frame") { activity ->
+            waitFor(scenario, "The first preset must prepare a corrected Exo renderer with visible video") { activity ->
                 val active = field<Player?>(activity, "player")
-                active is MpvPlayer && active.playbackState == Player.STATE_READY &&
-                    field<Boolean>(activity, "playbackFirstFrameReported")
+                active is ExoPlayer && active !== oldPlayer && active.playbackState == Player.STATE_READY &&
+                    field<Boolean>(activity, "playbackFirstFrameReported") && field<Boolean>(activity, "exoValidated")
             }
             scenario.onActivity { activity ->
                 val active = field<Player>(activity, "player")
@@ -88,33 +91,40 @@ class PicturePlaybackRegressionTest {
                 assertEquals("exo", settings.getString("playback_engine", null))
                 assertEquals(BRIGHT, PicturePresetStore(settings).readCurrent())
                 assertEquals(PART, field<PlaybackSpec>(activity, "spec").partId)
-                assertPictureProperties(BRIGHT)
+                assertEquals(BRIGHT, field<PictureSettings>(activity, "pictureSettings"))
             }
-            assertRenderedColor(scenario)
+            awaitFrame(scenario, "Brightness must change the paused video pixels, not only the saved setting") {
+                it.coloredSamples > 15 && it.meanLuma > originalFrame.meanLuma + 3
+            }
             scenario.onActivity { field<Player>(it, "player").play() }
             waitFor(scenario, "Playback must continue from the preserved position after applying the preset") {
                 val active = field<Player>(it, "player")
-                active is MpvPlayer && active.isPlaying && active.currentPosition >= oldPosition + 150
+                active is ExoPlayer && active.isPlaying && active.currentPosition >= oldPosition + 150
             }
             scenario.onActivity { field<Player>(it, "player").pause() }
         }
     }
 
-    @Test fun savedCorrectionStartsInMpvAndNeutralNextPlaybackReturnsToVisibleExo() = withFixture(BRIGHT) { fixture, settings ->
+    @Test fun savedCorrectionStartsInVisibleExoAndSurvivesRecreation() = withFixture(BRIGHT) { fixture, settings ->
         launch(fixture).use { scenario ->
-            assertTrue("The native engine must request the fixture", fixture.streamRequested.await(10, TimeUnit.SECONDS))
-            var initial: Player? = null
+            assertTrue("The requested renderer must request the fixture", fixture.streamRequested.await(10, TimeUnit.SECONDS))
+            awaitVisibleAndPause(scenario, useExo = true)
+            var position = 0L
             scenario.onActivity { activity ->
-                initial = field(activity, "player")
-                assertTrue("A saved non-neutral preset must select MPV directly", initial is MpvPlayer)
-                assertFalse("Corrected video must not start an Exo inspection handoff", field(activity, "mpvProbePending"))
-                assertFalse(field(activity, "manualExoProbePending"))
-            }
-            awaitVisibleAndPause(scenario, useExo = false)
-            scenario.onActivity { activity ->
-                assertSame("The initial native renderer must remain the active engine", initial, field<Player>(activity, "player"))
+                position = field<Player>(activity, "player").currentPosition
                 assertEquals("exo", settings.getString("playback_engine", null))
-                assertPictureProperties(BRIGHT)
+                assertEquals(BRIGHT, field<PictureSettings>(activity, "pictureSettings"))
+            }
+            assertRenderedColor(scenario)
+            scenario.recreate()
+            awaitVisibleAndPause(scenario, useExo = true, pauseWhenReady = false)
+            scenario.onActivity { activity ->
+                val active = field<Player>(activity, "player")
+                assertFalse(active.playWhenReady)
+                assertTrue(abs(active.currentPosition - position) < 800)
+                assertEquals(SPEED, active.playbackParameters.speed, .001f)
+                assertEquals(BRIGHT, field<PictureSettings>(activity, "pictureSettings"))
+                assertEquals(BRIGHT, PicturePresetStore(settings).readCurrent())
             }
             assertRenderedColor(scenario)
         }
@@ -134,6 +144,7 @@ class PicturePlaybackRegressionTest {
     @Test @SdkSuppress(minSdkVersion = 29)
     fun engineMenuImmediatelySwitchesBothWaysAndKeepsPositionPauseSpeedAndSavedPresets() = withFixture(BRIGHT) { fixture, settings ->
         val preset = PicturePresetStore(settings).save("엔진 전환 검사", BRIGHT)
+        settings.edit().putString("playback_engine", "mpv").commit()
         launch(fixture).use { scenario ->
             awaitVisibleAndPause(scenario, useExo = false)
             var pausedPosition = 0L
@@ -144,7 +155,7 @@ class PicturePlaybackRegressionTest {
                 assertEquals(SPEED, previous!!.playbackParameters.speed, 0.001f)
                 assertPictureProperties(BRIGHT)
             }
-            selectEngine(scenario, PlaybackEnginePreference.EXO, clearsCorrection = true)
+            selectEngine(scenario, PlaybackEnginePreference.EXO)
             awaitVisibleAndPause(scenario, useExo = true, pauseWhenReady = false)
             scenario.onActivity { activity ->
                 val active = field<Player>(activity, "player")
@@ -154,8 +165,8 @@ class PicturePlaybackRegressionTest {
                 assertEquals(SPEED, active.playbackParameters.speed, 0.001f)
                 assertEquals("exo", settings.getString("playback_engine", null))
                 assertEquals(PlaybackEnginePreference.EXO, field<PlaybackEnginePreference>(activity, "enginePreferenceForContent"))
-                assertEquals(PictureSettings(), field<PictureSettings>(activity, "pictureSettings"))
-                assertEquals(PictureSettings(), PicturePresetStore(settings).readCurrent())
+                assertEquals(BRIGHT, field<PictureSettings>(activity, "pictureSettings"))
+                assertEquals(BRIGHT, PicturePresetStore(settings).readCurrent())
                 assertEquals("An explicit Exo selection must retain named custom presets", listOf(preset), PicturePresetStore(settings).list())
                 pausedPosition = active.currentPosition
                 previous = active
@@ -172,14 +183,96 @@ class PicturePlaybackRegressionTest {
                 assertEquals("mpv", settings.getString("playback_engine", null))
                 assertEquals(PlaybackEnginePreference.MPV, field<PlaybackEnginePreference>(activity, "enginePreferenceForContent"))
                 assertEquals(listOf(preset), PicturePresetStore(settings).list())
-                assertPictureProperties(PictureSettings())
+                assertEquals(BRIGHT, field<PictureSettings>(activity, "pictureSettings"))
+                assertEquals(BRIGHT, PicturePresetStore(settings).readCurrent())
+                assertPictureProperties(BRIGHT)
             }
             assertRenderedColor(scenario)
         }
     }
 
-    private fun selectEngine(scenario: ActivityScenario<NativePlayerActivity>, preference: PlaybackEnginePreference,
-        clearsCorrection: Boolean = false) {
+    @Test fun pausedExoUpdatesBrightnessContrastSaturationAndNeutralWithoutReplacingItsRenderer() = withFixture(BRIGHT) { fixture, settings ->
+        val store = PicturePresetStore(settings)
+        val neutral = store.save("원본 픽셀 검사", PictureSettings())
+        val brightness = store.save("밝기 픽셀 검사", PictureSettings(brightness = 30))
+        val contrast = store.save("대비 픽셀 검사", PictureSettings(contrast = -35))
+        val saturation = store.save("채도 픽셀 검사", PictureSettings(saturation = -100))
+        launch(fixture).use { scenario ->
+            awaitVisibleAndPause(scenario, useExo = true)
+            lateinit var initial: Player
+            var position = 0L
+            scenario.onActivity { activity ->
+                initial = field(activity, "player")
+                position = initial.currentPosition
+            }
+            val corrected = awaitFrame(scenario, "Saved correction must produce visible video") { it.coloredSamples > 15 }
+            selectPicturePreset(scenario, neutral)
+            val original = awaitFrame(scenario, "Restoring original must redraw the paused video") {
+                it.coloredSamples > 15 && it.meanLuma < corrected.meanLuma - 3
+            }
+            assertTrue("The synthetic fixture must contain colors for saturation comparison", original.meanChroma > 20)
+            assertTrue("The synthetic fixture must contain contrast for comparison", original.lumaDeviation > 20)
+
+            fun assertPreserved(expected: PictureSettings) = scenario.onActivity { activity ->
+                val active = field<Player>(activity, "player")
+                assertSame("Changing an existing effect must keep the same Exo renderer", initial, active)
+                assertTrue(active is ExoPlayer)
+                assertFalse("A paused frame must redraw without resuming playback", active.playWhenReady)
+                assertTrue("Live image correction must not seek the video", abs(active.currentPosition - position) < 150)
+                assertEquals(SPEED, active.playbackParameters.speed, .001f)
+                assertEquals(expected, field<PictureSettings>(activity, "pictureSettings"))
+                assertEquals(expected, store.readCurrent())
+                assertNull(active.playerError)
+            }
+            fun restoreOriginal() {
+                selectPicturePreset(scenario, neutral)
+                awaitFrame(scenario, "Original must remove the correction from the same paused frame") {
+                    it.coloredSamples > 15 && it.meanDifference(original) < 6
+                }
+                assertPreserved(PictureSettings())
+            }
+            assertPreserved(PictureSettings())
+
+            selectPicturePreset(scenario, brightness)
+            awaitFrame(scenario, "Brightness must visibly increase the paused frame luminance") {
+                it.coloredSamples > 15 && it.meanLuma > original.meanLuma + 8
+            }
+            assertPreserved(brightness.settings)
+            restoreOriginal()
+
+            selectPicturePreset(scenario, contrast)
+            awaitFrame(scenario, "Lower contrast must reduce the paused frame luminance spread") {
+                it.coloredSamples > 15 && it.lumaDeviation < original.lumaDeviation * .85
+            }
+            assertPreserved(contrast.settings)
+            restoreOriginal()
+
+            selectPicturePreset(scenario, saturation)
+            awaitFrame(scenario, "Zero saturation must make the paused video grayscale") {
+                it.coloredSamples > 15 && it.meanChroma < 6
+            }
+            assertPreserved(saturation.settings)
+            restoreOriginal()
+        }
+    }
+
+    private fun selectPicturePreset(scenario: ActivityScenario<NativePlayerActivity>, preset: PicturePreset) {
+        scenario.onActivity { activity ->
+            NativePlayerActivity::class.java.getDeclaredMethod("showPictureSettings")
+                .apply { isAccessible = true }.invoke(activity)
+            val dialog = field<PictureSettingsDialog>(activity, "pictureDialog").dialog
+            fun click(tag: String) {
+                val view = requireNotNull(dialog.window!!.decorView.findViewWithTag<View>(tag)) { "Missing picture action: $tag" }
+                assertTrue("Picture action must be enabled: $tag", view.performClick())
+            }
+            click("picture-presets")
+            click("picture-custom-${preset.id}")
+            click("picture-apply")
+            click("picture-close")
+        }
+    }
+
+    private fun selectEngine(scenario: ActivityScenario<NativePlayerActivity>, preference: PlaybackEnginePreference) {
         scenario.onActivity { activity ->
             NativePlayerActivity::class.java.getDeclaredMethod("showPlaybackEnginePreference")
                 .apply { isAccessible = true }.invoke(activity)
@@ -198,7 +291,7 @@ class PicturePlaybackRegressionTest {
             }
             val list = requireNotNull(findList(root))
             val index = PlaybackEnginePreference.entries.indexOf(preference)
-            if (clearsCorrection) assertTrue("The Exo choice must explain the correction reset",
+            if (preference == PlaybackEnginePreference.EXO) assertFalse("Selecting Exo must retain image correction",
                 list.adapter.getItem(index).toString().contains("보정 해제"))
             assertTrue(list.performItemClick(requireNotNull(list.getChildAt(index - list.firstVisiblePosition)), index, list.adapter.getItemId(index)))
         }
@@ -225,42 +318,97 @@ class PicturePlaybackRegressionTest {
             val correctEngine = if (useExo) active is ExoPlayer else active is MpvPlayer
             val ready = correctEngine && active != null && active.playbackState == Player.STATE_READY &&
                 field<Boolean>(activity, "playbackFirstFrameReported") &&
-                (!useExo || field<Boolean>(activity, "exoValidated")) && active.videoSize.width > 0
+                (!useExo || field<Boolean>(activity, "exoValidated")) && hasVideoDimensions(active)
             if (ready && pauseWhenReady) active!!.pause()
             ready
         }
     }
 
+    private fun hasVideoDimensions(active: Player): Boolean {
+        if (active.videoSize.width > 0 && active.videoSize.height > 0) return true
+        if (active !is ExoPlayer) return false
+        // Media3 1.10.1's effect video sink omits onVideoSizeChanged. The decoded format is
+        // the dimensions fallback, while first-frame/validation and Surface PixelCopy remain required.
+        if (active.videoFormat?.let { it.width > 0 && it.height > 0 } == true) return true
+        return active.currentTracks.groups.any { group ->
+            group.type == C.TRACK_TYPE_VIDEO && (0 until group.length).any { index ->
+                group.isTrackSelected(index) && group.getTrackFormat(index).let { it.width > 0 && it.height > 0 }
+            }
+        }
+    }
+
     /** Surface pixels exclude controls, text, and the Activity background, so audio-only playback cannot pass. */
     private fun assertRenderedColor(scenario: ActivityScenario<NativePlayerActivity>) {
+        awaitFrame(scenario, "Video is black despite a reported first frame") { it.coloredSamples > 15 }
+    }
+
+    private fun awaitFrame(scenario: ActivityScenario<NativePlayerActivity>, message: String,
+        predicate: (FrameSamples) -> Boolean): FrameSamples {
+        waitFor(scenario, "Exo must preserve the synthetic video's 16:9 aspect ratio") { activity ->
+            if (field<Player?>(activity, "player") !is ExoPlayer) true else {
+                val content = field<PlayerView>(activity, "playerView")
+                    .findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+                content != null && content.width > 0 && content.height > 0 &&
+                    abs(content.width.toFloat() / content.height - 16f / 9f) < .025f
+            }
+        }
         val bitmap = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888)
         var status = -1
-        var colors = 0
+        var lastFrame: FrameSamples? = null
+        var diagnostics = "not sampled"
         try {
             val deadline = SystemClock.elapsedRealtime() + 5_000
             do {
                 val copied = CountDownLatch(1)
                 val result = AtomicInteger(-1)
                 scenario.onActivity { activity ->
+                    diagnostics = playerDiagnostics(activity)
                     val surface = field<PlayerView>(activity, "playerView").videoSurfaceView as SurfaceView
                     assertTrue("The playback surface must remain valid", surface.holder.surface.isValid)
                     PixelCopy.request(surface, bitmap, { value -> result.set(value); copied.countDown() }, Handler(Looper.getMainLooper()))
                 }
                 assertTrue("Video surface capture did not finish", copied.await(3, TimeUnit.SECONDS))
                 status = result.get()
-                colors = 0
                 if (status == PixelCopy.SUCCESS) {
-                    for (y in 0 until bitmap.height step 12) for (x in 0 until bitmap.width step 16) {
-                        val color = bitmap.getPixel(x, y)
-                        if (Color.red(color) > 24 || Color.green(color) > 24 || Color.blue(color) > 24) colors++
-                    }
-                    if (colors > 15) return
+                    lastFrame = FrameSamples.from(bitmap)
+                    if (predicate(lastFrame)) return lastFrame
                 }
                 Thread.sleep(50)
             } while (SystemClock.elapsedRealtime() < deadline)
             assertEquals("PixelCopy must capture the decoded video surface", PixelCopy.SUCCESS, status)
-            assertTrue("Video is black despite a reported first frame", colors > 15)
+            throw AssertionError("$message; frame=$lastFrame; player=$diagnostics")
         } finally { bitmap.recycle() }
+    }
+
+    private class FrameSamples(private val pixels: IntArray) {
+        private val luma = pixels.map { Color.red(it) * .2126 + Color.green(it) * .7152 + Color.blue(it) * .0722 }
+        val meanLuma = luma.average()
+        val lumaDeviation = sqrt(luma.sumOf { (it - meanLuma) * (it - meanLuma) } / luma.size)
+        val meanChroma = pixels.map { maxOf(Color.red(it), Color.green(it), Color.blue(it)) -
+            minOf(Color.red(it), Color.green(it), Color.blue(it)) }.average()
+        val coloredSamples = pixels.count { Color.red(it) > 24 || Color.green(it) > 24 || Color.blue(it) > 24 }
+
+        fun meanDifference(other: FrameSamples): Double {
+            require(pixels.size == other.pixels.size)
+            return pixels.indices.sumOf { index ->
+                val left = pixels[index]; val right = other.pixels[index]
+                abs(Color.red(left) - Color.red(right)) + abs(Color.green(left) - Color.green(right)) +
+                    abs(Color.blue(left) - Color.blue(right))
+            }.toDouble() / (pixels.size * 3)
+        }
+
+        override fun toString() = "luma=$meanLuma, spread=$lumaDeviation, chroma=$meanChroma, visible=$coloredSamples"
+
+        companion object {
+            fun from(bitmap: Bitmap): FrameSamples {
+                val samples = ArrayList<Int>()
+                // Avoid the surface edges; identical sample positions make neutral restoration measurable.
+                for (y in bitmap.height / 10 until bitmap.height * 9 / 10 step 6) {
+                    for (x in bitmap.width / 10 until bitmap.width * 9 / 10 step 8) samples += bitmap.getPixel(x, y)
+                }
+                return FrameSamples(samples.toIntArray())
+            }
+        }
     }
 
     private fun assertPictureProperties(settings: PictureSettings) {
@@ -278,7 +426,7 @@ class PicturePlaybackRegressionTest {
         assertTrue(NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("127.0.0.1"))
         val settings = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
         val keys = setOf("playback_engine", "playback_speed", "resize_mode", "resize_scale", "subtitle_vertical",
-            "picture_settings_v1", "picture_presets_v1")
+            "picture_settings_v1", "picture_presets_v1", "picture_selected_preset_v1")
         val previous = keys.associateWith { settings.all[it] }
         val encrypted = context.getSharedPreferences("encrypted_sessions", Context.MODE_PRIVATE)
         val previousServer = encrypted.getString("last_server", null)
@@ -287,7 +435,8 @@ class PicturePlaybackRegressionTest {
             try {
                 settings.edit().putString("playback_engine", "exo").putFloat("playback_speed", SPEED)
                     .putInt("resize_mode", 0).putFloat("resize_scale", 1f).putBoolean("subtitle_vertical", false)
-                    .putString("picture_settings_v1", encodePictureSettings(initial)).remove("picture_presets_v1").commit()
+                    .putString("picture_settings_v1", encodePictureSettings(initial)).remove("picture_presets_v1")
+                    .remove("picture_selected_preset_v1").commit()
                 sessions.save(fixture.origin, "picture-synthetic-token", "합성 보정 검사")
                 action(fixture, settings)
                 fixture.assertHealthy()
@@ -311,16 +460,44 @@ class PicturePlaybackRegressionTest {
 
     private fun waitFor(scenario: ActivityScenario<NativePlayerActivity>, message: String, predicate: (NativePlayerActivity) -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + 15_000
+        var diagnostics = "not sampled"
         while (SystemClock.elapsedRealtime() < deadline) {
             var matched = false
-            scenario.onActivity { activity ->
-                field<Player?>(activity, "player")?.playerError?.let { throw AssertionError(message, it) }
-                matched = predicate(activity)
+            try {
+                scenario.onActivity { activity ->
+                    diagnostics = playerDiagnostics(activity)
+                    field<Player?>(activity, "player")?.playerError?.let {
+                        throw AssertionError("$message; player=$diagnostics")
+                    }
+                    matched = predicate(activity)
+                }
+            } catch (error: RuntimeException) {
+                throw AssertionError("$message; Activity unavailable or callback failed; last player=$diagnostics", error)
             }
             if (matched) return
             Thread.sleep(25)
         }
-        fail(message)
+        fail("$message; player=$diagnostics")
+    }
+
+    /** Dimensions and state only: never include source URLs, account information or renderer exception text. */
+    private fun playerDiagnostics(activity: NativePlayerActivity): String {
+        val active = field<Player?>(activity, "player") ?: return "engine=none"
+        val format = (active as? ExoPlayer)?.videoFormat
+        val content = field<PlayerView>(activity, "playerView")
+            .findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+        val selected = active.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }.flatMap { group ->
+            (0 until group.length).filter(group::isTrackSelected).map { index ->
+                group.getTrackFormat(index).let { "${it.width}x${it.height}" }
+            }
+        }
+        return "engine=${active.javaClass.simpleName}, state=${active.playbackState}, " +
+            "size=${active.videoSize.width}x${active.videoSize.height}, " +
+            "format=${format?.width}x${format?.height}, selected=${selected.take(4)}, " +
+            "content=${content?.width}x${content?.height}, " +
+            "prepared=${field<Boolean>(activity, "prepared")}, validated=${field<Boolean>(activity, "exoValidated")}, " +
+            "frame=${field<Boolean>(activity, "playbackFirstFrameReported")}, ready=${active.playWhenReady}, " +
+            "playing=${active.isPlaying}, position=${active.currentPosition}, error=${active.playerError?.errorCode}"
     }
 
     @Suppress("UNCHECKED_CAST")

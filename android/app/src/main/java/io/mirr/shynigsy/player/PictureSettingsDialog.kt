@@ -43,6 +43,7 @@ internal class PictureSettingsDialog(
     private var generation = 0
     private var dismissed = false
     private var supportLabel: TextView? = null
+    private var selectedPresetLabel: TextView? = null
     private val focusRows = mutableListOf<View>()
     private val content = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -104,6 +105,7 @@ internal class PictureSettingsDialog(
         content.removeAllViews()
         focusRows.clear()
         supportLabel = null
+        selectedPresetLabel = null
         scroll.scrollTo(0, 0)
         content.addView(text(title, 16f).apply {
             tag = "picture-page-title"
@@ -123,10 +125,17 @@ internal class PictureSettingsDialog(
             content.addView(this, matchWrap())
         }
         refreshSupportNote()
+        selectedPresetLabel = text("", 12f, secondary = true).apply {
+            tag = "picture-selected-preset"; setPadding(dp(4), 0, dp(4), dp(8))
+            content.addView(this, matchWrap())
+        }
+        refreshSelectedPreset()
         adjustment("밝기", "picture-brightness", -50..50, { it.brightness }) { next, amount -> next.copy(brightness = amount) }
         adjustment("대비 (농도)", "picture-contrast", -50..50, { it.contrast }) { next, amount -> next.copy(contrast = amount) }
         adjustment("채도", "picture-saturation", -100..100, { it.saturation }) { next, amount -> next.copy(saturation = amount) }
-        action("원본으로 되돌리기", "picture-reset") { apply(PictureSettings()); showControls("picture-reset") }
+        action("원본으로 되돌리기", "picture-reset") {
+            apply(PictureSettings(), "builtin_original"); showControls("picture-reset")
+        }
         action("프리셋 불러오기·관리", "picture-presets") { showPresets() }
         action("현재 설정 저장", "picture-save-current") { showNameEditor(null, value) }
         action("닫기", "picture-close") { dismiss() }
@@ -180,7 +189,19 @@ internal class PictureSettingsDialog(
         beginPage("영상 프리셋", "밝기 · 대비 · 채도를 함께 적용합니다.")
         builtInPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-builtin-${preset.id}") {
-                apply(preset.settings); showControls("picture-presets")
+                apply(preset.settings, preset.id); showControls("picture-presets")
+            }
+        }
+        content.addView(text("LG TV 참고", 13f, secondary = true).apply {
+            tag = "picture-lg-section"; setPadding(dp(4), dp(12), dp(4), dp(4))
+        }, matchWrap())
+        content.addView(text("LG 공식 수치가 아닌 밝기·대비·채도 근사값입니다. TV 화면 모드·게임 지연·필름메이커 인증 기능은 바뀌지 않습니다.",
+            12f, secondary = true).apply {
+            tag = "picture-lg-note"; setPadding(dp(4), 0, dp(4), dp(8))
+        }, matchWrap())
+        lgInspiredPicturePresets().forEach { preset ->
+            action("${preset.name}  ·  ${summary(preset.settings)}", "picture-lg-${preset.id}") {
+                apply(preset.settings, preset.id); showControls("picture-presets")
             }
         }
         content.addView(text("내 프리셋", 13f, secondary = true).apply {
@@ -198,7 +219,7 @@ internal class PictureSettingsDialog(
 
     private fun showSavedPreset(preset: PicturePreset) {
         beginPage(preset.name, summary(preset.settings))
-        action("적용", "picture-apply") { apply(preset.settings); showControls("picture-presets") }
+        action("적용", "picture-apply") { apply(preset.settings, preset.id); showControls("picture-presets") }
         action("현재 설정으로 덮어쓰기", "picture-overwrite") {
             showConfirmation("프리셋 덮어쓰기", "‘${preset.name}’을 현재 영상 설정으로 바꿀까요?", "덮어쓰기") {
                 store.save(preset.name, value, preset.id)
@@ -263,10 +284,18 @@ internal class PictureSettingsDialog(
         }
     }
 
-    private fun apply(settings: PictureSettings) {
+    private fun apply(settings: PictureSettings, presetId: String? = null) {
         value = settings.normalized()
+        store.clearSelectedPreset()
         onApply(value)
+        // onApply owns saving and engine handoff. Remember the identity only after it accepted these values.
+        if (presetId != null && current().normalized() == value) store.selectAppliedPreset(presetId, value)
         refreshSupportNote()
+        refreshSelectedPreset()
+    }
+
+    private fun refreshSelectedPreset() {
+        selectedPresetLabel?.text = "현재 프리셋 · ${store.currentPreset(value)?.name ?: "사용자 조절"}"
     }
 
     private fun refreshSupportNote() {

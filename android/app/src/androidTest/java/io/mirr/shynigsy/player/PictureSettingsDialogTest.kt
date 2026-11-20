@@ -107,6 +107,59 @@ class PictureSettingsDialogTest {
         scenario.onActivity { assertEquals(listOf(first.settings), applied) }
     }
 
+    @Test fun lgModeFocusDoesNotApplyAndEveryModeKeepsItsNameEvenWhenNeutral() {
+        val saved = store.save("보관할 프리셋", PictureSettings(9, 3, -8))
+        show()
+        click("picture-presets")
+        scenario.onActivity {
+            assertEquals("LG TV 참고", (view("picture-lg-section") as TextView).text.toString())
+            assertTrue((view("picture-lg-note") as TextView).text.contains("LG 공식 수치가 아닌"))
+            assertTrue(view("picture-lg-lg_game").requestFocus())
+            assertTrue(applied.isEmpty())
+        }
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
+        scenario.onActivity {
+            assertTrue(view("picture-lg-lg_bright_room").hasFocus())
+            assertTrue(applied.isEmpty())
+        }
+        for (preset in lgInspiredPicturePresets()) {
+            click("picture-lg-${preset.id}")
+            scenario.onActivity {
+                assertEquals(preset.settings, current)
+                assertEquals(preset, PicturePresetStore(preferences).currentPreset())
+                assertEquals("현재 프리셋 · ${preset.name}", (view("picture-selected-preset") as TextView).text.toString())
+            }
+            click("picture-presets")
+        }
+        click("picture-back")
+        scenario.onActivity { helper.dismiss() }
+        show()
+        scenario.onActivity {
+            assertEquals("현재 프리셋 · 필름메이커 느낌", (view("picture-selected-preset") as TextView).text.toString())
+            assertEquals(listOf(saved), store.list())
+        }
+        click("picture-reset")
+        scenario.onActivity {
+            assertEquals(PictureSettings(), current)
+            assertEquals("builtin_original", store.currentPreset()?.id)
+            assertEquals("현재 프리셋 · 원본", (view("picture-selected-preset") as TextView).text.toString())
+            assertEquals(listOf(saved), store.list())
+        }
+    }
+
+    @Test fun adjustingAnAppliedLgModeChangesTheNameToCustomWithoutChangingSavedPresets() {
+        show()
+        click("picture-presets")
+        click("picture-lg-lg_vivid")
+        scenario.onActivity { assertTrue(view("picture-brightness").requestFocus()) }
+        press(KeyEvent.KEYCODE_DPAD_RIGHT)
+        scenario.onActivity {
+            assertEquals(lgInspiredPicturePresets().first { it.id == "lg_vivid" }.settings.copy(brightness = 4), current)
+            assertNull(store.currentPreset())
+            assertEquals("현재 프리셋 · 사용자 조절", (view("picture-selected-preset") as TextView).text.toString())
+        }
+    }
+
     @Test fun invalidAndDuplicateNamesKeepTheEditorAndNeverOverwriteTheExistingPreset() {
         val existing = store.save("기존 설정", PictureSettings(8, 9, 10))
         current = PictureSettings(3, 4, 5)

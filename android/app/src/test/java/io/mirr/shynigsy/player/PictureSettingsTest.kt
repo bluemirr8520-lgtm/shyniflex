@@ -28,6 +28,19 @@ class PictureSettingsTest {
         assertTrue(values.first { it.name == "밝게" }.settings.brightness > 0)
     }
 
+    @Test fun lgReferenceModesUseBoundedColorOnlyApproximationsAndNeutralFilmmaker() {
+        val presets = lgInspiredPicturePresets()
+        assertEquals(listOf("표준", "선명한 영상", "영화", "스포츠", "게임", "밝은 공간", "어두운 공간", "필름메이커 느낌"),
+            presets.map { it.name })
+        assertEquals(13, (builtInPicturePresets() + presets).map { it.id }.distinct().size)
+        assertTrue(presets.all { it.settings.brightness in -10..10 && it.settings.contrast in -15..15 &&
+            it.settings.saturation in -20..20 })
+        assertTrue(presets.first { it.id == "lg_standard" }.settings.isNeutral)
+        assertTrue(presets.first { it.id == "lg_filmmaker" }.settings.isNeutral)
+        assertTrue(presets.first { it.id == "lg_bright_room" }.settings.brightness >
+            presets.first { it.id == "lg_dark_room" }.settings.brightness)
+    }
+
     @Test fun currentSettingsRoundTripAndMalformedValuesReturnToOriginal() {
         val expected = PictureSettings(-23, 44, -100)
         assertEquals(expected, decodePictureSettings(encodePictureSettings(expected)))

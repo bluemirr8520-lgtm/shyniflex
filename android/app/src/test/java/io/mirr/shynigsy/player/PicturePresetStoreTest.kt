@@ -62,6 +62,44 @@ class PicturePresetStoreTest {
         assertEquals(listOf(saved), PicturePresetStore(preferences).list())
     }
 
+    @Test fun neutralLgPresetIdentitySurvivesSavingAndReopeningButExplicitResetClearsIt() {
+        val preferences = MemoryPreferences()
+        val store = PicturePresetStore(preferences)
+        val filmmaker = lgInspiredPicturePresets().first { it.id == "lg_filmmaker" }
+        store.writeCurrent(filmmaker.settings)
+        assertTrue(store.selectAppliedPreset(filmmaker.id, filmmaker.settings))
+        store.writeCurrent(filmmaker.settings)
+        assertEquals(filmmaker, PicturePresetStore(preferences).currentPreset())
+        store.clearSelectedPreset()
+        store.writeCurrent(PictureSettings())
+        assertEquals("builtin_original", PicturePresetStore(preferences).currentPreset()?.id)
+        assertFalse(store.selectAppliedPreset("not_a_preset", PictureSettings()))
+    }
+
+    @Test fun selectedPresetNeverLabelsDifferentOrUnsavedValues() {
+        val store = PicturePresetStore(MemoryPreferences())
+        val vivid = lgInspiredPicturePresets().first { it.id == "lg_vivid" }
+        assertFalse(store.selectAppliedPreset(vivid.id, vivid.settings))
+        store.writeCurrent(vivid.settings)
+        assertTrue(store.selectAppliedPreset(vivid.id, vivid.settings))
+        store.writeCurrent(PictureSettings(1, 2, 3))
+        assertNull(store.currentPreset())
+        store.writeCurrent(vivid.settings)
+        assertNull("A previously cleared ID cannot reappear just because values match", store.currentPreset())
+    }
+
+    @Test fun selectedCustomPresetTracksRenameAndDeletionWithoutDeletingColorSettings() {
+        val store = PicturePresetStore(MemoryPreferences())
+        val saved = store.save("내 영화", PictureSettings(7, -4, 9))
+        store.writeCurrent(saved.settings)
+        assertTrue(store.selectAppliedPreset(saved.id, saved.settings))
+        val renamed = store.save("내 영화 새 이름", saved.settings, saved.id)
+        assertEquals(renamed, store.currentPreset())
+        store.delete(saved.id)
+        assertNull(store.currentPreset())
+        assertEquals(saved.settings, store.readCurrent())
+    }
+
     /** In-memory SharedPreferences contract fixture; no Android storage or mocking library. */
     private class MemoryPreferences : SharedPreferences {
         private val values = linkedMapOf<String, Any>()

@@ -172,6 +172,12 @@ class NativePlayerActivity : AppCompatActivity() {
     private val pictureStore by lazy { PicturePresetStore(getSharedPreferences("gsy_settings", MODE_PRIVATE)) }
     private var pictureSettings = PictureSettings()
     private var pictureDialog: PictureSettingsDialog? = null
+    private var exoPictureEffect: ExoPictureEffect? = null
+    private var exoPictureOwner: ExoPlayer? = null
+    private var exoPictureRestartPending: ExoPlayer? = null
+    private var exoPictureRedraw: Runnable? = null
+    private var exoPictureFrameTimeout: Runnable? = null
+    private var exoPictureBypassContent: String? = null
     private var player: Player? = null
     // Kept outside PlaybackSpec: it is neither a server marker nor reusable across files.
     private var chapterCreditsOwner: Player? = null
@@ -1079,7 +1085,7 @@ class NativePlayerActivity : AppCompatActivity() {
             enginePreferenceContentKey = contentKey
             enginePreferenceForContent = playbackEnginePreference()
         }
-        val preference = pictureEnginePreference(enginePreferenceForContent, pictureSettings)
+        val preference = enginePreferenceForContent
         val start = engineStart(preference, forceMpvSession == key,
             current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
             pendingTextPreference != null, current.sessionId.isNullOrBlank(),
@@ -1178,13 +1184,6 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun startPreparedPlayer(candidate: PlaybackCodecInfo?, useExo: Boolean,
         chapterCarry: OriginalChapterCredits? = null, manualExo: Boolean = false, manualProbe: Boolean = false,
         sourceHasAudio: Boolean = false, headerExo: Boolean = false) {
-        // A picture choice can arrive while codec/subtitle inspection or an MPV probe is pending.
-        // Recheck here so a late handoff cannot create Exo or start another probe for corrected video.
-        if (pictureRequiresMpv(pictureSettings) &&
-            (useExo || candidate != null || manualProbe || manualExo || headerExo)) {
-            startPreparedPlayer(null, false, chapterCarry = chapterCarry)
-            return
-        }
         // Exo's Matroska seek can skip a subtitle that started in an earlier
         // cluster. Resume in MPV, whose demuxer retains the active subtitle.
         if ((useExo || candidate != null || manualProbe || manualExo || headerExo) &&
@@ -1194,6 +1193,7 @@ class NativePlayerActivity : AppCompatActivity() {
             return
         }
         val headers = client.playbackHeaders(spec)
+        var initializingExo: ExoPlayer? = null
         val created: Player = try {
             if (useExo) try {
                 // Media3 normally logs exception stack traces that can include signed URLs.
@@ -1202,9 +1202,25 @@ class NativePlayerActivity : AppCompatActivity() {
                 val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
                     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
                 val data = OkHttpDataSource.Factory(http).setDefaultRequestProperties(headers)
-                ExoPlayer.Builder(this).setMediaSourceFactory(DefaultMediaSourceFactory(data))
-                    .setHandleAudioBecomingNoisy(true).build().apply { setAudioAttributes(AudioAttributes.DEFAULT, true) }
+                ExoPlayer.Builder(this).apply {
+                    if (!pictureSettings.isNeutral && exoPictureBypassContent != subtitlePlaybackContentKey(spec))
+                        setRenderersFactory(ExoPictureRenderersFactory(this@NativePlayerActivity))
+                }.setMediaSourceFactory(DefaultMediaSourceFactory(data))
+                    .setHandleAudioBecomingNoisy(true).build().apply {
+                        initializingExo = this
+                        setAudioAttributes(AudioAttributes.DEFAULT, true)
+                        // A neutral first playback keeps Exo's direct surface. Install a real effect
+                        // before prepare only when needed; never activate an empty effects pipeline.
+                        if (!pictureSettings.isNeutral && exoPictureBypassContent != subtitlePlaybackContentKey(spec)) {
+                            val effect = ExoPictureEffect(pictureSettings)
+                            setVideoEffects(listOf(effect))
+                            exoPictureEffect = effect; exoPictureOwner = this
+                        }
+                    }
             } catch (_: Exception) {
+                initializingExo?.release()
+                initializingExo = null
+                exoPictureEffect = null; exoPictureOwner = null
                 if (exoRestoreSubtitlePending) spec = spec.copy(subtitlesPending = true)
                 exoRestoreSubtitlePending = false
                 if (manualExo) toast("ExoPlayer를 시작하지 못해 MPV로 재생합니다.")
@@ -1213,9 +1229,13 @@ class NativePlayerActivity : AppCompatActivity() {
             } else MpvPlayer(this, headers, preferSoftwareDecode = spec.preferSoftwareDecode,
                 serverConversion = spec.isServerConversion, sourceDurationMs = lastDuration)
         } catch (_: LinkageError) {
+            initializingExo?.release()
+            exoPictureEffect = null; exoPictureOwner = null
             onPlayerInitializationFailure()
             return
         } catch (_: Exception) {
+            initializingExo?.release()
+            exoPictureEffect = null; exoPictureOwner = null
             onPlayerInitializationFailure()
             return
         }
@@ -1256,7 +1276,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     handler.removeCallbacks(engineProbeTimeout)
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                     forceMpvSession = "${spec.sessionId}:${spec.partId}"
-                    if (manual && !pictureRequiresMpv(pictureSettings)) toast("ExoPlayer의 영상·자막을 확인하지 못해 MPV로 재생합니다.")
+                    if (manual) toast("ExoPlayer의 영상·자막을 확인하지 못해 MPV로 재생합니다.")
                     if (created.playbackState == Player.STATE_READY) acceptPreparedPlayer(created)
                     finishReplacementAfterFirstFrame(created)
                     created.playWhenReady = resumeWhenVisible && visible
@@ -1299,6 +1319,9 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 if (player !== created) return
+                if (created is ExoPlayer) applyExoPictureAspectRatio(created)
+                if (created is ExoPlayer && !pictureSettings.isNeutral &&
+                    handleUnsupportedExoPicture(created)) return
                 if (created is ExoPlayer && exoValidated && !exoPlaybackTracksSafe(tracks)) {
                     fallbackFromExo(created)
                     return
@@ -1377,7 +1400,12 @@ class NativePlayerActivity : AppCompatActivity() {
                     mpvProbeJob?.cancel(); mpvProbeJob = null
                 }
                 settleWatchTime(false)
-                if (created is ExoPlayer && shouldFallbackFromExo(error.errorCode) && !exiting && !refreshing) {
+                if (created is ExoPlayer && exoPictureOwner === created &&
+                    exoPictureUnsupportedReason(created.currentTracks) == ExoPictureUnsupportedReason.DRM &&
+                    handleUnsupportedExoPicture(created)) return
+                if (created is ExoPlayer && (shouldFallbackFromExo(error.errorCode) ||
+                        (exoPictureOwner === created && isExoPictureProcessingError(error.errorCode))) && !exiting && !refreshing) {
+                    if (exoPictureOwner === created) captureTrackPreferencesForReplacement()
                     fallbackFromExo(created)
                     return
                 }
@@ -1398,6 +1426,8 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onRenderedFirstFrame() {
                 if (player !== created) return
+                if (created is ExoPlayer) applyExoPictureAspectRatio(created)
+                exoPictureFrameTimeout?.let(handler::removeCallbacks); exoPictureFrameTimeout = null
                 if (!playbackFirstFrameReported && spec.sourceItem?.isSpoiler == false) {
                     Log.i("ShyniflexPlayback", "stage=first_frame engine=${if (created is ExoPlayer) "exo" else "mpv"}" +
                         " elapsed_ms=${(SystemClock.elapsedRealtime() - diagnosticStartedAt).coerceAtLeast(0)}")
@@ -1520,6 +1550,10 @@ class NativePlayerActivity : AppCompatActivity() {
         if (player !== created || exiting || isDestroyed) return
         prepared = true
         completed = false
+        if (created is ExoPlayer) {
+            applyExoPictureAspectRatio(created)
+            watchExoPictureFirstFrame(created)
+        }
         applyAutomaticSubtitleDefault(created)
         resolvePendingEmbeddedSubtitle()
         restorePendingTextPreference()
@@ -1945,9 +1979,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun showPlaybackEnginePreference() {
         val choices = PlaybackEnginePreference.entries
         val selected = choices.indexOf(playbackEnginePreference())
-        val labels = choices.map {
-            if (it == PlaybackEnginePreference.EXO && pictureRequiresMpv(pictureSettings)) "ExoPlayer · 보정 해제" else it.label
-        }
+        val labels = choices.map { it.label }
         val dialog = AlertDialog.Builder(this).setTitle("재생 엔진 · 현재 영상에 적용")
             .setSingleChoiceItems(labels.toTypedArray(), selected) { choice, index ->
                 val next = choices.getOrNull(index) ?: return@setSingleChoiceItems
@@ -1963,11 +1995,6 @@ class NativePlayerActivity : AppCompatActivity() {
         getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("playback_engine", next.key).apply()
         enginePreferenceForContent = next
         forceMpvSession = null
-        val resetPicture = next == PlaybackEnginePreference.EXO && pictureRequiresMpv(pictureSettings)
-        if (resetPicture) {
-            pictureSettings = PictureSettings()
-            pictureStore.writeCurrent(pictureSettings)
-        }
         val active = player
         val sameEngine = playbackEngineSettled(mpvProbePending, active is ExoPlayer && !exoValidated) &&
             ((next == PlaybackEnginePreference.MPV && active is MpvPlayer) ||
@@ -1977,8 +2004,7 @@ class NativePlayerActivity : AppCompatActivity() {
             toast("선택한 재생 엔진이 적용되어 있습니다.")
             return
         }
-        toast(if (resetPicture) "영상 보정을 원본으로 돌리고 현재 위치에서 ExoPlayer로 전환합니다."
-            else "현재 위치에서 ${next.label} 재생 엔진을 적용합니다.")
+        toast("현재 위치에서 ${next.label} 재생 엔진을 적용합니다.")
         restartPlaybackAtCurrentPosition()
     }
 
@@ -2973,12 +2999,10 @@ class NativePlayerActivity : AppCompatActivity() {
         else -> "변환을 시작하지 못했습니다. 기존 재생을 유지합니다."
     }
 
-    private fun pictureSettingsLabel(): String = builtInPicturePresets()
-        .firstOrNull { it.settings == pictureSettings }?.name ?: "사용자 조절"
+    private fun pictureSettingsLabel(): String = pictureStore.currentPreset(pictureSettings)?.name ?: "사용자 조절"
 
-    private fun pictureSupportNote(): String = if (pictureRequiresMpv(pictureSettings))
-        "영상 보정은 MPV에서 적용됩니다. 저장한 재생 엔진 선택은 유지됩니다."
-    else "영상 보정을 켜면 현재 위치에서 MPV로 전환합니다. 원본 재생은 선택한 엔진을 사용합니다."
+    private fun pictureSupportNote(): String =
+        "MPV와 ExoPlayer에 같은 보정값을 적용합니다. ExoPlayer에서 처음 보정을 켤 때는 현재 위치에서 화면을 다시 준비합니다. HDR·Dolby Vision 보정은 MPV를 사용하며, 보호된 영상은 보정을 지원하지 않습니다."
 
     private fun showPictureSettings() {
         if (exiting || isFinishing || isDestroyed) return
@@ -3001,19 +3025,118 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun applyPictureToPlayer() {
         when (val active = player) {
-            is MpvPlayer -> {
-                if (pictureRequiresMpv(pictureSettings) && mpvProbePending) finishMpvProbe?.invoke()
-                active.setPictureSettings(pictureSettings)
+            is MpvPlayer -> active.setPictureSettings(pictureSettings)
+            is ExoPlayer -> {
+                if (!pictureSettings.isNeutral && handleUnsupportedExoPicture(active)) return
+                if (exoPictureBypassContent == subtitlePlaybackContentKey(spec)) return
+                val effect = exoPictureEffect.takeIf { exoPictureOwner === active }
+                if (effect == null) {
+                    if (!pictureSettings.isNeutral) scheduleExoPictureRestart(active)
+                    return
+                }
+                effect.update(pictureSettings)
+                exoPictureRedraw?.let(handler::removeCallbacks)
+                exoPictureRedraw = null
+                // A live matrix updates on the next rendered frame. Paused playback needs the
+                // replayable-frame cache; debounce slider input rather than flushing every step.
+                if (prepared && active.playbackState == Player.STATE_READY && !active.isPlaying) {
+                    val redraw = Runnable {
+                        exoPictureRedraw = null
+                        if (player === active && exoPictureOwner === active && !exiting && !isDestroyed &&
+                            active.playbackState == Player.STATE_READY && !active.isPlaying) {
+                            active.setVideoEffects(androidx.media3.common.VideoFrameProcessor.REDRAW)
+                        }
+                    }
+                    exoPictureRedraw = redraw
+                    handler.postDelayed(redraw, 80)
+                }
             }
-            is ExoPlayer -> if (pictureRequiresMpv(pictureSettings)) switchToMpvForPicture(active)
         }
     }
 
-    private fun switchToMpvForPicture(active: ExoPlayer) {
-        if (player !== active || exiting || isDestroyed || refreshing) return
-        forceMpvSession = "${spec.sessionId}:${spec.partId}"
-        toast("영상 보정을 위해 현재 위치에서 MPV로 전환합니다.")
-        restartPlaybackAtCurrentPosition()
+    private fun handleUnsupportedExoPicture(active: ExoPlayer): Boolean {
+        val reason = exoPictureUnsupportedReason(active.currentTracks) ?: return false
+        if (reason == ExoPictureUnsupportedReason.DRM) {
+            val key = subtitlePlaybackContentKey(spec)
+            if (exoPictureBypassContent != key) {
+                exoPictureBypassContent = key
+                toast("보호된 영상은 보정을 적용하지 않고 재생합니다.")
+            }
+            if (exoPictureOwner === active) scheduleExoPictureRestart(active)
+            return exoPictureOwner === active
+        }
+        schedulePictureMpvFallback(active, "HDR·Dolby Vision 영상 보정은 MPV에서 적용합니다.")
+        return true
+    }
+
+    private fun schedulePictureMpvFallback(active: ExoPlayer, message: String) {
+        if (exoPictureRestartPending === active) return
+        exoPictureRestartPending = active
+        handler.post {
+            if (player !== active || exoPictureRestartPending !== active) return@post
+            exoPictureRestartPending = null
+            if (exiting || isDestroyed || refreshing) return@post
+            captureTrackPreferencesForReplacement()
+            fallbackFromExo(active)
+            toast(message)
+        }
+    }
+
+    private fun scheduleExoPictureRestart(active: ExoPlayer) {
+        if (exoPictureRestartPending === active) return
+        exoPictureRestartPending = active
+        handler.post {
+            if (player !== active || exoPictureRestartPending !== active) return@post
+            exoPictureRestartPending = null
+            if (exiting || isDestroyed || refreshing || navigationLoading || conversionLoading ||
+                closeLockedSpoilerPlayback()) return@post
+            val wasPlaying = if (exoValidated && visible) active.playWhenReady else resumeWhenVisible
+            lastPosition = gestures.cancelSeekGesture() ?: exoFallbackPosition(lastPosition,
+                active.currentPosition, exoValidated, playbackFirstFrameReported)
+            pendingSeek = null; finishRemoteSeeking()
+            val manual = manualExoInUse
+            val hadAudio = manualExoSourceHasAudio
+            val header = headerExoInUse
+            val chapterCarry = chapterCreditsEvidence.takeIf { chapterCreditsOwner === active }
+            val pendingSubtitles = exoRestoreSubtitlePending || spec.subtitlesPending
+            captureTrackPreferencesForReplacement()
+            settleWatchTime(false)
+            prepared = false
+            releasePlayer()
+            exoRestoreSubtitlePending = pendingSubtitles
+            resumeWhenVisible = wasPlaying
+            playbackFirstFrameReported = false
+            diagnosticStartedAt = SystemClock.elapsedRealtime()
+            startPreparedPlayer(null, true, chapterCarry, manualExo = manual,
+                sourceHasAudio = hadAudio, headerExo = header)
+        }
+    }
+
+    private fun watchExoPictureFirstFrame(active: ExoPlayer) {
+        if (exoPictureOwner !== active || playbackFirstFrameReported || exoPictureFrameTimeout != null) return
+        val check = Runnable {
+            exoPictureFrameTimeout = null
+            val surface = playerView.videoSurfaceView as? android.view.SurfaceView
+            if (player === active && exoPictureOwner === active && visible && !exiting && !isDestroyed &&
+                active.playbackState == Player.STATE_READY && !playbackFirstFrameReported &&
+                (active.videoSize.width > 0 || exoPictureAspectRatio(active.currentTracks) != null) &&
+                surface?.holder?.surface?.isValid == true) {
+                schedulePictureMpvFallback(active, "보정 화면을 출력하지 못해 같은 위치에서 MPV로 재생합니다.")
+            }
+        }
+        exoPictureFrameTimeout = check
+        handler.postDelayed(check, 8_000)
+    }
+
+    private fun applyExoPictureAspectRatio(active: ExoPlayer) {
+        if (player !== active || exoPictureOwner !== active) return
+        // Media3 1.10.1 deliberately suppresses VideoSize events in its effects path.
+        // These color effects do not crop/rotate, so the selected source format supplies
+        // the display ratio without changing Media3's first-frame/surface workaround.
+        val aspect = active.videoFormat?.let(::exoPictureAspectRatio)
+            ?: exoPictureAspectRatio(active.currentTracks) ?: return
+        playerView.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame)
+            ?.setAspectRatio(aspect)
     }
 
     private fun captureTrackPreferencesForReplacement() {
@@ -3062,6 +3185,7 @@ class NativePlayerActivity : AppCompatActivity() {
         // surface for 110/125/150%, never the controls or the subtitle overlay.
         // SurfaceView scaling is synchronized on Android N+ (our minimum is O).
         playerView.resizeMode = if (exo) resizeMode else AspectRatioFrameLayout.RESIZE_MODE_FILL
+        (player as? ExoPlayer)?.let(::applyExoPictureAspectRatio)
         playerView.findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
             // A zoomed video may extend into its former letterbox; the PlayerView
             // still clips it to the screen, while sibling captions remain unscaled.
@@ -3733,6 +3857,9 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        exoPictureRedraw?.let(handler::removeCallbacks); exoPictureRedraw = null
+        exoPictureFrameTimeout?.let(handler::removeCallbacks); exoPictureFrameTimeout = null
+        exoPictureEffect = null; exoPictureOwner = null; exoPictureRestartPending = null
         chapterCreditsOwner = null
         chapterCreditsEvidence = null
         chapterCreditsRetry?.let(handler::removeCallbacks)

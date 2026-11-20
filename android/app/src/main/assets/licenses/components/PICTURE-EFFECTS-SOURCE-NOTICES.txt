@@ -1,0 +1,222 @@
+Additional JVM modules in shyniflex 1.0.98
+Apache License 2.0 text is retained in assets/licenses/Apache-2.0.txt.
+Exact upstream source JARs and manifests accompany the release.
+
+==============================================================================
+androidx.media3:media3-effect:1.10.1
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-effect/1.10.1/media3-effect-1.10.1-sources.jar
+SHA-256: 462e7af84f1349fc3c1871e302288278d5b0e4b6b83d9afcf7e26286cdc2d623
+
+Files: androidx/media3/effect/AlphaScale.java, androidx/media3/effect/DefaultVideoCompositor.java, androidx/media3/effect/GlTextureProducer.java, androidx/media3/effect/MultipleInputVideoGraph.java, androidx/media3/effect/OverlayMatrixProvider.java, androidx/media3/effect/SamplerOverlayMatrixProvider.java, androidx/media3/effect/SingleInputVideoGraph.java, androidx/media3/effect/SpeedChangeEffect.java, androidx/media3/effect/SpeedChangeShaderProgram.java, androidx/media3/effect/TexturePool.java, androidx/media3/effect/ThumbnailStripEffect.java, androidx/media3/effect/TimestampAdjustment.java, androidx/media3/effect/VideoCompositor.java
+
+/*
+ * Copyright 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/AlphaScaleShaderProgram.java, androidx/media3/effect/BitmapOverlay.java, androidx/media3/effect/ChainingGlShaderProgramListener.java, androidx/media3/effect/ColorLut.java, androidx/media3/effect/ColorLutShaderProgram.java, androidx/media3/effect/Contrast.java, androidx/media3/effect/Crop.java, androidx/media3/effect/DefaultShaderProgram.java, androidx/media3/effect/DrawableOverlay.java, androidx/media3/effect/ExternalShaderProgram.java, androidx/media3/effect/ExternalTextureManager.java, androidx/media3/effect/FinalShaderProgramWrapper.java, androidx/media3/effect/FrameCache.java, androidx/media3/effect/FrameCacheGlShaderProgram.java, androidx/media3/effect/GainmapShaderProgram.java, androidx/media3/effect/GlEffect.java, androidx/media3/effect/GlMatrixTransformation.java, androidx/media3/effect/GlShaderProgram.java, androidx/media3/effect/HslAdjustment.java, androidx/media3/effect/HslShaderProgram.java, androidx/media3/effect/MatrixTransformation.java, androidx/media3/effect/MatrixUtils.java, androidx/media3/effect/OverlayEffect.java, androidx/media3/effect/OverlayShaderProgram.java, androidx/media3/effect/Presentation.java, androidx/media3/effect/RgbAdjustment.java, androidx/media3/effect/RgbFilter.java, androidx/media3/effect/RgbMatrix.java, androidx/media3/effect/ScaleAndRotateTransformation.java, androidx/media3/effect/SingleColorLut.java, androidx/media3/effect/TextOverlay.java, androidx/media3/effect/TextureOverlay.java, androidx/media3/effect/VideoFrameProcessingTaskExecutor.java, androidx/media3/effect/package-info.java
+
+/*
+ * Copyright 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/BaseGlShaderProgram.java, androidx/media3/effect/BitmapTextureManager.java, androidx/media3/effect/Brightness.java, androidx/media3/effect/ConvolutionFunction1D.java, androidx/media3/effect/DebugTraceUtil.java, androidx/media3/effect/DefaultFrameDroppingShaderProgram.java, androidx/media3/effect/DefaultGlObjectsProvider.java, androidx/media3/effect/FrameConsumptionManager.java, androidx/media3/effect/FrameDropEffect.java, androidx/media3/effect/GaussianBlur.java, androidx/media3/effect/GaussianBlurWithFrameOverlaid.java, androidx/media3/effect/GaussianFunction.java, androidx/media3/effect/QueuingGlShaderProgram.java, androidx/media3/effect/SeparableConvolution.java, androidx/media3/effect/SeparableConvolutionShaderProgram.java, androidx/media3/effect/SimpleFrameDroppingShaderProgram.java, androidx/media3/effect/TexIdTextureManager.java, androidx/media3/effect/ThumbnailStripShaderProgram.java, androidx/media3/effect/TimestampWrapper.java, androidx/media3/effect/TimestampWrapperShaderProgram.java
+
+/*
+ * Copyright 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/BitmapFrame.java, androidx/media3/effect/BitmapToGlTextureFrameProcessor.java, androidx/media3/effect/DebugViewEffect.java, androidx/media3/effect/DebugViewShaderProgram.java, androidx/media3/effect/DefaultCompositorGlProgram.java, androidx/media3/effect/ExperimentalBitmapProcessor.java, androidx/media3/effect/Frame.java, androidx/media3/effect/FrameConsumer.java, androidx/media3/effect/FrameProcessor.java, androidx/media3/effect/GlShaderProgramFrameProcessor.java, androidx/media3/effect/GlTextureFrame.java, androidx/media3/effect/GlTextureFrameCompositor.kt, androidx/media3/effect/GlTextureFrameProcessorFactory.java, androidx/media3/effect/GlTextureFrameRenderer.kt, androidx/media3/effect/GlTextureToBitmapFrameProcessor.java, androidx/media3/effect/HardwareBufferFrame.java, androidx/media3/effect/PacketConsumer.kt, androidx/media3/effect/PacketConsumerUtil.kt, androidx/media3/effect/PacketProcessor.kt, androidx/media3/effect/SingleContextGlObjectsProvider.kt
+
+/*
+ * Copyright 2025 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/ByteBufferConcurrentEffect.java, androidx/media3/effect/ByteBufferGlEffect.java, androidx/media3/effect/LanczosResample.java, androidx/media3/effect/RepeatingFrameShaderProgram.java, androidx/media3/effect/RepeatingGainmapShaderProgram.java, androidx/media3/effect/ScaledLanczosFunction.java
+
+/*
+ * Copyright 2024 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/CanvasOverlay.java, androidx/media3/effect/GainmapUtil.java, androidx/media3/effect/PassthroughShaderProgram.java, androidx/media3/effect/SharpSeparableConvolutionShaderProgram.java, androidx/media3/effect/TimestampAdjustmentShaderProgram.java
+
+/*
+ * Copyright 2024 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/DefaultHardwareBufferEffectsPipeline.kt, androidx/media3/effect/GlShaderProgramPacketProcessor.kt, androidx/media3/effect/HardwareBufferFrameQueue.java, androidx/media3/effect/PacketConsumerHardwareBufferFrameQueue.java, androidx/media3/effect/ProcessAndRenderToSurfaceConsumer.kt, androidx/media3/effect/RenderingPacketConsumer.kt, androidx/media3/effect/SurfaceHolderHardwareBufferFrameQueue.java, androidx/media3/effect/SyncFenceCompat.java
+
+/*
+ * Copyright 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/DefaultVideoFrameProcessor.java
+
+/*
+ * Copyright 2021 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+Files: androidx/media3/effect/InputSwitcher.java, androidx/media3/effect/TextureManager.java
+
+/*
+ * Copyright 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+Files: androidx/media3/effect/PacketConsumerCaller.kt, androidx/media3/effect/ReplayableFrameCacheGlShaderProgram.java, androidx/media3/effect/TimedGlTextureInfo.java
+
+/*
+ * Copyright 2025 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+==============================================================================
+androidx.concurrent:concurrent-futures:1.2.0
+https://dl.google.com/dl/android/maven2/androidx/concurrent/concurrent-futures/1.2.0/concurrent-futures-1.2.0-sources.jar
+SHA-256: 38b32cece3cce08eb0e3fb27595325f57e7a6272f085d74288f08417daf7b04f
+
+Files: androidx/concurrent/futures/AbstractResolvableFuture.java, androidx/concurrent/futures/CallbackToFutureAdapter.java, androidx/concurrent/futures/DirectExecutor.java, androidx/concurrent/futures/ResolvableFuture.java
+
+/*
+ * Copyright 2018 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+==============================================================================
+org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2
+https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-guava/1.10.2/kotlinx-coroutines-guava-1.10.2-sources.jar
+SHA-256: 988ad4424350cfc88e92e06dd9a5ec0420c6f663872fe7bf455bcd8169e3ebd6
+
+Upstream Maven license declaration: Apache-2.0
+https://www.apache.org/licenses/LICENSE-2.0.txt
+This published source JAR contains no separate copyright/license header or LICENSE/NOTICE entry.
+

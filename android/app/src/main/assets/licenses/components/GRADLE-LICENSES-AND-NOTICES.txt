@@ -66,8 +66,8 @@ androidx.compose.ui:ui-unit-android:1.11.3 - The Apache Software License, Versio
 https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-unit-android/1.11.3/ui-unit-android-1.11.3.pom
 androidx.compose.ui:ui-util-android:1.11.3 - The Apache Software License, Version 2.0
 https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-util-android/1.11.3/ui-util-android-1.11.3.pom
-androidx.concurrent:concurrent-futures:1.1.0 - The Apache Software License, Version 2.0
-https://dl.google.com/dl/android/maven2/androidx/concurrent/concurrent-futures/1.1.0/concurrent-futures-1.1.0.pom
+androidx.concurrent:concurrent-futures:1.2.0 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/concurrent/concurrent-futures/1.2.0/concurrent-futures-1.2.0.pom
 androidx.core:core:1.18.0 - The Apache Software License, Version 2.0
 https://dl.google.com/dl/android/maven2/androidx/core/core/1.18.0/core-1.18.0.pom
 androidx.core:core-ktx:1.18.0 - The Apache Software License, Version 2.0
@@ -144,6 +144,8 @@ androidx.media3:media3-datasource-okhttp:1.10.1 - The Apache Software License, V
 https://dl.google.com/dl/android/maven2/androidx/media3/media3-datasource-okhttp/1.10.1/media3-datasource-okhttp-1.10.1.pom
 androidx.media3:media3-decoder:1.10.1 - The Apache Software License, Version 2.0
 https://dl.google.com/dl/android/maven2/androidx/media3/media3-decoder/1.10.1/media3-decoder-1.10.1.pom
+androidx.media3:media3-effect:1.10.1 - The Apache Software License, Version 2.0
+https://dl.google.com/dl/android/maven2/androidx/media3/media3-effect/1.10.1/media3-effect-1.10.1.pom
 androidx.media3:media3-exoplayer:1.10.1 - The Apache Software License, Version 2.0
 https://dl.google.com/dl/android/maven2/androidx/media3/media3-exoplayer/1.10.1/media3-exoplayer-1.10.1.pom
 androidx.media3:media3-extractor:1.10.1 - The Apache Software License, Version 2.0
@@ -222,6 +224,8 @@ org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2 - Apache-2.0
 https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-android/1.10.2/kotlinx-coroutines-android-1.10.2.pom
 org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2 - Apache-2.0
 https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.10.2/kotlinx-coroutines-core-jvm-1.10.2.pom
+org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2 - Apache-2.0
+https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-guava/1.10.2/kotlinx-coroutines-guava-1.10.2.pom
 org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.7.3 - The Apache Software License, Version 2.0
 https://repo.maven.apache.org/maven2/org/jetbrains/kotlinx/kotlinx-serialization-core-jvm/1.7.3/kotlinx-serialization-core-jvm-1.7.3.pom
 org.jspecify:jspecify:1.0.0 - The Apache License, Version 2.0
