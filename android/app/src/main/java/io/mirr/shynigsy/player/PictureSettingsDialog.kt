@@ -192,10 +192,10 @@ internal class PictureSettingsDialog(
                 apply(preset.settings, preset.id); showControls("picture-presets")
             }
         }
-        content.addView(text("LG TV 참고", 13f, secondary = true).apply {
+        content.addView(text("화면 모드", 13f, secondary = true).apply {
             tag = "picture-lg-section"; setPadding(dp(4), dp(12), dp(4), dp(4))
         }, matchWrap())
-        content.addView(text("LG 공식 수치가 아닌 밝기·대비·채도 근사값입니다. TV 화면 모드·게임 지연·필름메이커 인증 기능은 바뀌지 않습니다.",
+        content.addView(text("밝기·대비·채도를 조절하는 영상 프리셋입니다.",
             12f, secondary = true).apply {
             tag = "picture-lg-note"; setPadding(dp(4), 0, dp(4), dp(8))
         }, matchWrap())

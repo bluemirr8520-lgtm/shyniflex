@@ -112,8 +112,8 @@ class PictureSettingsDialogTest {
         show()
         click("picture-presets")
         scenario.onActivity {
-            assertEquals("LG TV 참고", (view("picture-lg-section") as TextView).text.toString())
-            assertTrue((view("picture-lg-note") as TextView).text.contains("LG 공식 수치가 아닌"))
+            assertEquals("화면 모드", (view("picture-lg-section") as TextView).text.toString())
+            assertTrue((view("picture-lg-note") as TextView).text.contains("밝기·대비·채도를 조절하는"))
             assertTrue(view("picture-lg-lg_game").requestFocus())
             assertTrue(applied.isEmpty())
         }
