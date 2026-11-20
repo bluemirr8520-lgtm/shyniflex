@@ -1,18 +1,22 @@
 package io.mirr.shynigsy.ui
 
 import android.graphics.Bitmap
+import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.State
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
@@ -27,9 +31,11 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.pressKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.mirr.shynigsy.data.MediaDetails
@@ -173,6 +179,38 @@ class CompactDetailScreenTest {
         screen.runOnIdle { assertEquals(0, plays) }
     }
 
+    @Test fun homeOverviewShowsPosterAndSummaryBeforeALongEpisodeList() {
+        val episodes = (1..80).map { number -> episode.copy(id = 20 + number, episodeNumber = number, title = "합성 $number 회차") }
+        var opened: MediaItem? = null
+        var plays = 0
+        render(series(episodes), overviewFirst = true, onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
+        screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).assertIsDisplayed()
+        screen.onNodeWithTag(artTag(show), useUnmergedTree = true).assertIsDisplayed()
+        val summary = screen.onNodeWithTag("compact-detail-summary").assertIsDisplayed()
+            .assertTextEquals(show.summary).fetchSemanticsNode().boundsInRoot
+        saveScreenshot("compact-home-overview.png")
+        val firstEpisode = screen.onNodeWithTag(rowTag(episodes.first())).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue("The work summary must precede the first episode instead of following all 80", summary.bottom <= firstEpisode.top)
+        screen.onNodeWithTag(rowTag(episodes.last())).assertDoesNotExist()
+        screen.runOnIdle { assertNull(opened); assertEquals(0, plays) }
+    }
+
+    @Test fun tvHomeOverviewKeepsInitialFocusAboveEpisodesUntilTheUserChoosesThem() {
+        val episodes = (1..80).map { number -> episode.copy(id = 20 + number, episodeNumber = number, title = "합성 $number 회차") }
+        var opened: MediaItem? = null
+        var plays = 0
+        render(series(episodes), overviewFirst = true, television = true,
+            onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
+        screen.onNodeWithTag("compact-detail-episodes-jump").assertIsFocused().assertIsDisplayed()
+        screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).assertIsDisplayed()
+        screen.onNodeWithTag("compact-detail-summary").assertIsDisplayed()
+        screen.onNodeWithTag("compact-detail-episodes-jump").performKeyInput { pressKey(Key.DirectionCenter) }
+        screen.onNodeWithTag(rowTag(episodes.first())).assertIsDisplayed().assertIsFocused()
+        screen.runOnIdle { assertNull("Jumping to the list must not open or play an episode", opened); assertEquals(0, plays) }
+        screen.onNodeWithTag(rowTag(episodes.first())).performKeyInput { pressKey(Key.DirectionCenter) }
+        screen.runOnIdle { assertEquals(episodes.first(), opened); assertEquals(0, plays) }
+    }
+
     @Suppress("DEPRECATION")
     private fun render(
         detail: MediaDetails,
@@ -188,18 +226,28 @@ class CompactDetailScreenTest {
         onVersion: (Int?) -> Unit = {},
         onWatchOptions: (MediaItem) -> Unit = {},
         onWatched: (MediaItem, Boolean) -> Unit = { _, _ -> },
+        overviewFirst: Boolean = false,
+        television: Boolean = false,
     ) {
-        InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.setInTouchMode(!television)
+        val base = instrumentation.targetContext
+        val context = if (television) base.createConfigurationContext(Configuration(base.resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or Configuration.UI_MODE_TYPE_TELEVISION
+        }) else base
         screen.mainClock.autoAdvance = true
         screen.setContent {
             inputModeManager = LocalInputModeManager.current
+            CompositionLocalProvider(LocalContext provides context) {
             MaterialTheme(colorScheme = darkColorScheme(), typography = CompactTypography, shapes = CompactShapes) {
                 Surface {
                 CompactDetailContent(detailState?.value ?: detail, versions, selectedPart?.value,
                     busy?.value ?: false, error?.value, unlocked?.value ?: false,
                     onPlay, onOpen, onSeason, onVersion, onWatchOptions, onWatched,
-                    artwork = { item, modifier -> Box(modifier.background(Color.DarkGray).testTag(artTag(item))) })
+                    artwork = { item, modifier -> Box(modifier.background(Color.DarkGray).testTag(artTag(item))) },
+                    overviewFirst = overviewFirst)
                 }
+            }
             }
         }
         screen.waitForIdle()

@@ -87,6 +87,8 @@ class ShyniClient(
     }
     private data class CachedMediaInfo(val at: Long, val data: JSONObject)
     private val mediaInfoCache = ConcurrentHashMap<String, CachedMediaInfo>()
+    private data class CachedMediaOrigin(val at: Long, val countries: List<String>, val language: String?)
+    private val mediaOriginCache = ConcurrentHashMap<String, CachedMediaOrigin>()
     private val seriesCountSlots = Semaphore(2)
     private val seriesCountGeneration = java.util.concurrent.atomic.AtomicLong()
     private val seriesCounts = ConcurrentHashMap<String, Pair<Long, Int>>()
@@ -116,7 +118,7 @@ class ShyniClient(
     val spoilerPlaybackReauthenticationFailed: Boolean get() =
         !token.isNullOrBlank() && SpoilerAccessRegistry.failedReauthentication(spoilerKey())
 
-    fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); clearBrowseCache(); mediaInfoCache.clear(); invalidateSeriesCounts() }
+    fun clearSpoilerGrant() { SpoilerAccessRegistry.remove(spoilerKey()); clearBrowseCache(); mediaInfoCache.clear(); mediaOriginCache.clear(); invalidateSeriesCounts() }
 
     fun absoluteUrl(path: String): String = resolve(path).toString()
 
@@ -393,6 +395,87 @@ class ShyniClient(
             spec.viewItemId ?: spec.sourceItem?.takeIf { it.libraryId == spec.libraryId }?.viewItemId)
         return mediaInfo("${spec.libraryId}:part:${spec.partId}",
             "/libraries/${spec.libraryId}/media_info/${spec.partId}?$context", spec.sourceItem?.isSpoiler == true, lane, fresh, validate)
+    }
+
+    /** Optional background-only metadata. Never call from playback's ticket/startup path. */
+    suspend fun resolvePlaybackOrigin(spec: PlaybackSpec): MediaItem? {
+        val source = spec.sourceItem ?: return null
+        val viewItemId = spec.viewItemId?.takeIf { it > 0 } ?: return null
+        if (token.isNullOrBlank() || !source.playable || source.id != spec.itemId || spec.itemId <= 0 ||
+            spec.partId <= 0 || spec.libraryId <= 0 || source.libraryId != spec.libraryId ||
+            source.viewItemId != viewItemId) return null
+        val account = token
+        val accountScope = spoilerKey()
+        val authorization = playbackTransportAuthorization(spec)
+        return withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive(); authorization()
+            if (source.hasKnownMediaOrigin()) return@withContext source
+            fun matchesContext(row: JSONObject): Boolean = !row.optBoolean("remote") &&
+                row.stringOrNull("federated_id") == null &&
+                (row.isNull("library_view_id") || row.exactPositiveInt("library_view_id") == spec.libraryId) &&
+                (row.isNull("view_item_id") || row.exactPositiveInt("view_item_id") == viewItemId) &&
+                (source.isSpoiler || row.booleanOrNull("spoiler_enabled") != true)
+            // Codec/marker inspection may already have proved the exact part's parent.
+            // Reuse it without adding a second media-info request or scanning the catalog.
+            val infoKey = "${spec.libraryId}:part:${spec.partId}:${source.isSpoiler}:${if (source.isSpoiler) SpoilerAccessRegistry.changes.value else 0}"
+            val info = mediaInfoCache[infoKey]?.takeIf { System.currentTimeMillis() - it.at < 120_000 }?.data
+            val inspected = info?.let { currentInfo ->
+                currentInfo.optJSONObject("item")?.takeIf { row ->
+                    row.exactPositiveInt("id") == source.id && matchesContext(currentInfo) && matchesContext(row) &&
+                        physicalParts(currentInfo).singleOrNull { it.partId == spec.partId }?.metadataId == source.id
+                }
+            }
+            if (inspected != null) {
+                val enriched = source.copy(productionCountries = mediaProductionCountries(inspected),
+                    originalLanguage = mediaOriginalLanguage(inspected))
+                if (enriched.hasKnownMediaOrigin()) return@withContext enriched
+            }
+            val targetType = if (source.type == "movie") "movie" else "show"
+            val targetId = if (targetType == "movie") source.id else source.showId?.takeIf { it > 0 }
+                ?: inspected?.exactPositiveInt("show_id") ?: return@withContext null
+            val cacheKey = "$accountScope:${spec.libraryId}:$viewItemId:$targetType:$targetId:${source.isSpoiler}"
+            mediaOriginCache[cacheKey]?.takeIf { System.currentTimeMillis() - it.at < 120_000 }?.let {
+                return@withContext source.copy(productionCountries = it.countries, originalLanguage = it.language)
+            }
+            val path = "/libraries/${spec.libraryId}/${if (targetType == "movie") "movies" else "shows"}/$targetId"
+            val response = try {
+                withTimeout(8_000L) {
+                    suspend fun read(suffix: String) = request(path + suffix, responseLimit = 2L * 1024 * 1024,
+                        spoiler = source.isSpoiler, lane = ShyniRequestLane.CATALOG, singleAttempt = true,
+                        expectedToken = account, failFastAuthorization = true).objectValue()
+                    try { read("?fields=full") } catch (error: ApiException) {
+                        if (error.isEpisodeIdentityFailure() || error.status !in setOf(400, 422)) throw error
+                        currentCoroutineContext().ensureActive(); authorization()
+                        read("")
+                    }
+                }
+            } catch (_: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive(); authorization()
+                return@withContext null
+            }
+            currentCoroutineContext().ensureActive(); authorization()
+            val returnedId = response.exactPositiveInt("id") ?: return@withContext null
+            // A merged View returns the representative show, plus all physical show IDs.
+            // In that case require both explicit View bindings and both group members.
+            val representedShow = if (targetType == "show" && returnedId != targetId &&
+                response.exactPositiveInt("library_view_id") == spec.libraryId &&
+                response.exactPositiveInt("view_item_id") == viewItemId) {
+                val members = response.optJSONArray("show_ids")?.takeIf { it.length() in 1..256 }
+                val ids = members?.let { rows -> (0 until rows.length()).mapNotNull { index ->
+                    JSONObject().put("id", rows.opt(index)).exactPositiveInt("id")
+                } }.orEmpty()
+                targetId in ids && returnedId in ids
+            } else false
+            if (!matchesContext(response) || (returnedId != targetId && !representedShow) ||
+                (!response.isNull("metadata_item_id") && response.exactPositiveInt("metadata_item_id") != returnedId) ||
+                parseMedia(response, spec.libraryId, targetType).type != targetType) return@withContext null
+            val result = source.copy(productionCountries = mediaProductionCountries(response),
+                originalLanguage = mediaOriginalLanguage(response))
+            if (!result.hasKnownMediaOrigin()) return@withContext null
+            if (mediaOriginCache.size >= 64) mediaOriginCache.clear()
+            mediaOriginCache[cacheKey] = CachedMediaOrigin(System.currentTimeMillis(), result.productionCountries, result.originalLanguage)
+            result
+        }
     }
 
     /** Icons only target files whose actual immediate filesystem parent matches the current file. */

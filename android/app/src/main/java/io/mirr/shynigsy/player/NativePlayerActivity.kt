@@ -64,6 +64,7 @@ import io.mirr.shynigsy.data.ApiException
 import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.data.ShyniClient
 import io.mirr.shynigsy.data.SubtitleTrack
+import io.mirr.shynigsy.data.hasKnownMediaOrigin
 import io.mirr.shynigsy.ui.CinemaAppearancePreferences
 import io.mirr.shynigsy.ui.cinemaColorScheme
 import io.mirr.shynigsy.player.subtitles.*
@@ -142,6 +143,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private var localSubtitleChoiceRevision = 0
     private var restoredLocalSubtitleId: String? = null
     private var subtitlePolicyContentKey: String? = null
+    private var subtitleOriginJob: Job? = null
+    private var subtitleOriginAttemptedKey: String? = null
     private var subtitleJob: Job? = null
     private var subtitleListJob: Job? = null
     private var subtitleListFailed = false
@@ -1515,6 +1518,7 @@ class NativePlayerActivity : AppCompatActivity() {
         restorePendingTextPreference()
         if (created.duration != C.TIME_UNSET && created.duration > 0) preserveFullDuration(created.duration)
         if (playbackFirstFrameReported && !subtitleListFailed) loadDeferredSubtitles(created)
+        resolveSubtitleOrigin(created)
         refreshPlaybackMetadata(created)
     }
 
@@ -1998,15 +2002,16 @@ class NativePlayerActivity : AppCompatActivity() {
         val next = subtitlePlaybackContentKey(spec)
         if (subtitlePolicyContentKey == next) return
         subtitlePolicyContentKey = next
+        subtitleOriginAttemptedKey = null
         subtitlesEnabled = defaultSubtitlesEnabled(spec)
         subtitleManuallySelected = false; restoredLocalSubtitleId = null
         clearExternalSubtitle(); externalSubtitleId = if (subtitlesEnabled) preferredSubtitle(spec)?.id else null
         pendingTextPreference = null; deferredSubtitlePreference = null
     }
 
-    private fun ensureLocalSubtitleSource() {
+    private fun ensureLocalSubtitleSource(forceReload: Boolean = false) {
         val next = localSubtitleOwner(client.server, client.token, spec)
-        if (next == localSubtitleOwnerKey) return
+        if (next == localSubtitleOwnerKey && !forceReload) return
         localSubtitleReadJob?.cancel()
         val wasActive = localSubtitleActiveId != null
         localSubtitleOwnerKey = next; localSubtitleRecord = null
@@ -2025,9 +2030,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 catch (_: Exception) { null }
             if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
             localSubtitleRecord = record
-            val restoreManualChoice = subtitlesEnabled && record?.id == restoredLocalSubtitleId
+            val restoreManualChoice = subtitleManuallySelected && subtitlesEnabled && record?.id == restoredLocalSubtitleId
             if (record?.selected == true && (defaultSubtitlesEnabled(spec) || restoreManualChoice))
-                loadLocalSubtitle(owner, record, revision, account)
+                loadLocalSubtitle(owner, record, revision, account, manualSelection = restoreManualChoice)
         }
     }
 
@@ -2036,7 +2041,8 @@ class NativePlayerActivity : AppCompatActivity() {
             owner == localSubtitleOwnerKey && owner == localSubtitleOwner(client.server, account, spec) &&
             !closeLockedSpoilerPlayback()
 
-    private fun loadLocalSubtitle(owner: String, record: LocalSubtitleRecord, revision: Int, account: String?) {
+    private fun loadLocalSubtitle(owner: String, record: LocalSubtitleRecord, revision: Int, account: String?,
+        manualSelection: Boolean = true) {
         localSubtitleReadJob?.cancel()
         localSubtitleReadJob = scope.launch {
             try {
@@ -2047,7 +2053,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 localSubtitleRecord = record.copy(selected = true)
                 localSubtitleActiveId = record.id; localSubtitleTimeline = timeline
                 restoredLocalSubtitleId = record.id
-                subtitlesEnabled = true; subtitleManuallySelected = true
+                subtitlesEnabled = true; subtitleManuallySelected = subtitleManuallySelected || manualSelection
                 player?.let { active ->
                     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
@@ -2533,6 +2539,13 @@ class NativePlayerActivity : AppCompatActivity() {
                         if (isCurrent() && !closeLockedSpoilerPlayback()) {
                             playbackNeighbors = neighbors
                             updateNavigationButtons()
+                            // Some home rows also omit showId. Neighbor inspection has now filled
+                            // the exact-part cache, so retry once using its verified parent metadata.
+                            if (spec.sourceItem?.type == "episode" && spec.sourceItem?.showId == null &&
+                                spec.sourceItem?.hasKnownMediaOrigin() == false) {
+                                subtitleOriginAttemptedKey = null
+                                resolveSubtitleOrigin(readyPlayer)
+                            }
                         }
                     }
                 },
@@ -2542,6 +2555,55 @@ class NativePlayerActivity : AppCompatActivity() {
                 markerAttemptTimeoutMs = 3_000,
                 markerRetryTimeoutMs = 20_000,
             )
+        }
+    }
+
+    /** Home rows can omit country metadata. Resolve it after READY without restarting playback. */
+    private fun resolveSubtitleOrigin(readyPlayer: Player) {
+        val item = spec.sourceItem ?: return
+        val key = subtitlePlaybackContentKey(spec)
+        if (item.hasKnownMediaOrigin() || subtitleOriginAttemptedKey == key || subtitleOriginJob?.isActive == true ||
+            player !== readyPlayer || !prepared || exiting || isDestroyed || refreshing || conversionLoading ||
+            navigationLoading || closeLockedSpoilerPlayback()) return
+        val current = spec
+        val account = client.token
+        val generation = engineGeneration
+        fun isCurrent() = player === readyPlayer && engineGeneration == generation && client.token == account &&
+            subtitlePlaybackContentKey(spec) == key && !exiting && !isDestroyed && !refreshing &&
+            !conversionLoading && !navigationLoading
+        subtitleOriginJob = scope.launch {
+            try {
+                val resolved = client.resolvePlaybackOrigin(current)
+                currentCoroutineContext().ensureActive()
+                if (!isCurrent() || closeLockedSpoilerPlayback()) return@launch
+                subtitleOriginAttemptedKey = key
+                val source = spec.sourceItem ?: return@launch
+                if (resolved == null || source.hasKnownMediaOrigin()) return@launch
+                spec = spec.copy(sourceItem = source.copy(productionCountries = resolved.productionCountries,
+                    originalLanguage = resolved.originalLanguage))
+                val defaultOff = !defaultSubtitlesEnabled(spec)
+                Log.i("ShyniFlixSubtitle", "origin=resolved default_off=$defaultOff manual=$subtitleManuallySelected")
+                if (!defaultOff || subtitleManuallySelected) return@launch
+                // Invalidate pending automatic loads, while retaining imported files and manual menu access.
+                subtitlesEnabled = false
+                clearExternalSubtitle(); externalSubtitleId = null
+                pendingTextPreference = null; deferredSubtitlePreference = null
+                localSubtitleChoiceRevision++
+                localSubtitleReadJob?.cancel(); localSubtitleReadJob = null
+                localSubtitleActiveId = null; localSubtitleTimeline = null; restoredLocalSubtitleId = null
+                // A cancelled initial file lookup must not remove the saved file from the menu.
+                // The resolved Korean default prevents this metadata reload from activating it.
+                ensureLocalSubtitleSource(forceReload = true)
+                readyPlayer.trackSelectionParameters = readyPlayer.trackSelectionParameters.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT).setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                playerView.subtitleView?.setCues(emptyList())
+                renderEmbeddedCues(readyPlayer.currentCues)
+                updateSubtitleButton()
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                if (isCurrent()) subtitleOriginAttemptedKey = key
+            }
         }
     }
 
@@ -2772,6 +2834,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun applyConversionPlayback(refreshed: PlaybackSpec, previous: ConversionRestore) {
         val sameSource = subtitlePlaybackContentKey(refreshed) == subtitlePlaybackContentKey(previous.spec)
         subtitlePolicyContentKey = subtitlePlaybackContentKey(refreshed)
+        if (!sameSource) subtitleOriginAttemptedKey = null
         subtitlesEnabled = if (sameSource) previous.subtitleEnabled else defaultSubtitlesEnabled(refreshed)
         subtitleManuallySelected = sameSource && previous.subtitleManual
         restoredLocalSubtitleId = previous.localSubtitle.takeIf { sameSource && subtitlesEnabled }
@@ -3632,6 +3695,7 @@ class NativePlayerActivity : AppCompatActivity() {
         exoRestoreSubtitlePending = false
         dismissTvSubtitlePosition()
         cancelPlaybackMetadata()
+        subtitleOriginJob?.cancel(); subtitleOriginJob = null
         subtitleListJob?.cancel(); subtitleListJob = null
         subtitleListFailed = false
         spoilerReauthenticationJob?.cancel(); spoilerReauthenticationJob = null

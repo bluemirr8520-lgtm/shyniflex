@@ -35,6 +35,8 @@ import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Production playback paths with synthetic media and account data in the isolated QA package. */
 @RunWith(AndroidJUnit4::class)
@@ -134,6 +136,177 @@ class KoreanSubtitlePlaybackTest {
             }
         }
 
+    @Test fun homeEpisodeLateKoreanOriginDisablesEmbeddedMpvWithoutRestart() =
+        verifyDeferredEmbeddedOrigin(PlaybackEnginePreference.MPV)
+
+    @Test fun homeEpisodeLateKoreanOriginDisablesEmbeddedExoWithoutRestart() =
+        verifyDeferredEmbeddedOrigin(PlaybackEnginePreference.EXO)
+
+    private fun verifyDeferredEmbeddedOrigin(engine: PlaybackEnginePreference) =
+        fixture(engine, "media3/exo-embedded-subrip.mkv") { f ->
+            val spec = f.unknownEmbeddedEpisode()
+            f.holdOrigin(spec)
+            f.launch(spec).use { scenario ->
+                awaitReady(scenario, engine, minimumPosition = 1_000)
+                assertTrue("Origin lookup must run after playback starts", f.server.originRequested.await(3, TimeUnit.SECONDS))
+                var original: Player? = null
+                var position = 0L
+                scenario.onActivity {
+                    original = field(it, "player")
+                    position = original!!.currentPosition
+                    assertTrue("Unknown origin preserves the previous subtitle default", field(it, "subtitlesEnabled"))
+                    assertEquals("Playback must not wait for the origin response", 1L, f.server.originRelease.count)
+                }
+                f.server.originRelease.countDown()
+                await(scenario, "Late Korean origin must disable automatic embedded captions") {
+                    field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("KR") &&
+                        !field<Boolean>(it, "subtitlesEnabled")
+                }
+                scenario.onActivity {
+                    assertOff(it)
+                    assertSame("Origin metadata must not recreate the decoder", original, field<Player>(it, "player"))
+                    assertTrue("Origin metadata must not seek the paused video",
+                        field<Player>(it, "player").currentPosition in (position - 250)..(position + 250))
+                    assertFalse(field<Player>(it, "player").playWhenReady)
+                }
+            }
+        }
+
+    @Test fun manualEmbeddedSelectionSurvivesLateKoreanOrigin() =
+        fixture(PlaybackEnginePreference.MPV, "media3/exo-embedded-subrip.mkv") { f ->
+            val spec = f.unknownEmbeddedEpisode()
+            f.holdOrigin(spec)
+            f.launch(spec).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                assertTrue(f.server.originRequested.await(3, TimeUnit.SECONDS))
+                select(scenario) { it.contains("서버 내장") }
+                awaitCue(scenario, "Embedded SubRip cue")
+                f.server.originRelease.countDown()
+                await(scenario, "Late origin must preserve the explicit subtitle choice") {
+                    field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("KR") &&
+                        field<Boolean>(it, "subtitleManuallySelected")
+                }
+                awaitCue(scenario, "Embedded SubRip cue")
+                scenario.onActivity {
+                    assertTrue(field<Player>(it, "player").currentTracks.groups.any { group -> group.type == C.TRACK_TYPE_TEXT && group.isSelected })
+                }
+            }
+        }
+
+    @Test fun automaticallyRestoredLocalSubtitleDoesNotOverrideLateKoreanOrigin() =
+        fixture(PlaybackEnginePreference.EXO) { f ->
+            val known = f.spec(korean = true)
+            val spec = known.copy(sourceItem = known.sourceItem!!.copy(productionCountries = emptyList(), originalLanguage = null))
+            f.holdOrigin(spec)
+            f.seed(spec)
+            f.launch(spec).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.EXO, waitForLocal = true)
+                awaitCue(scenario, FIRST)
+                assertTrue(f.server.originRequested.await(3, TimeUnit.SECONDS))
+                f.server.originRelease.countDown()
+                await(scenario, "An automatic saved-file restore is not a manual subtitle choice") {
+                    field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("KR") &&
+                        !field<Boolean>(it, "subtitlesEnabled") && field<Any?>(it, "localSubtitleRecord") != null
+                }
+                scenario.onActivity(::assertOff)
+                select(scenario) { it.startsWith("불러온 자막 ·") }
+                awaitCue(scenario, FIRST)
+            }
+        }
+
+    @Test fun lateKoreanOriginKeepsTheSavedSubtitleMenuWhileItsInitialReadIsPending() =
+        fixture(PlaybackEnginePreference.MPV) { f ->
+            val known = f.spec(korean = true)
+            val spec = known.copy(sourceItem = known.sourceItem!!.copy(productionCountries = emptyList(), originalLanguage = null))
+            f.holdOrigin(spec)
+            val record = f.seed(spec)
+            val writesStarted = CountDownLatch(1)
+            val writesRelease = CountDownLatch(1)
+            val owner = localSubtitleOwner(f.server.origin, TOKEN, spec)!!
+            LocalSubtitleWrites.select(LocalSubtitleStore(f.context), owner, record.id, true) {
+                writesStarted.countDown()
+                writesRelease.await(12, TimeUnit.SECONDS)
+            }
+            try {
+                assertTrue("The synthetic write must delay the first local record read", writesStarted.await(3, TimeUnit.SECONDS))
+                f.launch(spec).use { scenario ->
+                    awaitReady(scenario, PlaybackEnginePreference.MPV)
+                    assertTrue(f.server.originRequested.await(3, TimeUnit.SECONDS))
+                    scenario.onActivity { assertNull(field<Any?>(it, "localSubtitleRecord")) }
+                    f.server.originRelease.countDown()
+                    await(scenario, "Korean origin must apply while the local record lookup is pending") {
+                        field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("KR") &&
+                            !field<Boolean>(it, "subtitlesEnabled")
+                    }
+                    writesRelease.countDown()
+                    await(scenario, "Turning automatic captions off must retain the saved-file menu entry") {
+                        field<Any?>(it, "localSubtitleRecord") != null
+                    }
+                    scenario.onActivity(::assertOff)
+                    select(scenario) { it.startsWith("불러온 자막 ·") }
+                    awaitCue(scenario, FIRST)
+                }
+            } finally { writesRelease.countDown() }
+        }
+
+    @Test fun delayedOriginFromPreviousEpisodeCannotDisableTheNewForeignEpisode() =
+        fixture(PlaybackEnginePreference.MPV, "media3/exo-embedded-subrip.mkv") { f ->
+            val first = f.unknownEmbeddedEpisode()
+            val next = f.unknownEmbeddedEpisode(part = 78).let { it.copy(sourceItem = it.sourceItem!!.copy(
+                showId = 901, productionCountries = listOf("US"), originalLanguage = "en")) }
+            f.holdOrigin(first)
+            f.launch(first).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                assertTrue(f.server.originRequested.await(3, TimeUnit.SECONDS))
+                scenario.onActivity { activity ->
+                    val restoreType = NativePlayerActivity::class.java.declaredClasses.single { it.simpleName == "ConversionRestore" }
+                    val ctor = restoreType.declaredConstructors.single { it.parameterCount == 11 }.apply { isAccessible = true }
+                    val previous = ctor.newInstance(first, 0L, true, null, null, null, null, 20_000L, true, false, null)
+                    NativePlayerActivity::class.java.getDeclaredMethod("applyConversionPlayback", PlaybackSpec::class.java, restoreType)
+                        .apply { isAccessible = true }.invoke(activity, next, previous)
+                }
+                await(scenario, "The next source must replace the pending origin request") {
+                    field<PlaybackSpec>(it, "spec").partId == 78
+                }
+                f.server.originRelease.countDown()
+                assertTrue("Old origin response must complete or be cancelled", f.server.originCompleted.await(3, TimeUnit.SECONDS))
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                awaitCue(scenario, "Embedded SubRip cue")
+                scenario.onActivity {
+                    assertEquals(listOf("US"), field<PlaybackSpec>(it, "spec").sourceItem!!.productionCountries)
+                    assertTrue(field(it, "subtitlesEnabled"))
+                }
+            }
+        }
+
+    @Test fun missingHomeShowIdRetriesOriginAfterVerifiedPartInfoArrives() =
+        fixture(PlaybackEnginePreference.MPV, "media3/exo-embedded-subrip.mkv") { f ->
+            val knownParent = f.unknownEmbeddedEpisode()
+            val spec = knownParent.copy(sourceItem = knownParent.sourceItem!!.copy(showId = null))
+            f.holdOrigin(knownParent)
+            f.server.mediaInfoPath = "/libraries/${spec.libraryId}/media_info/${spec.partId}"
+            f.server.mediaInfoBody = JSONObject()
+                .put("item", JSONObject().put("id", spec.itemId).put("show_id", 900))
+                .put("parts", JSONArray().put(JSONObject().put("id", spec.partId).put("metadata_item_id", spec.itemId)))
+                .put("markers", JSONArray()).toString()
+            f.launch(spec).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                assertTrue(f.server.mediaInfoRequested.await(3, TimeUnit.SECONDS))
+                await(scenario, "The first origin attempt must finish without guessing the missing show ID") {
+                    field<String?>(it, "subtitleOriginAttemptedKey") != null
+                }
+                assertEquals("A missing parent ID must not request an arbitrary show", 1L, f.server.originRequested.count)
+                f.server.mediaInfoRelease.countDown()
+                assertTrue("Verified part metadata must allow a bounded origin retry", f.server.originRequested.await(4, TimeUnit.SECONDS))
+                f.server.originRelease.countDown()
+                await(scenario, "The verified parent must supply the Korean subtitle default") {
+                    field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("KR") &&
+                        !field<Boolean>(it, "subtitlesEnabled")
+                }
+                scenario.onActivity(::assertOff)
+            }
+        }
+
     private fun fixture(engine: PlaybackEnginePreference, asset: String = "media3/gesture-av.mp4", block: (Harness) -> Unit) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -184,6 +357,24 @@ class KoreanSubtitlePlaybackTest {
                     mimeType = "application/x-subrip", source = "external", language = "kor", format = "subrip")) else emptyList(),
                 selectedSubtitleId = if (serverSubtitle) 9 else null,
                 sessionId = "synthetic-korean-session", progressToken = "synthetic-korean-context")
+        }
+        fun unknownEmbeddedEpisode(part: Int = 77): PlaybackSpec {
+            val base = spec(korean = true, episode = true, part = part)
+            val embedded = SubtitleTrack(7, "Synthetic embedded", "${server.origin}/must-not-extract", "application/x-subrip",
+                source = "embedded", language = "eng", streamIndex = 2, format = "subrip")
+            server.subtitleRows = JSONArray().put(JSONObject().put("id", 7).put("source", "embedded")
+                .put("label", "Synthetic embedded").put("lang_code", "eng").put("stream_index", 2).put("format", "subrip")).toString()
+            return base.copy(durationMs = 20_000, subtitles = listOf(embedded), selectedSubtitleId = 7, sourceContainer = "mkv",
+                sourceItem = base.sourceItem!!.copy(durationMs = 20_000, productionCountries = emptyList(), originalLanguage = null))
+        }
+        fun holdOrigin(spec: PlaybackSpec) {
+            val item = spec.sourceItem!!
+            val episode = item.type == "episode"
+            val detailId = if (episode) item.showId!! else item.id
+            server.originDetailPath = "/libraries/${item.libraryId}/${if (episode) "shows" else "movies"}/$detailId"
+            server.originDetailBody = JSONObject().put("id", detailId).put("type", if (episode) "show" else "movie")
+                .put("library_view_id", item.libraryId).put("view_item_id", item.viewItemId)
+                .put("title", "합성 상세 작품").put("extra", JSONObject().put("country", JSONArray().put("KR"))).toString()
         }
         fun seed(spec: PlaybackSpec) = runBlocking { withContext(Dispatchers.IO) {
             val owner = localSubtitleOwner(server.origin, TOKEN, spec)!!; owners += owner

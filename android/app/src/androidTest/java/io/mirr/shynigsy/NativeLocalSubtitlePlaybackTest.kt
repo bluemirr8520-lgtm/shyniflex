@@ -46,6 +46,7 @@ import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -242,6 +243,15 @@ class NativeLocalSubtitlePlaybackTest {
         private val failure = AtomicReference<Throwable?>()
         val subtitleRequests = java.util.concurrent.atomic.AtomicInteger()
         @Volatile var subtitleRows = JSONArray().toString()
+        @Volatile var originDetailPath: String? = null
+        @Volatile var originDetailBody = "{}"
+        val originRequested = CountDownLatch(1)
+        val originRelease = CountDownLatch(1)
+        val originCompleted = CountDownLatch(1)
+        @Volatile var mediaInfoPath: String? = null
+        @Volatile var mediaInfoBody = "{}"
+        val mediaInfoRequested = CountDownLatch(1)
+        val mediaInfoRelease = CountDownLatch(1)
         val origin get() = "http://127.0.0.1:${listener.localPort}"
         private val accept = thread(name = "local-caption-accept", isDaemon = true) {
             while (!listener.isClosed) try {
@@ -254,6 +264,8 @@ class NativeLocalSubtitlePlaybackTest {
         fun assertHealthy() { failure.get()?.let { throw AssertionError("Synthetic subtitle server failed", it) } }
         private fun respond(socket: Socket) {
             var media = false
+            var originDetail = false
+            var mediaInfo = false
             try { socket.use { connection ->
                 connection.soTimeout = 3_000
                 val input = BufferedInputStream(connection.getInputStream())
@@ -270,6 +282,18 @@ class NativeLocalSubtitlePlaybackTest {
                 val path = Uri.parse(request[1]).path.orEmpty()
                 when {
                     path.startsWith("/stream/") -> { media = true; video(connection, request[0], headers["range"]) }
+                    path == originDetailPath -> {
+                        originDetail = true
+                        originRequested.countDown()
+                        check(originRelease.await(12, TimeUnit.SECONDS)) { "Origin response was never released" }
+                        reply(connection, "application/json", originDetailBody.toByteArray())
+                    }
+                    path == mediaInfoPath -> {
+                        mediaInfo = true
+                        mediaInfoRequested.countDown()
+                        check(mediaInfoRelease.await(12, TimeUnit.SECONDS)) { "Media-info response was never released" }
+                        reply(connection, "application/json", mediaInfoBody.toByteArray())
+                    }
                     path in setOf("/external-subtitle.srt", "/subtitles/raw/9", "/subtitles/track/9.vtt") && subtitleBody != null -> {
                         subtitleRequests.incrementAndGet()
                         reply(connection, "application/x-subrip", subtitleBody)
@@ -279,9 +303,10 @@ class NativeLocalSubtitlePlaybackTest {
                     else -> reply(connection, "application/json", "{}".toByteArray(), "404 Not Found")
                 }
             } } catch (error: SocketException) {
-                if (!media && !listener.isClosed) failure.compareAndSet(null, error)
+                // Optional origin requests can be cancelled when the source/engine changes.
+                if (!media && !originDetail && !mediaInfo && !listener.isClosed) failure.compareAndSet(null, error)
             } catch (error: Throwable) { if (!listener.isClosed) failure.compareAndSet(null, error) }
-            finally { sockets -= socket }
+            finally { if (originDetail) originCompleted.countDown(); sockets -= socket }
         }
 
         private fun video(socket: Socket, method: String, rangeHeader: String?) {
@@ -317,7 +342,8 @@ class NativeLocalSubtitlePlaybackTest {
             error("Oversized line")
         }
         override fun close() {
-            listener.close(); synchronized(sockets) { sockets.toList() }.forEach { runCatching { it.close() } }
+            listener.close(); originRelease.countDown(); mediaInfoRelease.countDown()
+            synchronized(sockets) { sockets.toList() }.forEach { runCatching { it.close() } }
             accept.join(1_000); workers.shutdownNow(); workers.awaitTermination(2, TimeUnit.SECONDS)
         }
     }

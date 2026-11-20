@@ -4,6 +4,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
+/** A translated title, selected audio track or subtitle language is never origin evidence. */
+internal fun MediaItem.hasKnownMediaOrigin(): Boolean =
+    productionCountries.any { normalizedProductionCountry(it) != null } ||
+        originalLanguage?.trim()?.lowercase(Locale.ROOT)?.let {
+            it in setOf("korean", "한국어", "조선말") ||
+                (it !in setOf("und", "unk", "zxx", "mul") && Regex("[a-z]{2,3}(?:[-_][a-z]{2,4})?").matches(it))
+        } == true
+
 /** Read only work-origin metadata, never selected/dubbed audio or subtitle language. */
 internal fun mediaProductionCountries(row: JSONObject): List<String> {
     val fields = listOf("productionCountries", "countries_display", "country", "countries", "origin_country",

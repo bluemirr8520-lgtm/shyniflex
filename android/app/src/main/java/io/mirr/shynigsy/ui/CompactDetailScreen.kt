@@ -88,6 +88,7 @@ internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOp
     }
     CompactDetailContent(detail = detail, versions = state.versions, selectedPartId = state.selectedPartId,
         busy = state.busy && !state.homeLoading, error = state.error, spoilerUnlocked = state.spoilerUnlocked,
+        overviewFirst = state.library == null && !state.searchOpen,
         onPlay = { item, startOver -> model.play(item, startOver) }, onOpenItem = model::openItem,
         onSelectSeason = model::selectSeason, onSelectVersion = model::selectVersion,
         onWatchOptions = onWatchOptions, onWatchedChange = { item, watched -> model.setWatched(item, watched) },
@@ -119,6 +120,7 @@ internal fun CompactDetailContent(
     onWatchedChange: (MediaItem, Boolean) -> Unit,
     artwork: @Composable (MediaItem, Modifier) -> Unit,
     modifier: Modifier = Modifier,
+    overviewFirst: Boolean = false,
     discovery: DetailDiscoveryState? = null,
     libraries: List<Library> = emptyList(),
     onSelectActor: (CastMember) -> Unit = {},
@@ -143,18 +145,20 @@ internal fun CompactDetailContent(
     val restoredChild = focusedChildKey?.takeIf { it in childKeys } ?: childKeys.firstOrNull()
     val selectedSeason = seasons.firstOrNull { it.id == detail.selectedSeasonId } ?: seasons.firstOrNull()
     val focus = remember { FocusRequester() }
+    val overviewFocus = remember { FocusRequester() }
+    val hasOverviewAction = overviewFirst && !item.playable && children.isNotEmpty()
     val list = rememberLazyListState()
     val jumpScope = rememberCoroutineScope()
     val seasonList = rememberLazyListState()
     val television = LocalContext.current.isTelevision()
-    var focusRequested by remember(identity, detail.selectedSeasonId, childKeys) { mutableStateOf(false) }
+    var focusRequested by remember(identity, detail.selectedSeasonId, childKeys, overviewFirst) { mutableStateOf(false) }
     var expanded by rememberSaveable(identity) { mutableStateOf(false) }
     val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty() || discoveryTargets.isNotEmpty()
     val hasResolutionChoice = remember(versions) { resolutionFolders(versions).size > 1 }
     val primaryRows = if (item.playable) 1 + (if (hasResolutionChoice) 1 else 0) else children.size.coerceAtLeast(1)
     val discoveryIndex = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0) +
         primaryRows + (if (item.summary.isNotBlank()) 1 else 0) + (if (item.playable && fileInformation != null) 1 else 0)
-    LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId) {
+    LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId, overviewFirst) {
         if (busy) return@LaunchedEffect
         if (!television || !hasFocusTarget || focusRequested) return@LaunchedEffect
         if ((focusedDiscovery != null || (!item.playable && children.isEmpty() && seasons.isEmpty())) && discoveryTargets.isNotEmpty()) {
@@ -166,13 +170,14 @@ internal fun CompactDetailContent(
         val restoredIndex = childKeys.indexOf(restoredChild)
         // Keep the compact heading visible initially; restore deeper rows only when returning.
         if (!item.playable && restoredIndex > 0) {
-            val headers = 1 + (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0)
+            val headers = 1 + (if (overviewFirst && item.summary.isNotBlank()) 1 else 0) +
+                (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0)
             list.scrollToItem(headers + restoredIndex)
         } else list.scrollToItem(0)
         if (!item.playable && children.isEmpty() && selectedSeason != null)
             seasonList.scrollToItem(seasons.indexOf(selectedSeason))
         withFrameNanos { }
-        focus.requestFocus()
+        if (hasOverviewAction && restoredIndex <= 0) overviewFocus.requestFocus() else focus.requestFocus()
         focusRequested = true
     }
 
@@ -180,7 +185,7 @@ internal fun CompactDetailContent(
         contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item(key = "heading") {
           Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (item.playable) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (item.playable || overviewFirst) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.width(if (item.type == "episode") 112.dp else 68.dp)
                     .aspectRatio(if (item.type == "episode") 16f / 9f else 2f / 3f)
                     .testTag("compact-detail-art")) {
@@ -212,7 +217,20 @@ internal fun CompactDetailContent(
                     }
                 }
             }
+            if (hasOverviewAction) TvAction("회차 보기", Modifier.focusRequester(overviewFocus)
+                .testTag("compact-detail-episodes-jump").onFocusChanged { if (it.hasFocus) focusedDiscovery = null },
+                enabled = !busy) {
+                jumpScope.launch {
+                    val headers = 1 + (if (item.summary.isNotBlank()) 1 else 0) +
+                        (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0)
+                    list.scrollToItem(headers + childKeys.indexOf(restoredChild).coerceAtLeast(0))
+                    if (television) { withFrameNanos { }; focus.requestFocus() }
+                }
+            }
           }
+        }
+        if (overviewFirst && item.summary.isNotBlank()) item(key = "summary") {
+            CompactDetailSummary(item.summary, expanded) { expanded = !expanded }
         }
         if (seasons.isNotEmpty()) item(key = "seasons") {
             LazyRow(state = seasonList, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.testTag("compact-seasons")) {
@@ -260,14 +278,9 @@ internal fun CompactDetailContent(
                     modifier = Modifier.testTag(if (busy) "compact-episodes-loading" else "compact-episodes-empty"))
             }
         }
-        // Series descriptions follow the episodes instead of pushing the list below the fold.
-        if (item.summary.isNotBlank()) item(key = "summary") {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(item.summary, fontSize = 12.sp, maxLines = if (expanded) Int.MAX_VALUE else 3,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("compact-detail-summary"))
-                if (item.summary.length > 140) TvAction(if (expanded) "접기" else "줄거리 더 보기",
-                    Modifier.testTag("compact-summary-toggle")) { expanded = !expanded }
-            }
+        // Home posters introduce the work first; catalog navigation keeps episodes first.
+        if (!overviewFirst && item.summary.isNotBlank()) item(key = "summary") {
+            CompactDetailSummary(item.summary, expanded) { expanded = !expanded }
         }
         if (item.playable && fileInformation != null) item(key = "file-information") { fileInformation() }
         item(key = "discovery") {
@@ -277,5 +290,15 @@ internal fun CompactDetailContent(
                 onFocused = { focusedDiscovery = it }, onRestoreDone = { restoreDiscoveryFocus = false },
                 onSearchActorMovies = onSearchActorMovies, onCancelActorMovieSearch = onCancelActorMovieSearch)
         }
+    }
+}
+
+@Composable
+private fun CompactDetailSummary(summary: String, expanded: Boolean, onToggle: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(summary, fontSize = 12.sp, maxLines = if (expanded) Int.MAX_VALUE else 3,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("compact-detail-summary"))
+        if (summary.length > 140) TvAction(if (expanded) "접기" else "줄거리 더 보기",
+            Modifier.testTag("compact-summary-toggle"), onClick = onToggle)
     }
 }
