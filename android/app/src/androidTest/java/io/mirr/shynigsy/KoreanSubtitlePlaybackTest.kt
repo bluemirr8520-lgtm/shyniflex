@@ -307,6 +307,140 @@ class KoreanSubtitlePlaybackTest {
             }
         }
 
+    @Test fun unknownOriginKoreanAudioDisablesEmbeddedMpvCaptions() =
+        verifyUnknownKoreanAudioDefault(PlaybackEnginePreference.MPV)
+
+    @Test fun unknownOriginKoreanAudioDisablesEmbeddedExoCaptions() =
+        verifyUnknownKoreanAudioDefault(PlaybackEnginePreference.EXO)
+
+    private fun verifyUnknownKoreanAudioDefault(engine: PlaybackEnginePreference) =
+        fixture(engine, KOREAN_AUDIO_ASSET) { f ->
+            f.launch(f.unknownEmbeddedEpisode()).use { scenario ->
+                awaitReady(scenario, engine, minimumPosition = 1_000)
+                await(scenario, "The actual selected Korean audio must disable unknown-origin captions") {
+                    selectedAudioLanguage(it) in setOf("ko", "kor") && !field<Boolean>(it, "subtitlesEnabled")
+                }
+                scenario.onActivity {
+                    assertOff(it)
+                    assertTrue("Audio fallback must not invent production metadata",
+                        field<PlaybackSpec>(it, "spec").sourceItem!!.productionCountries.isEmpty())
+                    assertNull(field<PlaybackSpec>(it, "spec").sourceItem!!.originalLanguage)
+                }
+            }
+        }
+
+    @Test fun manualCaptionOnKoreanAudioSurvivesExoMpvHandoffAndRecreation() =
+        fixture(PlaybackEnginePreference.EXO, KOREAN_AUDIO_ASSET) { f ->
+            f.launch(f.unknownEmbeddedEpisode()).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.EXO, minimumPosition = 1_000)
+                scenario.onActivity(::assertOff)
+                // SubRip reselection inside its active cue uses the existing Exo-to-MPV
+                // handoff so the decoder can recover a sample preceding the current cluster.
+                select(scenario) { it.contains("서버 내장") }
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 500)
+                awaitCue(scenario, "Embedded SubRip cue")
+                scenario.recreate()
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 500)
+                awaitCue(scenario, "Embedded SubRip cue")
+                scenario.onActivity { assertTrue(field(it, "subtitleManuallySelected")) }
+            }
+        }
+
+    @Test fun foreignOriginKoreanDubRetainsAutomaticEmbeddedCaptions() =
+        fixture(PlaybackEnginePreference.EXO, KOREAN_AUDIO_ASSET) { f ->
+            val unknown = f.unknownEmbeddedEpisode()
+            val source = unknown.copy(sourceItem = unknown.sourceItem!!.copy(productionCountries = listOf("US"), originalLanguage = "en"))
+            f.launch(source).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.EXO, minimumPosition = 1_000)
+                awaitCue(scenario, "Embedded SubRip cue")
+                scenario.onActivity {
+                    assertTrue(selectedAudioLanguage(it) in setOf("ko", "kor"))
+                    assertFalse("The automatic caption must not be marked as a manual choice", field(it, "subtitleManuallySelected"))
+                }
+            }
+        }
+
+    @Test fun unknownKoreanAudioKeepsSavedLocalFileOffButManuallySelectable() =
+        fixture(PlaybackEnginePreference.MPV, KOREAN_AUDIO_ASSET) { f ->
+            val source = f.unknownEmbeddedEpisode()
+            f.seed(source)
+            f.launch(source).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                await(scenario, "Audio fallback must retain the saved local file without activating it") {
+                    !field<Boolean>(it, "subtitlesEnabled") && field<Any?>(it, "localSubtitleRecord") != null
+                }
+                scenario.onActivity(::assertOff)
+                select(scenario) { it.startsWith("불러온 자막 ·") }
+                awaitCue(scenario, FIRST)
+            }
+        }
+
+    @Test fun lateForeignOriginRestoresTheCaptionAfterKoreanAudioFallbackWithoutRestart() =
+        fixture(PlaybackEnginePreference.MPV, KOREAN_AUDIO_ASSET) { f ->
+            val source = f.unknownEmbeddedEpisode()
+            f.holdOrigin(source, country = "US")
+            f.launch(source).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                assertTrue(f.server.originRequested.await(3, TimeUnit.SECONDS))
+                var original: Player? = null
+                var position = 0L
+                scenario.onActivity {
+                    assertOff(it)
+                    original = field(it, "player")
+                    position = original!!.currentPosition
+                }
+                f.server.originRelease.countDown()
+                await(scenario, "Explicit foreign origin must override the temporary audio fallback") {
+                    field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("US") &&
+                        field<Boolean>(it, "subtitlesEnabled")
+                }
+                awaitCue(scenario, "Embedded SubRip cue")
+                scenario.onActivity {
+                    assertSame(original, field<Player>(it, "player"))
+                    assertTrue(field<Player>(it, "player").currentPosition in (position - 250)..(position + 250))
+                    assertFalse(field<Player>(it, "player").playWhenReady)
+                }
+            }
+        }
+
+    @Test fun lateForeignOriginAllowsThePendingExternalListToRestoreCaptionsWithoutNativeText() =
+        fixture(PlaybackEnginePreference.MPV, "media3/gesture-av-kor-audio.mp4") { f ->
+            val base = f.spec(korean = true, episode = true, serverSubtitle = true)
+            val source = base.copy(sourceItem = base.sourceItem!!.copy(productionCountries = emptyList(), originalLanguage = null),
+                subtitles = emptyList(), subtitlesPending = true)
+            f.holdOrigin(source, country = "US")
+            f.server.holdSubtitleList = true
+            f.launch(source).use { scenario ->
+                awaitReady(scenario, PlaybackEnginePreference.MPV, minimumPosition = 1_000)
+                assertTrue(f.server.originRequested.await(3, TimeUnit.SECONDS))
+                assertTrue(f.server.subtitleListRequested.await(3, TimeUnit.SECONDS))
+                var original: Player? = null
+                var position = 0L
+                scenario.onActivity {
+                    assertOff(it)
+                    original = field(it, "player")
+                    position = original!!.currentPosition
+                    assertFalse("This fixture intentionally contains no embedded text",
+                        original!!.currentTracks.groups.any { group -> group.type == C.TRACK_TYPE_TEXT })
+                }
+                assertEquals(0, f.server.subtitleRequests.get())
+                f.server.originRelease.countDown()
+                await(scenario, "Foreign origin must restore subtitle intent while the external list is pending") {
+                    field<PlaybackSpec>(it, "spec").sourceItem?.productionCountries == listOf("US") &&
+                        field<Boolean>(it, "subtitlesEnabled") && field<PlaybackSpec>(it, "spec").subtitlesPending
+                }
+                f.server.subtitleListRelease.countDown()
+                awaitCue(scenario, FIRST)
+                scenario.onActivity {
+                    assertSame(original, field<Player>(it, "player"))
+                    assertTrue(field<Player>(it, "player").currentPosition in (position - 250)..(position + 250))
+                    assertFalse(field(it, "subtitleManuallySelected"))
+                }
+                assertTrue("The pending list must activate its external caption after the foreign origin arrives",
+                    f.server.subtitleRequests.get() > 0)
+            }
+        }
+
     private fun fixture(engine: PlaybackEnginePreference, asset: String = "media3/gesture-av.mp4", block: (Harness) -> Unit) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -367,14 +501,14 @@ class KoreanSubtitlePlaybackTest {
             return base.copy(durationMs = 20_000, subtitles = listOf(embedded), selectedSubtitleId = 7, sourceContainer = "mkv",
                 sourceItem = base.sourceItem!!.copy(durationMs = 20_000, productionCountries = emptyList(), originalLanguage = null))
         }
-        fun holdOrigin(spec: PlaybackSpec) {
+        fun holdOrigin(spec: PlaybackSpec, country: String = "KR") {
             val item = spec.sourceItem!!
             val episode = item.type == "episode"
             val detailId = if (episode) item.showId!! else item.id
             server.originDetailPath = "/libraries/${item.libraryId}/${if (episode) "shows" else "movies"}/$detailId"
             server.originDetailBody = JSONObject().put("id", detailId).put("type", if (episode) "show" else "movie")
                 .put("library_view_id", item.libraryId).put("view_item_id", item.viewItemId)
-                .put("title", "합성 상세 작품").put("extra", JSONObject().put("country", JSONArray().put("KR"))).toString()
+                .put("title", "합성 상세 작품").put("extra", JSONObject().put("country", JSONArray().put(country))).toString()
         }
         fun seed(spec: PlaybackSpec) = runBlocking { withContext(Dispatchers.IO) {
             val owner = localSubtitleOwner(server.origin, TOKEN, spec)!!; owners += owner
@@ -430,6 +564,12 @@ class KoreanSubtitlePlaybackTest {
         field<Boolean>(it, "subtitlesEnabled") && overlay.visibility == View.VISIBLE && overlay.subtitleText == expected
     }
 
+    private fun selectedAudioLanguage(activity: NativePlayerActivity): String? =
+        field<Player>(activity, "player").currentTracks.groups.firstNotNullOfOrNull { group ->
+            if (group.type != C.TRACK_TYPE_AUDIO) null else (0 until group.length)
+                .firstOrNull { group.isTrackSelected(it) }?.let { group.getTrackFormat(it).language }
+        }
+
     private fun await(scenario: ActivityScenario<NativePlayerActivity>, description: String, predicate: (NativePlayerActivity) -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + 15_000
         var diagnostics = "No activity"
@@ -453,6 +593,7 @@ class KoreanSubtitlePlaybackTest {
 
     companion object {
         private const val TOKEN = "synthetic-korean-subtitle-token"
+        private const val KOREAN_AUDIO_ASSET = "media3/exo-embedded-subrip-kor-audio.mkv"
         private const val FIRST = "Synthetic manually enabled caption"
         private const val SECOND = "Synthetic caption after seek"
         private val CAPTIONS = "1\n00:00:00,000 --> 00:00:03,000\n$FIRST\n\n2\n00:00:03,000 --> 00:00:06,000\n$SECOND\n"

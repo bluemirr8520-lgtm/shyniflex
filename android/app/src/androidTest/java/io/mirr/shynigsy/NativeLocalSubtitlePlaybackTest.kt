@@ -243,6 +243,9 @@ class NativeLocalSubtitlePlaybackTest {
         private val failure = AtomicReference<Throwable?>()
         val subtitleRequests = java.util.concurrent.atomic.AtomicInteger()
         @Volatile var subtitleRows = JSONArray().toString()
+        @Volatile var holdSubtitleList = false
+        val subtitleListRequested = CountDownLatch(1)
+        val subtitleListRelease = CountDownLatch(1)
         @Volatile var originDetailPath: String? = null
         @Volatile var originDetailBody = "{}"
         val originRequested = CountDownLatch(1)
@@ -266,6 +269,7 @@ class NativeLocalSubtitlePlaybackTest {
             var media = false
             var originDetail = false
             var mediaInfo = false
+            var subtitleList = false
             try { socket.use { connection ->
                 connection.soTimeout = 3_000
                 val input = BufferedInputStream(connection.getInputStream())
@@ -298,13 +302,18 @@ class NativeLocalSubtitlePlaybackTest {
                         subtitleRequests.incrementAndGet()
                         reply(connection, "application/x-subrip", subtitleBody)
                     }
-                    path.startsWith("/subtitles/") -> reply(connection, "application/json", subtitleRows.toByteArray())
+                    path.startsWith("/subtitles/") -> {
+                        subtitleList = true
+                        subtitleListRequested.countDown()
+                        if (holdSubtitleList) check(subtitleListRelease.await(12, TimeUnit.SECONDS)) { "Subtitle list was never released" }
+                        reply(connection, "application/json", subtitleRows.toByteArray())
+                    }
                     path == "/playback/progress" -> reply(connection, "application/json", "{\"ok\":true}".toByteArray())
                     else -> reply(connection, "application/json", "{}".toByteArray(), "404 Not Found")
                 }
             } } catch (error: SocketException) {
                 // Optional origin requests can be cancelled when the source/engine changes.
-                if (!media && !originDetail && !mediaInfo && !listener.isClosed) failure.compareAndSet(null, error)
+                if (!media && !originDetail && !mediaInfo && !subtitleList && !listener.isClosed) failure.compareAndSet(null, error)
             } catch (error: Throwable) { if (!listener.isClosed) failure.compareAndSet(null, error) }
             finally { if (originDetail) originCompleted.countDown(); sockets -= socket }
         }
@@ -342,7 +351,7 @@ class NativeLocalSubtitlePlaybackTest {
             error("Oversized line")
         }
         override fun close() {
-            listener.close(); originRelease.countDown(); mediaInfoRelease.countDown()
+            listener.close(); originRelease.countDown(); mediaInfoRelease.countDown(); subtitleListRelease.countDown()
             synchronized(sockets) { sockets.toList() }.forEach { runCatching { it.close() } }
             accept.join(1_000); workers.shutdownNow(); workers.awaitTermination(2, TimeUnit.SECONDS)
         }

@@ -398,18 +398,30 @@ class ShyniClient(
     }
 
     /** Optional background-only metadata. Never call from playback's ticket/startup path. */
-    suspend fun resolvePlaybackOrigin(spec: PlaybackSpec): MediaItem? {
-        val source = spec.sourceItem ?: return null
-        val viewItemId = spec.viewItemId?.takeIf { it > 0 } ?: return null
+    suspend fun resolvePlaybackOrigin(spec: PlaybackSpec, onDiagnostic: (String) -> Unit = {}): MediaItem? {
+        // Only fixed enums, booleans and HTTP status values may cross this diagnostic boundary.
+        // A diagnostic sink must not affect optional metadata behavior or expose source identity.
+        fun report(message: String) { try { onDiagnostic(message) } catch (_: Exception) { } }
+        val source = spec.sourceItem ?: run { report("result=missing_source"); return null }
+        val viewItemId = spec.viewItemId?.takeIf { it > 0 } ?: run {
+            report("result=missing_view context_present=${!spec.progressToken.isNullOrBlank()} source_view_present=${source.viewItemId?.let { it > 0 } == true}")
+            return null
+        }
         if (token.isNullOrBlank() || !source.playable || source.id != spec.itemId || spec.itemId <= 0 ||
             spec.partId <= 0 || spec.libraryId <= 0 || source.libraryId != spec.libraryId ||
-            source.viewItemId != viewItemId) return null
+            source.viewItemId != viewItemId) {
+            report("result=invalid_context authenticated=${!token.isNullOrBlank()} playable=${source.playable} item_bound=${source.id == spec.itemId && spec.itemId > 0} library_bound=${source.libraryId == spec.libraryId && spec.libraryId > 0} view_bound=${source.viewItemId == viewItemId} part_valid=${spec.partId > 0}")
+            return null
+        }
         val account = token
         val accountScope = spoilerKey()
         val authorization = playbackTransportAuthorization(spec)
         return withContext(Dispatchers.Default) {
             currentCoroutineContext().ensureActive(); authorization()
-            if (source.hasKnownMediaOrigin()) return@withContext source
+            if (source.hasKnownMediaOrigin()) {
+                report("result=known_origin")
+                return@withContext source
+            }
             fun matchesContext(row: JSONObject): Boolean = !row.optBoolean("remote") &&
                 row.stringOrNull("federated_id") == null &&
                 (row.isNull("library_view_id") || row.exactPositiveInt("library_view_id") == spec.libraryId) &&
@@ -428,16 +440,25 @@ class ShyniClient(
             if (inspected != null) {
                 val enriched = source.copy(productionCountries = mediaProductionCountries(inspected),
                     originalLanguage = mediaOriginalLanguage(inspected))
-                if (enriched.hasKnownMediaOrigin()) return@withContext enriched
+                if (enriched.hasKnownMediaOrigin()) {
+                    report("result=cached_part_origin")
+                    return@withContext enriched
+                }
             }
             val targetType = if (source.type == "movie") "movie" else "show"
             val targetId = if (targetType == "movie") source.id else source.showId?.takeIf { it > 0 }
-                ?: inspected?.exactPositiveInt("show_id") ?: return@withContext null
+                ?: inspected?.exactPositiveInt("show_id") ?: run {
+                    report("result=missing_parent part_cache_present=${info != null} part_bound=${inspected != null}")
+                    return@withContext null
+                }
             val cacheKey = "$accountScope:${spec.libraryId}:$viewItemId:$targetType:$targetId:${source.isSpoiler}"
             mediaOriginCache[cacheKey]?.takeIf { System.currentTimeMillis() - it.at < 120_000 }?.let {
+                report("result=cached_detail_origin")
                 return@withContext source.copy(productionCountries = it.countries, originalLanguage = it.language)
             }
             val path = "/libraries/${spec.libraryId}/${if (targetType == "movie") "movies" else "shows"}/$targetId"
+            report("stage=detail_request type=$targetType")
+            var compatibilityRetry = false
             val response = try {
                 withTimeout(8_000L) {
                     suspend fun read(suffix: String) = request(path + suffix, responseLimit = 2L * 1024 * 1024,
@@ -446,15 +467,26 @@ class ShyniClient(
                     try { read("?fields=full") } catch (error: ApiException) {
                         if (error.isEpisodeIdentityFailure() || error.status !in setOf(400, 422)) throw error
                         currentCoroutineContext().ensureActive(); authorization()
+                        compatibilityRetry = true
                         read("")
                     }
                 }
             } catch (_: TimeoutCancellationException) {
                 currentCoroutineContext().ensureActive(); authorization()
+                report("result=timeout compatibility_retry=$compatibilityRetry")
                 return@withContext null
+            } catch (cancel: CancellationException) {
+                report("result=cancelled")
+                throw cancel
+            } catch (error: ApiException) {
+                report("result=request_failed status=${error.status} compatibility_retry=$compatibilityRetry")
+                throw error
             }
             currentCoroutineContext().ensureActive(); authorization()
-            val returnedId = response.exactPositiveInt("id") ?: return@withContext null
+            val returnedId = response.exactPositiveInt("id") ?: run {
+                report("result=response_id_missing compatibility_retry=$compatibilityRetry")
+                return@withContext null
+            }
             // A merged View returns the representative show, plus all physical show IDs.
             // In that case require both explicit View bindings and both group members.
             val representedShow = if (targetType == "show" && returnedId != targetId &&
@@ -466,14 +498,24 @@ class ShyniClient(
                 } }.orEmpty()
                 targetId in ids && returnedId in ids
             } else false
-            if (!matchesContext(response) || (returnedId != targetId && !representedShow) ||
-                (!response.isNull("metadata_item_id") && response.exactPositiveInt("metadata_item_id") != returnedId) ||
-                parseMedia(response, spec.libraryId, targetType).type != targetType) return@withContext null
+            val contextMatches = matchesContext(response)
+            val identityMatches = returnedId == targetId || representedShow
+            val metadataMatches = response.isNull("metadata_item_id") || response.exactPositiveInt("metadata_item_id") == returnedId
+            val typeMatches = if (contextMatches && identityMatches && metadataMatches)
+                parseMedia(response, spec.libraryId, targetType).type == targetType else null
+            if (!contextMatches || !identityMatches || !metadataMatches || typeMatches != true) {
+                report("result=binding_rejected context_match=$contextMatches identity_match=$identityMatches metadata_match=$metadataMatches type_checked=${typeMatches != null} type_match=${typeMatches == true} representative=$representedShow")
+                return@withContext null
+            }
             val result = source.copy(productionCountries = mediaProductionCountries(response),
                 originalLanguage = mediaOriginalLanguage(response))
-            if (!result.hasKnownMediaOrigin()) return@withContext null
+            if (!result.hasKnownMediaOrigin()) {
+                report("result=origin_absent compatibility_retry=$compatibilityRetry")
+                return@withContext null
+            }
             if (mediaOriginCache.size >= 64) mediaOriginCache.clear()
             mediaOriginCache[cacheKey] = CachedMediaOrigin(System.currentTimeMillis(), result.productionCountries, result.originalLanguage)
+            report("result=resolved country_present=${result.productionCountries.isNotEmpty()} language_present=${!result.originalLanguage.isNullOrBlank()} compatibility_retry=$compatibilityRetry")
             result
         }
     }

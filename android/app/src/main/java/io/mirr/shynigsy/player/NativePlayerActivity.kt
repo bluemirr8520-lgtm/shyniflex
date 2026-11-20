@@ -144,6 +144,9 @@ class NativePlayerActivity : AppCompatActivity() {
     private var restoredLocalSubtitleId: String? = null
     private var subtitlePolicyContentKey: String? = null
     private var subtitleOriginJob: Job? = null
+    private var subtitleDefaultAudioLanguage: String? = null
+    private var subtitleAudioDefaultOff = false
+    private var subtitleAutomaticRestoreRevision: Int? = null
     private var subtitleOriginAttemptedKey: String? = null
     private var subtitleJob: Job? = null
     private var subtitleListJob: Job? = null
@@ -398,6 +401,8 @@ class NativePlayerActivity : AppCompatActivity() {
             .takeIf { it in resizeModes } ?: AspectRatioFrameLayout.RESIZE_MODE_FIT
         resizeScale = settings.getFloat("resize_scale", 1f).takeIf { it in setOf(1f, 1.1f, 1.25f, 1.5f) } ?: 1f
         subtitlePolicyContentKey = subtitlePlaybackContentKey(spec)
+        subtitleDefaultAudioLanguage = savedInstanceState?.getString("subtitleDefaultAudioLanguage")
+        subtitleAudioDefaultOff = savedInstanceState?.getBoolean("subtitleAudioDefaultOff", false) ?: false
         subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", defaultSubtitlesEnabled(spec)) ?: defaultSubtitlesEnabled(spec)
         subtitleManuallySelected = savedInstanceState?.getBoolean("subtitleManuallySelected", false) ?: false
         restoredLocalSubtitleId = savedInstanceState?.getString("localSubtitle")
@@ -1298,6 +1303,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     fallbackFromExo(created)
                     return
                 }
+                applyAutomaticSubtitleDefault(created)
                 resolvePendingEmbeddedSubtitle()
                 restorePendingTextPreference()
                 if (awaitingEmbeddedSubtitle && externalSubtitleId == null && localSubtitleActiveId == null) selectEmbeddedSubtitleFallback()
@@ -1514,6 +1520,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (player !== created || exiting || isDestroyed) return
         prepared = true
         completed = false
+        applyAutomaticSubtitleDefault(created)
         resolvePendingEmbeddedSubtitle()
         restorePendingTextPreference()
         if (created.duration != C.TIME_UNSET && created.duration > 0) preserveFullDuration(created.duration)
@@ -2003,6 +2010,8 @@ class NativePlayerActivity : AppCompatActivity() {
         if (subtitlePolicyContentKey == next) return
         subtitlePolicyContentKey = next
         subtitleOriginAttemptedKey = null
+        subtitleDefaultAudioLanguage = null; subtitleAudioDefaultOff = false
+        subtitleAutomaticRestoreRevision = null
         subtitlesEnabled = defaultSubtitlesEnabled(spec)
         subtitleManuallySelected = false; restoredLocalSubtitleId = null
         clearExternalSubtitle(); externalSubtitleId = if (subtitlesEnabled) preferredSubtitle(spec)?.id else null
@@ -2031,7 +2040,7 @@ class NativePlayerActivity : AppCompatActivity() {
             if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
             localSubtitleRecord = record
             val restoreManualChoice = subtitleManuallySelected && subtitlesEnabled && record?.id == restoredLocalSubtitleId
-            if (record?.selected == true && (defaultSubtitlesEnabled(spec) || restoreManualChoice))
+            if (record?.selected == true && (defaultSubtitlesEnabled(spec, subtitleDefaultAudioLanguage) || restoreManualChoice))
                 loadLocalSubtitle(owner, record, revision, account, manualSelection = restoreManualChoice)
         }
     }
@@ -2562,6 +2571,14 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun resolveSubtitleOrigin(readyPlayer: Player) {
         val item = spec.sourceItem ?: return
         val key = subtitlePlaybackContentKey(spec)
+        if (subtitleOriginAttemptedKey != key && subtitleOriginJob?.isActive != true) {
+            Log.i("ShyniFlixSubtitle", "origin_probe stage=initial known=${item.hasKnownMediaOrigin()} " +
+                "default_off=${!defaultSubtitlesEnabled(spec)} view_present=${spec.viewItemId != null} " +
+                "source_view_matches=${item.viewItemId == spec.viewItemId} show_present=${item.showId != null} " +
+                "context_present=${!spec.progressToken.isNullOrBlank()} audio_known=${subtitleDefaultAudioLanguage != null} " +
+                "audio_default_off=${!defaultSubtitlesEnabled(spec, subtitleDefaultAudioLanguage)} " +
+                "enabled=$subtitlesEnabled manual=$subtitleManuallySelected")
+        }
         if (item.hasKnownMediaOrigin() || subtitleOriginAttemptedKey == key || subtitleOriginJob?.isActive == true ||
             player !== readyPlayer || !prepared || exiting || isDestroyed || refreshing || conversionLoading ||
             navigationLoading || closeLockedSpoilerPlayback()) return
@@ -2573,7 +2590,9 @@ class NativePlayerActivity : AppCompatActivity() {
             !conversionLoading && !navigationLoading
         subtitleOriginJob = scope.launch {
             try {
-                val resolved = client.resolvePlaybackOrigin(current)
+                val resolved = client.resolvePlaybackOrigin(current) { diagnostic ->
+                    Log.i("ShyniFlixSubtitle", "origin_probe $diagnostic")
+                }
                 currentCoroutineContext().ensureActive()
                 if (!isCurrent() || closeLockedSpoilerPlayback()) return@launch
                 subtitleOriginAttemptedKey = key
@@ -2581,30 +2600,67 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (resolved == null || source.hasKnownMediaOrigin()) return@launch
                 spec = spec.copy(sourceItem = source.copy(productionCountries = resolved.productionCountries,
                     originalLanguage = resolved.originalLanguage))
-                val defaultOff = !defaultSubtitlesEnabled(spec)
+                val defaultOff = !defaultSubtitlesEnabled(spec, subtitleDefaultAudioLanguage)
                 Log.i("ShyniFlixSubtitle", "origin=resolved default_off=$defaultOff manual=$subtitleManuallySelected")
-                if (!defaultOff || subtitleManuallySelected) return@launch
-                // Invalidate pending automatic loads, while retaining imported files and manual menu access.
-                subtitlesEnabled = false
-                clearExternalSubtitle(); externalSubtitleId = null
-                pendingTextPreference = null; deferredSubtitlePreference = null
-                localSubtitleChoiceRevision++
-                localSubtitleReadJob?.cancel(); localSubtitleReadJob = null
-                localSubtitleActiveId = null; localSubtitleTimeline = null; restoredLocalSubtitleId = null
-                // A cancelled initial file lookup must not remove the saved file from the menu.
-                // The resolved Korean default prevents this metadata reload from activating it.
-                ensureLocalSubtitleSource(forceReload = true)
-                readyPlayer.trackSelectionParameters = readyPlayer.trackSelectionParameters.buildUpon()
-                    .clearOverridesOfType(C.TRACK_TYPE_TEXT).setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-                playerView.subtitleView?.setCues(emptyList())
-                renderEmbeddedCues(readyPlayer.currentCues)
-                updateSubtitleButton()
+                applyAutomaticSubtitleDefault(readyPlayer)
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (_: Exception) {
                 if (isCurrent()) subtitleOriginAttemptedKey = key
             }
         }
+    }
+
+    /** Missing work metadata may use the actual selected audio, without inventing a country. */
+    private fun applyAutomaticSubtitleDefault(active: Player) {
+        if (player !== active || exiting || isDestroyed) return
+        val selectedAudio = active.currentTracks.groups.firstNotNullOfOrNull { group ->
+            if (group.type != C.TRACK_TYPE_AUDIO) null else (0 until group.length)
+                .firstOrNull { group.isTrackSelected(it) }?.let(group::getTrackFormat)
+        }
+        // Empty headers during a decoder change are temporary. An actual unlabelled original
+        // track is a new unknown language; conversion output can omit the known source label.
+        if (selectedAudio != null && (selectedAudio.language != null || !spec.isServerConversion))
+            subtitleDefaultAudioLanguage = selectedAudio.language
+        if (subtitleManuallySelected) return
+        val enabled = defaultSubtitlesEnabled(spec, subtitleDefaultAudioLanguage)
+        if (enabled) {
+            if (!subtitleAudioDefaultOff) return
+            // A later foreign origin or a newly selected non-Korean audio restores the normal default.
+            subtitleAudioDefaultOff = false
+            subtitlesEnabled = true
+            ensureLocalSubtitleSource(forceReload = true)
+            val preferred = preferredSubtitle(spec)
+            val hasEmbedded = active.currentTracks.groups.any { group ->
+                group.type == C.TRACK_TYPE_TEXT && (0 until group.length).any { group.isTrackSupported(it) }
+            }
+            when {
+                preferred != null -> selectServerSubtitle(preferred)
+                hasEmbedded || !spec.subtitlesPending -> selectEmbeddedSubtitleFallback()
+                else -> active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+            }
+            if (spec.subtitlesPending) subtitleAutomaticRestoreRevision = subtitleSelectionRevision
+            updateSubtitleButton()
+            return
+        }
+        subtitleAudioDefaultOff = defaultSubtitlesEnabled(spec)
+        if (!subtitlesEnabled) return
+        Log.i("ShyniFlixSubtitle", "default_off=true reason=${if (subtitleAudioDefaultOff) "selected_audio" else "work_origin"}")
+        // Invalidate automatic loads; imported files remain selectable and are not deleted.
+        subtitlesEnabled = false
+        subtitleAutomaticRestoreRevision = null
+        clearExternalSubtitle(); externalSubtitleId = null
+        pendingTextPreference = null; deferredSubtitlePreference = null
+        localSubtitleChoiceRevision++
+        localSubtitleReadJob?.cancel(); localSubtitleReadJob = null
+        localSubtitleActiveId = null; localSubtitleTimeline = null; restoredLocalSubtitleId = null
+        ensureLocalSubtitleSource(forceReload = true)
+        active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT).setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+        playerView.subtitleView?.setCues(emptyList())
+        renderEmbeddedCues(active.currentCues)
+        updateSubtitleButton()
     }
 
     /** Subtitle discovery is optional and must never delay the first video frame. */
@@ -2626,7 +2682,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 val savedId = embeddedServerSubtitleId ?: externalSubtitleId
                 val preferred = if (localSubtitleActiveId != null) null else deferredSubtitleSelection(spec, savedId, deferredSubtitlePreference,
                     subtitlesEnabled, subtitleManuallySelected, pendingTextPreference != null,
-                    subtitleSelectionRevision == selectionRevision)
+                    subtitleSelectionRevision == selectionRevision || (!subtitleManuallySelected &&
+                        subtitleAutomaticRestoreRevision == subtitleSelectionRevision))
+                subtitleAutomaticRestoreRevision = null
                 deferredSubtitlePreference = null
                 preferred?.let(::selectServerSubtitle)
                 if (subtitleDialog?.isShowing == true) toast("서버 자막을 불러왔습니다. 자막 선택을 다시 열어 주세요.")
@@ -2834,7 +2892,11 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun applyConversionPlayback(refreshed: PlaybackSpec, previous: ConversionRestore) {
         val sameSource = subtitlePlaybackContentKey(refreshed) == subtitlePlaybackContentKey(previous.spec)
         subtitlePolicyContentKey = subtitlePlaybackContentKey(refreshed)
-        if (!sameSource) subtitleOriginAttemptedKey = null
+        if (!sameSource) {
+            subtitleOriginAttemptedKey = null
+            subtitleDefaultAudioLanguage = null; subtitleAudioDefaultOff = false
+            subtitleAutomaticRestoreRevision = null
+        }
         subtitlesEnabled = if (sameSource) previous.subtitleEnabled else defaultSubtitlesEnabled(refreshed)
         subtitleManuallySelected = sameSource && previous.subtitleManual
         restoredLocalSubtitleId = previous.localSubtitle.takeIf { sameSource && subtitlesEnabled }
@@ -3818,6 +3880,8 @@ class NativePlayerActivity : AppCompatActivity() {
                 gestures.playWhenReadyBeforeSeek ?: desiredPlayback else resumeWhenVisible)
             outState.putBoolean("subtitles", subtitlesEnabled); outState.putInt("externalSubtitle", externalSubtitleId ?: -1)
             outState.putBoolean("subtitleManuallySelected", subtitleManuallySelected)
+            outState.putString("subtitleDefaultAudioLanguage", subtitleDefaultAudioLanguage)
+            outState.putBoolean("subtitleAudioDefaultOff", subtitleAudioDefaultOff)
             outState.putString("localSubtitle", localSubtitleActiveId ?: restoredLocalSubtitleId)
             outState.putInt("embeddedSubtitle", embeddedServerSubtitleId ?: -1)
             outState.putLong("subtitleOffset", subtitleOffsetMs)

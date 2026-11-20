@@ -254,17 +254,20 @@ internal fun CompactDetailContent(
         }
         if (item.playable) {
             item(key = "play-actions") {
+                val canStartOver = item.resumeMs > 0 && !item.watched
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (canStartOver) TvAction("처음부터 보기",
+                            Modifier.weight(1f).testTag("compact-detail-restart"), enabled = !busy) { onPlay(item, true) }
                         TvAction(if (item.watched) "다시 재생" else if (item.resumeMs > 0) "이어보기" else "재생",
                             modifier = Modifier.weight(1f).focusRequester(focus).testTag("compact-detail-play")
                                 .onFocusChanged { if (it.hasFocus) focusedDiscovery = null },
                             enabled = !busy) { onPlay(item, item.watched) }
-                        if (canChangeWatchState(item)) TvAction("시청 상태", Modifier.weight(1f).testTag("compact-detail-watch"),
+                        if (!canStartOver && canChangeWatchState(item)) TvAction("시청 상태", Modifier.weight(1f).testTag("compact-detail-watch"),
                             enabled = !busy) { onWatchOptions(item) }
                     }
-                    if (item.resumeMs > 0 && !item.watched) TvAction("처음부터 재생",
-                        Modifier.fillMaxWidth().testTag("compact-detail-restart"), enabled = !busy) { onPlay(item, true) }
+                    if (canStartOver && canChangeWatchState(item)) TvAction("시청 상태",
+                        Modifier.fillMaxWidth().testTag("compact-detail-watch"), enabled = !busy) { onWatchOptions(item) }
                 }
             }
             if (hasResolutionChoice) item(key = "resolution") {

@@ -131,6 +131,7 @@ class CompactDetailScreenTest {
         screen.runOnIdle { detail.value = MediaDetails(episode.copy(watched = true, resumeMs = 0)) }
         assertBadgeInsideArtwork(detailBadgeTag(episode), "compact-detail-art")
         screen.onNodeWithTag("compact-detail-play").assertTextEquals("다시 재생")
+        screen.onNodeWithTag("compact-detail-restart").assertDoesNotExist()
         val watchedMovie = MediaItem(31, 7, "합성 영화", "movie", watched = true)
         screen.runOnIdle { detail.value = MediaDetails(watchedMovie) }
         assertBadgeInsideArtwork(detailBadgeTag(watchedMovie), "compact-detail-art")
@@ -141,9 +142,15 @@ class CompactDetailScreenTest {
         screen.onNodeWithTag("resolution-folder-2160p").performClick()
         screen.onNodeWithTag("resolution-folder-2160p").assertIsSelected()
         screen.runOnIdle { assertEquals(901, selected.value); assertTrue(plays.isEmpty()) }
-        screen.onNodeWithTag("compact-detail-play").performClick()
+        val restart = screen.onNodeWithTag("compact-detail-restart").assertTextEquals("처음부터 보기")
+            .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val resume = screen.onNodeWithTag("compact-detail-play").assertTextEquals("이어보기")
+            .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue("Start over must appear directly before resume on the same row", restart.right <= resume.left)
+        assertEquals(restart.top, resume.top, 1f)
         screen.onNodeWithTag("compact-detail-restart").performClick()
-        screen.runOnIdle { assertEquals(listOf(episode to false, episode to true), plays) }
+        screen.onNodeWithTag("compact-detail-play").performClick()
+        screen.runOnIdle { assertEquals(listOf(episode to true, episode to false), plays) }
     }
 
     @Test fun relockRemovesPrivateEpisodesSeasonsAndAnEntirePrivateDetail() {
