@@ -186,6 +186,7 @@ class CompactDetailScreenTest {
         render(series(episodes), overviewFirst = true, onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).assertIsDisplayed()
         screen.onNodeWithTag(artTag(show), useUnmergedTree = true).assertIsDisplayed()
+        screen.onNodeWithText("시리즈 · 80회차").assertIsDisplayed()
         val summary = screen.onNodeWithTag("compact-detail-summary").assertIsDisplayed()
             .assertTextEquals(show.summary).fetchSemanticsNode().boundsInRoot
         saveScreenshot("compact-home-overview.png")

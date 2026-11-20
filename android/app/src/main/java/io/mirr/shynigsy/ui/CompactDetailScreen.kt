@@ -196,7 +196,11 @@ internal fun CompactDetailContent(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(item.title, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("compact-detail-title"))
-                    Text(continueHeroMetadata(item), fontSize = 11.sp,
+                    val metadata = if (item.playable) continueHeroMetadata(item) else listOfNotNull(
+                        if (item.type == "season") item.seasonNumber?.let { "시즌 $it" } ?: "시즌" else "시리즈",
+                        item.year?.toString(), children.size.takeIf { it > 0 }?.let { "${it}회차" },
+                    ).joinToString(" · ")
+                    Text(metadata, fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (!item.watched && item.resumeMs > 0) Text("${timeLabel(item.resumeMs)}까지 시청",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
