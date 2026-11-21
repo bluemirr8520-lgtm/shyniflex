@@ -1308,18 +1308,21 @@ class ShyniClient(
         }
         "season" -> {
             val showId = item.showId ?: throw ApiException("시리즈 정보를 찾을 수 없습니다.")
-            val episodes = mutableListOf<MediaItem>()
+            val episodes = linkedMapOf<Pair<Int, Int?>, MediaItem>()
             var offset = 0
             do {
                 val batch = rows(request("/libraries/${item.libraryId}/shows/$showId/seasons/${item.id}/episodes?limit=100&offset=$offset", spoiler = item.isSpoiler))
                     .map { parseMedia(it, item.libraryId, "episode").let { episode ->
-                        episode.copy(showId = showId, showTitle = episode.showTitle ?: item.showTitle, isSpoiler = item.isSpoiler)
+                        episode.copy(showId = showId, showTitle = episode.showTitle ?: item.showTitle,
+                            seasonNumber = episode.seasonNumber ?: item.seasonNumber, isSpoiler = item.isSpoiler)
                             .inheritMediaOrigin(item)
                     } }
-                episodes.addAll(batch)
+                val before = episodes.size
+                for (episode in batch) episodes[episode.id to episode.viewItemId] = episode
+                if (episodes.size == before) break
                 offset += batch.size
             } while (batch.size == 100)
-            MediaDetails(item, withProgress(episodes))
+            MediaDetails(item, withProgress(episodes.values.toList()))
         }
         else -> MediaDetails(item)
     } }
@@ -2829,7 +2832,9 @@ class ShyniClient(
         val title = row.stringOrNull("title") ?: row.stringOrNull("name")
             ?: if (type == "season") "시즌 ${season ?: ""}".trim() else previous?.title ?: "제목 없음"
         val poster = row.stringOrNull("thumb_url") ?: row.stringOrNull("poster_url") ?: row.stringOrNull("show_thumb_url")
-        val thumbnail = row.stringOrNull("thumb_url")?.let { runCatching { absoluteUrl(it) }.getOrNull() }
+        val thumbnail = sequenceOf("thumb_url", "still_url", "thumbnail_url").mapNotNull { field ->
+            row.stringOrNull(field)?.let { runCatching { absoluteUrl(it) }.getOrNull() }
+        }.firstOrNull()
         val backdrop = row.stringOrNull("art_url") ?: row.stringOrNull("backdrop_url") ?: row.stringOrNull("show_art_url")
         val watched = row.watchedState() ?: previous?.watched ?: false
         val position = if (!row.isNull("position_ms")) row.optLong("position_ms").coerceAtLeast(0) else previous?.resumeMs ?: 0
@@ -2865,7 +2870,10 @@ class ShyniClient(
             }, row.numberOrNull("episode_count")?.takeIf { it >= 0 } ?: previous?.episodeCount,
             mediaAddedAt(row) ?: previous?.addedAtMs,
             mediaProductionCountries(row).ifEmpty { previous?.productionCountries.orEmpty() },
-            mediaOriginalLanguage(row) ?: previous?.originalLanguage)
+            mediaOriginalLanguage(row) ?: previous?.originalLanguage,
+            releaseDate = mediaReleaseDate(row) ?: exactPrevious?.releaseDate,
+            resolutionLabel = mediaResolutionLabel(row.stringOrNull("resolution_label") ?: row.stringOrNull("resolution"))
+                ?: exactPrevious?.resolutionLabel)
     }
 
     private fun JSONObject.watchedState(): Boolean? = when {

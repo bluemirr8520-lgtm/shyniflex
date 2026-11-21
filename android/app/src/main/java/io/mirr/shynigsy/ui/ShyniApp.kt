@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -185,6 +186,7 @@ fun ShyniApp(
     val onWatchOptions: (MediaItem) -> Unit = { if (canChangeWatchState(it)) watchOptions = it }
     val detail = state.detailStack.lastOrNull()
     val completedEpisodePending = state.completedEpisodePending?.takeIf { !it.isSpoiler || state.spoilerUnlocked }
+    val mobileDetail = state.loggedIn && !tv && detail != null && completedEpisodePending == null
     LaunchedEffect(state.loggedIn) {
         if (!state.loggedIn) {
             libraryPickerOpen = false
@@ -224,8 +226,10 @@ fun ShyniApp(
     MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = CompactTypography, shapes = CompactShapes) {
         Scaffold(
             containerColor = AppBackground,
+            contentWindowInsets = if (mobileDetail) WindowInsets(0, 0, 0, 0)
+                else androidx.compose.material3.ScaffoldDefaults.contentWindowInsets,
             topBar = {
-                if (state.loggedIn && completedEpisodePending == null) {
+                if (state.loggedIn && completedEpisodePending == null && !mobileDetail) {
                     // The home hero owns its transparent cinema header on phones.
                     if (tv || detail != null || state.library != null || state.searchOpen) {
                     Column(Modifier.statusBarsPadding()) {
@@ -251,7 +255,7 @@ fun ShyniApp(
                 )
             },
             bottomBar = {
-                if (state.loggedIn && !tv && completedEpisodePending == null) {
+                if (state.loggedIn && !tv && completedEpisodePending == null && !mobileDetail) {
                     CinemaHomeBottomNavigation(
                         homeSelected = !mobileMoreOpen && !libraryPickerOpen && detail == null && state.library == null && !state.searchOpen,
                         searchSelected = !mobileMoreOpen && !libraryPickerOpen && detail == null && state.searchOpen,

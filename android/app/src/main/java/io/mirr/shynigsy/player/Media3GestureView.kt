@@ -33,6 +33,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
             field = value
         }
     var controllerVisible: Boolean = false
+    var hitsController: ((Float, Float) -> Boolean)? = null
     var seekTimeoutMs: Long = 8_000
     var onSeekCommitted: ((Long) -> Unit)? = null
     var onSeekSettled: ((Long) -> Unit)? = null
@@ -256,7 +257,7 @@ class Media3GestureView(context: Context) : FrameLayout(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             // PlayerView's real buttons must remain tappable under this transparent layer.
-            if (controllerVisible && (event.y < dp(64) || event.y > height - dp(110))) return false
+            if (controllerVisible && hitsController?.invoke(event.x, event.y) == true) return false
             if (seeking && ending) return true
             pointerId = event.getPointerId(0)
             downX = event.x

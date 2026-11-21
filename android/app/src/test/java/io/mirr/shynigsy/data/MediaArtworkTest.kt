@@ -53,6 +53,19 @@ class MediaArtworkTest {
         assertEquals(server.url("/art.jpg").toString(), item.backdrop)
     }
 
+    @Test fun episodeRowsKeepAirDateStillAndActualResolutionAcrossRefreshAndRestore() {
+        val data = JSONObject("""{"id":24,"episode_number":1,"air_date":"2026-11-19T23:00:00-05:00",
+            "still_url":"/episode-still.jpg","resolution_label":"2160p"}""")
+        val item = client.parseMedia(data, 9, "episode")
+        assertEquals("2026-11-19", item.releaseDate)
+        assertEquals(server.url("/episode-still.jpg").toString(), item.thumbnail)
+        assertEquals("4K", item.resolutionLabel)
+        val refreshed = client.parseMedia(JSONObject("""{"id":24}"""), 9, "episode", item)
+        assertEquals(item, MediaItem.fromJson(refreshed.toJson()))
+        assertNull(client.parseMedia(JSONObject("""{"id":25,"year":2026,"air_date":"2026-02-30"}"""),
+            9, "episode", item).releaseDate)
+    }
+
     @Test fun metadataRefreshWithoutArtworkPreservesAllPreviouslyKnownSlots() {
         val old = MediaItem(24, 9, "회차", "episode", poster = server.url("/show.jpg").toString(),
             backdrop = server.url("/art.jpg").toString(), thumbnail = server.url("/episode.jpg").toString())

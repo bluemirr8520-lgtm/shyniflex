@@ -453,7 +453,29 @@ class GestureControlsPlaybackTest {
             assertTrue("A single tap reveals the upper work title", title.isShown)
             assertEquals("The header must show the work rather than its episode title", "합성 작품 제목", title.text.toString())
         }
-        drag(overlay, .6f, .25f, .45f) {
+        if (InstrumentationRegistry.getArguments().getString("capturePlayer") == "true") {
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            // Let transient system messages from the offline fixture fade before taking the reference image.
+            Thread.sleep(3500)
+            scenario.onActivity { nativeView.showController() }
+            instrumentation.waitForIdleSync()
+            val image = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+            try {
+                val output = File(instrumentation.targetContext.getExternalFilesDir(null), "mobile-playback-controls.png")
+                output.outputStream().use { assertTrue(image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
+            } finally {
+                image.recycle()
+            }
+        }
+        tapThroughActivityRoot(scenario, androidx.media3.ui.R.id.exo_play_pause)
+        waitFor(scenario, "a center Play tap reaches the player through the gesture overlay") {
+            nativeView.player?.playWhenReady == true
+        }
+        tapThroughActivityRoot(scenario, androidx.media3.ui.R.id.exo_play_pause)
+        waitFor(scenario, "a center Pause tap returns to paused playback") {
+            nativeView.player?.playWhenReady == false
+        }
+        drag(overlay, .82f, .47f, .45f) {
             assertFalse("A skip gesture hides controls while the finger is still down", nativeView.isControllerFullyVisible)
             assertFalse("A skip gesture also hides the work title", nativeView.findViewById<View>(R.id.player_title).isShown)
             assertFalse("A skip gesture also hides the lock button while the finger is still down",

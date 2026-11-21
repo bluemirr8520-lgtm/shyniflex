@@ -10,13 +10,20 @@ internal fun resolutionFolders(versions: List<MediaVersion>): List<ResolutionFol
         .groupBy { version -> explicitResolutionHeight(version.resolution) ?: explicitResolutionHeight(version.label) }
         .entries.sortedWith(compareByDescending<Map.Entry<Int?, List<MediaVersion>>> { it.key ?: -1 })
         .map { (height, rows) ->
-            ResolutionFolder(height?.let { "${it}p" } ?: "unknown", when (height) {
-                4320 -> "8K"
-                2160 -> "4K"
-                null -> "해상도 미상"
-                else -> "${height}p"
-            }, rows)
+            ResolutionFolder(height?.let { "${it}p" } ?: "unknown", height?.let(::resolutionLabel) ?: "해상도 미상", rows)
         }
+
+private fun resolutionLabel(height: Int): String = when (height) {
+    4320 -> "8K"
+    2160 -> "4K"
+    else -> "${height}p"
+}
+
+internal fun mediaResolutionLabel(value: String?): String? {
+    val text = value?.trim() ?: return null
+    val height = text.toIntOrNull()?.takeIf { it in 1..16_384 } ?: explicitResolutionHeight(text)
+    return height?.let(::resolutionLabel)
+}
 
 internal data class ResolutionPlaybackPlan(val partId: Int?, val needsChoice: Boolean)
 

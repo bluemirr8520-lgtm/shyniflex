@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_focused="true"><shape android:shape="oval"><solid android:color="#48333333" /><stroke android:width="2dp" android:color="#FFFFFFFF" /></shape></item>
-    <item android:state_pressed="true"><shape android:shape="oval"><solid android:color="#55FFFFFF" /></shape></item>
-    <item><shape android:shape="oval"><solid android:color="#22FFFFFF" /></shape></item>
+    <item android:state_focused="true">
+        <layer-list>
+            <item><shape android:shape="oval"><solid android:color="#25292E" /><stroke android:width="2dp" android:color="#FFFFFF" /></shape></item>
+            <item android:left="5dp" android:top="5dp" android:right="5dp" android:bottom="5dp"><shape android:shape="oval"><solid android:color="#FFFFFF" /></shape></item>
+        </layer-list>
+    </item>
+    <item android:state_pressed="true"><shape android:shape="oval"><solid android:color="#C7CFD3" /></shape></item>
+    <item><shape android:shape="oval"><solid android:color="#FFFFFF" /></shape></item>
 </selector>

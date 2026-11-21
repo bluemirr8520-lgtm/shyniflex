@@ -2,8 +2,10 @@ package io.mirr.shynigsy
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.view.FocusFinder
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import androidx.test.core.app.ActivityScenario
@@ -32,12 +34,12 @@ class PlaybackControlsLayoutTest {
                     }
                     val context = android.view.ContextThemeWrapper(activity.createConfigurationContext(configuration), activity.theme)
                     val controls = activity.layoutInflater.cloneInContext(context).inflate(R.layout.shyniflix_controls, null)
-                    listOf(R.id.player_back, R.id.player_continuous, R.id.player_speed, R.id.player_conversion).forEach { id ->
+                    listOf(R.id.player_continuous, R.id.player_speed, R.id.player_conversion).forEach { id ->
                         assertTrue("Mode $mode is missing required button $id", controls.findViewById<View>(id) is Button)
                     }
                     assertNotNull("Mode $mode needs scrollable remote controls",
                         controls.findViewById<HorizontalScrollView>(R.id.player_control_scroller))
-                    listOf(R.id.player_previous, R.id.player_next, R.id.player_subtitles, R.id.player_resize,
+                    listOf(R.id.player_back, R.id.player_previous, R.id.player_next, R.id.player_subtitles, R.id.player_resize,
                         R.id.player_settings, androidx.media3.ui.R.id.exo_play_pause,
                         androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_ffwd).forEach { id ->
                         assertNotNull("Mode $mode is missing playback control $id", controls.findViewById<View>(id))
@@ -89,14 +91,25 @@ class PlaybackControlsLayoutTest {
     @Test fun narrowPlayerLetsRemoteFocusReachTheRightmostControl() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
-                val controls = activity.layoutInflater.inflate(R.layout.shyniflix_controls, null)
+                val controls = activity.layoutInflater.inflate(R.layout.shyniflix_controls, null) as ViewGroup
                 activity.setContentView(controls)
                 val dp = activity.resources.displayMetrics.density
-                val width = (460 * dp).toInt()
+                val width = (400 * dp).toInt()
                 val height = (240 * dp).toInt()
                 controls.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
                 controls.layout(0, 0, width, height)
+                fun bounds(id: Int): Rect {
+                    val control = controls.findViewById<View>(id)
+                    return Rect().also { control.getDrawingRect(it); controls.offsetDescendantRectToMyCoords(control, it) }
+                }
+                val play = bounds(androidx.media3.ui.R.id.exo_play_pause)
+                assertTrue("Play is horizontally centered", kotlin.math.abs(play.centerX() - width / 2) <= 1)
+                assertTrue("Transport clears the header", bounds(R.id.player_header_controls).bottom <= play.top)
+                assertTrue("Transport clears the timeline", play.bottom <= bounds(R.id.player_bottom_controls).top)
+                assertTrue("Backward and forward flank Play",
+                    bounds(androidx.media3.ui.R.id.exo_rew).right < play.left &&
+                        play.right < bounds(androidx.media3.ui.R.id.exo_ffwd).left)
 
                 val scroll = controls.findViewById<HorizontalScrollView>(R.id.player_control_scroller)
                 scroll.isSmoothScrollingEnabled = false
@@ -109,7 +122,7 @@ class PlaybackControlsLayoutTest {
                         isFocusableInTouchMode = true
                     }
                 }
-                val first = controls.findViewById<View>(androidx.media3.ui.R.id.exo_play_pause)
+                val first = controls.findViewById<View>(R.id.player_continuous)
                 val last = controls.findViewById<View>(R.id.player_settings)
                 assertTrue("The narrow viewport must actually require scrolling", scroll.getChildAt(0).width > scroll.width)
                 assertTrue("Playback controls must be focusable", first.requestFocus())

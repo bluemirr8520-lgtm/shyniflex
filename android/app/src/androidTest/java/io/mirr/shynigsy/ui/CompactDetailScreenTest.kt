@@ -2,8 +2,7 @@ package io.mirr.shynigsy.ui
 
 import android.graphics.Bitmap
 import android.content.res.Configuration
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.Image
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
@@ -11,34 +10,41 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.mirr.shynigsy.data.MediaDetails
+import io.mirr.shynigsy.R
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
 import org.junit.Assert.assertEquals
@@ -54,11 +60,13 @@ import java.io.File
 class CompactDetailScreenTest {
     @get:Rule val screen = createComposeRule()
     private lateinit var inputModeManager: InputModeManager
-    private val show = MediaItem(100, 7, "합성 시리즈", "show", summary = "합성 시리즈 소개")
+    private val show = MediaItem(100, 7, "시네마 파라디소", "show",
+        summary = "오래된 영화관의 불빛을 따라, 영사 기사와 소년의 기억을 되짚는 이야기.")
     private val special = MediaItem(10, 7, "스페셜", "season", seasonNumber = 0, showId = 100, viewItemId = 700)
     private val regular = MediaItem(11, 7, "시즌 1", "season", seasonNumber = 1, showId = 100, viewItemId = 700)
     private val episode = MediaItem(21, 7, "합성 첫 회차", "episode", seasonNumber = 1, episodeNumber = 1,
-        showId = 100, viewItemId = 700, resumeMs = 45_000, durationMs = 2_400_000)
+        showId = 100, viewItemId = 700, resumeMs = 45_000, durationMs = 2_400_000,
+        releaseDate = "2026-11-19", resolutionLabel = "4K", summary = "극장에 모인 사람들이 영화를 기다린다.")
     private fun series(children: List<MediaItem> = listOf(episode)) =
         MediaDetails(show, children, listOf(special, regular), regular.id)
 
@@ -69,7 +77,8 @@ class CompactDetailScreenTest {
         render(detail.value, detailState = detail, onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-title").assertTextEquals(show.title)
         saveScreenshot("compact-episode-list.png")
-        screen.onNodeWithTag(artTag(show), useUnmergedTree = true).assertDoesNotExist()
+        screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).assertIsDisplayed()
+        scrollToRow(episode)
         val art = screen.onNodeWithTag("compact-episode-art-${compactMediaIdentity(episode)}", useUnmergedTree = true)
             .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertEquals("Episode artwork is a horizontal thumbnail", 16f / 9f, art.width / art.height, .02f)
@@ -91,13 +100,13 @@ class CompactDetailScreenTest {
         var opened: MediaItem? = null
         render(series().copy(selectedSeasonId = special.id), busy = busy,
             onSeason = { selected = it }, onOpen = { opened = it })
+        screen.onNodeWithTag("compact-seasons").performClick()
         screen.onNodeWithTag(seasonTag(special)).assertIsSelected().performClick()
         screen.runOnIdle { assertEquals(special, selected); assertNull(opened); busy.value = true }
         screen.waitForIdle()
-        screen.onNodeWithTag(seasonTag(special)).assertIsNotEnabled()
-        screen.onNodeWithTag(seasonTag(regular)).assertIsNotEnabled()
+        screen.onNodeWithTag("compact-seasons").assertIsNotEnabled()
+        scrollToRow(episode)
         screen.onNodeWithTag(rowTag(episode)).assertIsNotEnabled()
-        screen.onNodeWithTag(watchTag(episode), useUnmergedTree = true).assertIsNotEnabled()
     }
 
     @Test fun watchSwitchAndLongPressDoNotTriggerEpisodeNavigationAndTvFocusWorks() {
@@ -105,7 +114,7 @@ class CompactDetailScreenTest {
         var changed: Pair<MediaItem, Boolean>? = null
         var options: MediaItem? = null
         render(series(), onOpen = { opened = it }, onWatched = { item, value -> changed = item to value },
-            onWatchOptions = { options = it })
+            onWatchOptions = { options = it }, television = true)
         screen.onNodeWithTag(watchTag(episode), useUnmergedTree = true).performClick()
         screen.runOnIdle { assertEquals(episode to true, changed); assertNull(opened); assertNull(options) }
         screen.onNodeWithTag(rowTag(episode)).performTouchInput { longClick() }
@@ -127,29 +136,17 @@ class CompactDetailScreenTest {
             MediaVersion(902, "합성 일반 해상도", resolution = "1080p")), selectedPart = selected,
             onVersion = { selected.value = it }, onPlay = { item, restart -> plays.add(item to restart) })
         saveScreenshot("compact-resolution-detail.png")
-        screen.onNodeWithTag(detailBadgeTag(episode), useUnmergedTree = true).assertDoesNotExist()
         screen.runOnIdle { detail.value = MediaDetails(episode.copy(watched = true, resumeMs = 0)) }
-        assertBadgeInsideArtwork(detailBadgeTag(episode), "compact-detail-art")
         screen.onNodeWithTag("compact-detail-play").assertTextEquals("다시 재생")
         screen.onNodeWithTag("compact-detail-restart").assertDoesNotExist()
-        val watchedMovie = MediaItem(31, 7, "합성 영화", "movie", watched = true)
-        screen.runOnIdle { detail.value = MediaDetails(watchedMovie) }
-        assertBadgeInsideArtwork(detailBadgeTag(watchedMovie), "compact-detail-art")
         screen.runOnIdle { detail.value = MediaDetails(episode) }
-        screen.onNodeWithTag(detailBadgeTag(episode), useUnmergedTree = true).assertDoesNotExist()
-        screen.onNodeWithTag(detailBadgeTag(watchedMovie), useUnmergedTree = true).assertDoesNotExist()
-        screen.onNodeWithText("재생 파일").assertDoesNotExist()
+        screen.onNodeWithTag("compact-detail-more").performClick()
+        screen.onNodeWithTag("compact-detail-resolution").performClick()
         screen.onNodeWithTag("resolution-folder-2160p").performClick()
-        screen.onNodeWithTag("resolution-folder-2160p").assertIsSelected()
         screen.runOnIdle { assertEquals(901, selected.value); assertTrue(plays.isEmpty()) }
-        val restart = screen.onNodeWithTag("compact-detail-restart").assertTextEquals("처음부터 보기")
-            .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        val resume = screen.onNodeWithTag("compact-detail-play").assertTextEquals("이어보기")
-            .assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        assertTrue("Start over must appear directly before resume on the same row", restart.right <= resume.left)
-        assertEquals(restart.top, resume.top, 1f)
+        screen.onNodeWithTag("compact-detail-more").performClick()
         screen.onNodeWithTag("compact-detail-restart").performClick()
-        screen.onNodeWithTag("compact-detail-play").performClick()
+        screen.onNodeWithTag("compact-detail-play").assertTextEquals("이어보기").performClick()
         screen.runOnIdle { assertEquals(listOf(episode to true, episode to false), plays) }
     }
 
@@ -159,7 +156,8 @@ class CompactDetailScreenTest {
         val unlocked = mutableStateOf(true)
         val detail = mutableStateOf(series(listOf(episode, hiddenEpisode)).copy(seasons = listOf(regular, hiddenSeason)))
         render(detail.value, detailState = detail, unlocked = unlocked)
-        screen.onNodeWithTag(rowTag(hiddenEpisode)).performScrollTo().assertIsDisplayed()
+        scrollToRow(hiddenEpisode)
+        screen.onNodeWithTag(rowTag(hiddenEpisode)).assertIsDisplayed()
         screen.runOnIdle { unlocked.value = false }
         screen.waitForIdle()
         screen.onNodeWithTag(rowTag(hiddenEpisode)).assertDoesNotExist()
@@ -193,14 +191,34 @@ class CompactDetailScreenTest {
         render(series(episodes), overviewFirst = true, onOpen = { opened = it }, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).assertIsDisplayed()
         screen.onNodeWithTag(artTag(show), useUnmergedTree = true).assertIsDisplayed()
-        screen.onNodeWithText("시리즈 · 80회차").assertIsDisplayed()
+        screen.onNodeWithTag("compact-detail-metadata", useUnmergedTree = true).assertTextContains("시즌 1", substring = true)
         val summary = screen.onNodeWithTag("compact-detail-summary").assertIsDisplayed()
             .assertTextEquals(show.summary).fetchSemanticsNode().boundsInRoot
         saveScreenshot("compact-home-overview.png")
-        val firstEpisode = screen.onNodeWithTag(rowTag(episodes.first())).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        assertTrue("The work summary must precede the first episode instead of following all 80", summary.bottom <= firstEpisode.top)
+        val play = screen.onNodeWithTag("compact-detail-play").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val full = screen.onNodeWithTag("compact-detail").fetchSemanticsNode().boundsInRoot
+        assertTrue("The primary action spans the content width", play.width > full.width * .85f)
+        assertTrue("Summary follows playback", play.bottom <= summary.top)
+        screen.onNodeWithTag("compact-detail-play").performClick()
+        scrollToRow(episodes.first())
+        screen.onNodeWithTag(rowTag(episodes.first())).assertIsDisplayed()
         screen.onNodeWithTag(rowTag(episodes.last())).assertDoesNotExist()
-        screen.runOnIdle { assertNull(opened); assertEquals(0, plays) }
+        screen.runOnIdle { assertNull(opened); assertEquals(1, plays) }
+    }
+
+    @Test fun ratingCanBeSavedReopenedAndClearedWithoutPlaying() {
+        var plays = 0
+        render(MediaDetails(episode), onPlay = { _, _ -> plays++ })
+        screen.onNodeWithTag("compact-detail-rating").performClick()
+        screen.onNodeWithContentDescription("4점").performClick()
+        screen.onNodeWithText("저장").performClick()
+        screen.onNodeWithTag("compact-detail-rating").performClick()
+        screen.onNodeWithContentDescription("4점").assertIsSelected()
+        screen.onNodeWithText("평점 지우기").performClick()
+        screen.onNodeWithTag("compact-detail-rating").performClick()
+        screen.onNodeWithText("저장").assertIsNotEnabled()
+        screen.onNodeWithText("취소").performClick()
+        screen.runOnIdle { assertEquals(0, plays) }
     }
 
     @Test fun tvHomeOverviewKeepsInitialFocusAboveEpisodesUntilTheUserChoosesThem() {
@@ -252,8 +270,9 @@ class CompactDetailScreenTest {
                 CompactDetailContent(detailState?.value ?: detail, versions, selectedPart?.value,
                     busy?.value ?: false, error?.value, unlocked?.value ?: false,
                     onPlay, onOpen, onSeason, onVersion, onWatchOptions, onWatched,
-                    artwork = { item, modifier -> Box(modifier.background(Color.DarkGray).testTag(artTag(item))) },
-                    overviewFirst = overviewFirst)
+                    artwork = { item, modifier -> Image(painterResource(R.drawable.cinema_paradiso_backdrop), null,
+                        modifier.testTag(artTag(item)), contentScale = ContentScale.Crop) },
+                    overviewFirst = overviewFirst, ratingScope = "device-test-account")
                 }
             }
             }
@@ -262,7 +281,7 @@ class CompactDetailScreenTest {
     }
 
     private fun saveScreenshot(filename: String) {
-        val bitmap = screen.onNodeWithTag("compact-detail").captureToImage().asAndroidBitmap()
+        val bitmap = screen.onRoot().captureToImage().asAndroidBitmap()
         val directory = InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null)!!
         File(directory, filename).outputStream().use { output ->
             assertTrue("The synthetic detail screenshot must be saved", bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
@@ -280,7 +299,9 @@ class CompactDetailScreenTest {
     }
 
     private fun episodeBadgeTag(item: MediaItem) = "compact-episode-watched-${compactMediaIdentity(item)}"
-    private fun detailBadgeTag(item: MediaItem) = "compact-detail-watched-${compactMediaIdentity(item)}"
+    private fun scrollToRow(item: MediaItem) {
+        screen.onNodeWithTag("compact-detail").performScrollToNode(hasTestTag(rowTag(item)))
+    }
     private fun rowTag(item: MediaItem) = "compact-episode-${compactMediaIdentity(item)}"
     private fun watchTag(item: MediaItem) = "compact-episode-watch-${compactMediaIdentity(item)}"
     private fun seasonTag(item: MediaItem) = "compact-season-${compactMediaIdentity(item)}"

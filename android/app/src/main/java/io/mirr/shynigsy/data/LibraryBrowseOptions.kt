@@ -2,6 +2,7 @@ package io.mirr.shynigsy.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalDate
 import java.time.OffsetDateTime
 
 enum class LibrarySort(val label: String) {
@@ -82,6 +83,16 @@ internal fun mediaYear(row: JSONObject): Int? = sequenceOf("year", "production_y
     row.opt(key)?.toString()?.toIntOrNull()
 }.firstOrNull { it in 1..9999 } ?: sequenceOf("originally_available_at", "release_date", "first_air_date")
     .mapNotNull { row.optString(it).take(4).toIntOrNull() }.firstOrNull { it in 1..9999 }
+
+/** Keep the calendar date the server supplied, including for timestamps near midnight. */
+internal fun mediaReleaseDate(row: JSONObject): String? =
+    sequenceOf("air_date", "originally_available_at", "originallyAvailableAt", "release_date", "first_air_date")
+        .mapNotNull { key ->
+            val text = (row.opt(key) as? String)?.trim() ?: return@mapNotNull null
+            val day = text.substringBefore('T').substringBefore(' ')
+            if (day.length != 10) return@mapNotNull null
+            runCatching { LocalDate.parse(day) }.getOrNull()?.takeIf { it.year > 0 }?.toString()
+        }.firstOrNull()
 
 /** A real offset-bearing ISO timestamp only; a year or missing zone is not an added date. */
 internal fun mediaAddedAt(row: JSONObject): Long? = (row.opt("added_at") as? String)?.trim()?.let { raw ->

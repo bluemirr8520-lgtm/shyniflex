@@ -51,6 +51,7 @@ import io.mirr.shynigsy.data.MediaVersion
 import io.mirr.shynigsy.data.MediaFileInfo
 import io.mirr.shynigsy.data.SpoilerAccessRegistry
 import io.mirr.shynigsy.data.resolutionFolders
+import io.mirr.shynigsy.data.libraryOrderScope
 import io.mirr.shynigsy.isTelevision
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -94,6 +95,12 @@ internal fun CompactDetailScreen(state: AppState, model: AppViewModel, onWatchOp
         onWatchOptions = onWatchOptions, onWatchedChange = { item, watched -> model.setWatched(item, watched) },
         artwork = { item, modifier -> Poster(item, model, modifier,
             imageUrl = if (item.type == "episode") item.thumbnail ?: item.poster else item.poster) },
+        onBack = model::back, onRefreshDetail = model::refresh,
+        ratingScope = libraryOrderScope(state.server, state.userName),
+        backdropArtwork = { item, modifier ->
+            val image = item.backdrop ?: item.thumbnail ?: item.poster
+            if (image != null) Poster(item, model, modifier, transparentBackground = true, imageUrl = image)
+        },
         discovery = state.detailDiscovery[detailDiscoveryKey(detail.item)], libraries = state.libraries,
         onSelectActor = model::selectDetailActor, onRetryRelated = model::retryRelatedWorks,
         onSearchActorMovies = model::searchDetailActorMovies, onCancelActorMovieSearch = model::cancelDetailActorMovieSearch,
@@ -129,6 +136,10 @@ internal fun CompactDetailContent(
     onCancelActorMovieSearch: () -> Unit = {},
     portrait: @Composable (CastMember, Modifier) -> Unit = { _, _ -> },
     fileInformation: (@Composable () -> Unit)? = null,
+    onBack: (() -> Unit)? = null,
+    onRefreshDetail: (() -> Unit)? = null,
+    ratingScope: String? = null,
+    backdropArtwork: @Composable (MediaItem, Modifier) -> Unit = artwork,
 ) {
     val item = detail.item
     if (item.isSpoiler && !spoilerUnlocked) return
@@ -136,6 +147,20 @@ internal fun CompactDetailContent(
     val seasons = detail.seasons.filter { spoilerUnlocked || !it.isSpoiler }
     val identity = compactMediaIdentity(item)
     val frame = discovery?.takeIf { detailDiscoveryKey(it.parent) == detailDiscoveryKey(item) }
+    if (!LocalContext.current.isTelevision()) {
+        MobileDetailContent(item, children, seasons, detail.selectedSeasonId, versions, selectedPartId,
+            busy, error, onBack, onRefreshDetail, ratingScope, onPlay, onOpenItem, onSelectSeason, onSelectVersion,
+            onWatchOptions, artwork, backdropArtwork, modifier, fileInformation,
+            hasDiscovery = detail.castMembers.isNotEmpty() || frame?.let {
+                it.relatedItems.isNotEmpty() || it.relatedLoading || it.relatedError != null
+            } == true,
+        ) {
+            DetailDiscoverySections(item, detail.castMembers, frame, libraries, spoilerUnlocked, busy,
+                onSelectActor, onOpenItem, onWatchOptions, onRetryRelated, artwork, portrait,
+                onSearchActorMovies = onSearchActorMovies, onCancelActorMovieSearch = onCancelActorMovieSearch)
+        }
+        return
+    }
     var focusedDiscovery by rememberSaveable(identity) { mutableStateOf<String?>(null) }
     var restoreDiscoveryFocus by remember { mutableStateOf(false) }
     val discoveryFocus = remember { FocusRequester() }

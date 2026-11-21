@@ -231,6 +231,8 @@ class DetailDiscoveryUiTest {
         var plays = 0
         render(frame, detail = detail, onPlay = { _, _ -> plays++ })
         screen.onNodeWithTag("compact-detail-play").performClick()
+        screen.onNodeWithTag("compact-detail-more").performClick()
+        screen.onNodeWithTag("compact-detail-resolution").performClick()
         screen.onNodeWithTag("resolution-folder-1080p").performScrollTo().performClick()
         screen.runOnIdle { assertEquals(1, plays) }
         val show = parent.copy(type = "show", title = "합성 시리즈")
@@ -256,6 +258,7 @@ class DetailDiscoveryUiTest {
         var played = 0
         render(frame, detail = detail, onOpen = { opened++ }, onPlay = { _, _ -> played++ })
         screen.onNodeWithTag("compact-episode-${compactMediaIdentity(episodes.first())}").assertExists()
+        screen.onNodeWithTag("compact-detail-more").performClick()
         screen.onNodeWithTag("compact-detail-discovery-jump").assertIsDisplayed().performClick()
         screen.onNodeWithTag("detail-cast").assertIsDisplayed()
         screen.runOnIdle { assertEquals(0, opened); assertEquals(0, played) }

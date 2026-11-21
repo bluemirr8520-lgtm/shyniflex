@@ -573,14 +573,8 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.setControllerAutoShow(false)
         playerView.setControllerHideOnTouch(false)
         playerView.hideController()
-        val playerAccent = cinemaColorScheme(androidx.compose.ui.graphics.Color.Black,
-            CinemaAppearancePreferences(this).read().style).primary.toArgb()
-        playerView.findViewById<androidx.media3.ui.DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress).apply {
-            setPlayedColor(playerAccent)
-            setScrubberColor(playerAccent)
-        }
         playerView.findViewById<TextView>(R.id.player_title).text = spec.controllerTitle
-        playerView.findViewById<Button>(R.id.player_back).setOnClickListener { leavePlayer() }
+        playerView.findViewById<ImageButton>(R.id.player_back).setOnClickListener { leavePlayer() }
         playerView.findViewById<ImageButton>(R.id.player_settings).setOnClickListener { showSettings() }
         playerView.findViewById<ImageButton>(R.id.player_resize).setOnClickListener { cycleResizeMode() }
         playerView.findViewById<Button>(R.id.player_speed).setOnClickListener { showSpeed() }
@@ -597,7 +591,6 @@ class NativePlayerActivity : AppCompatActivity() {
             continuousButton.text = if (enabled) "연속재생\n켜짐" else "연속재생\n꺼짐"
             continuousButton.contentDescription = if (enabled) "연속 재생 켜짐" else "연속 재생 꺼짐"
             continuousButton.isSelected = enabled
-            continuousButton.setTextColor(if (enabled) playerAccent else Color.WHITE)
         }
         continuousButton.setOnClickListener {
             val enabled = !continuousSettings.getBoolean("continuous_playback", false)
@@ -607,7 +600,19 @@ class NativePlayerActivity : AppCompatActivity() {
         updateContinuousButton()
         updatePlaybackButtons()
         applyResizeMode()
+        val touchControls = listOf(R.id.player_back, R.id.player_bottom_controls,
+            androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_play_pause,
+            androidx.media3.ui.R.id.exo_ffwd).map { playerView.findViewById<View>(it) }
+        val controlBounds = android.graphics.Rect()
         gestures = Media3GestureView(this).apply {
+            // This transparent layer fills the root, including when the controls have cutout padding.
+            hitsController = { x, y ->
+                touchControls.any { control ->
+                    control.getDrawingRect(controlBounds)
+                    root.offsetDescendantRectToMyCoords(control, controlBounds)
+                    control.isShown && controlBounds.contains(x.toInt(), y.toInt())
+                }
+            }
             onControllerToggle = { if (playerView.isControllerFullyVisible) playerView.hideController() else playerView.showController() }
             onLockedTap = ::showUnlockControl
             onSeekCommitted = { target ->
@@ -697,6 +702,13 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         root.addView(segmentActions, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.RIGHT))
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            playerView.findViewById<View>(R.id.player_overlay_controls).setPadding(safe.left, safe.top, safe.right, safe.bottom)
+            (lockButton.layoutParams as FrameLayout.LayoutParams).let { layout ->
+                layout.topMargin = safe.top + dp(9)
+                layout.marginEnd = dp(16) + if (root.layoutDirection == View.LAYOUT_DIRECTION_RTL) safe.left else safe.right
+                lockButton.layoutParams = layout
+            }
             updateSegmentActionInsets(insets)
             insets
         }
@@ -730,8 +742,6 @@ class NativePlayerActivity : AppCompatActivity() {
                 androidx.media3.ui.R.id.exo_rew, androidx.media3.ui.R.id.exo_play_pause,
                 androidx.media3.ui.R.id.exo_ffwd).forEach { id ->
                 playerView.findViewById<View>(id)?.apply {
-                    background = androidx.core.content.ContextCompat.getDrawable(this@NativePlayerActivity, R.drawable.tv_player_button)
-                    backgroundTintList = null
                     isFocusable = true
                     isFocusableInTouchMode = true
                 }
