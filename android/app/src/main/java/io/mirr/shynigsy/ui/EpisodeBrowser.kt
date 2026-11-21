@@ -57,7 +57,7 @@ internal fun CompactEpisodeRow(
     val progress = if (!item.watched && item.resumeMs > 0 && item.durationMs > 0)
         (item.resumeMs.toDouble() / item.durationMs).coerceIn(0.0, 1.0).toFloat() else null
     val canChange = canChangeWatchState(item)
-    Row(modifier.fillMaxWidth().heightIn(min = 80.dp)
+    Row(modifier.fillMaxWidth().heightIn(min = 100.dp)
         .onFocusChanged { focused = it.hasFocus }
         .onPreviewKeyEvent { event ->
             if (!busy && canChange && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU) {
@@ -72,9 +72,9 @@ internal fun CompactEpisodeRow(
             onLongClickLabel = "시청 상태 변경",
             onLongClick = if (canChange) ({ onWatchOptions(item) }) else null)
         .testTag("compact-episode-${compactMediaIdentity(item)}")
-        .padding(8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
+        .padding(10.dp), horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.width(112.dp).aspectRatio(16f / 9f).clip(shape)
+        Box(Modifier.width(100.dp).aspectRatio(16f / 9f).clip(shape)
             .testTag("compact-episode-art-${compactMediaIdentity(item)}")) {
             artwork(item, Modifier.fillMaxSize())
             if (item.watched) WatchedBadge(Modifier.align(Alignment.TopEnd).padding(2.dp)
@@ -83,18 +83,18 @@ internal fun CompactEpisodeRow(
                 modifier = Modifier.fillMaxWidth().height(3.dp).align(Alignment.BottomCenter))
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(item.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            Text(item.title, fontSize = 18.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
             val metadata = listOfNotNull(episodeLabel(item),
                 item.durationMs.takeIf { it > 0 }?.let(::timeLabel)).joinToString(" · ")
-            Text(metadata, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            Text(metadata, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!item.watched && item.resumeMs > 0) Text("${timeLabel(item.resumeMs)}까지 시청",
-                fontSize = 11.sp, color = accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                fontSize = 14.sp, color = accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (canChange && onWatchedChange != null) Column(Modifier.width(54.dp),
+        if (canChange && onWatchedChange != null) Column(Modifier.width(64.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(if (item.watched) "보았음" else "보지 않음", fontSize = 10.sp,
+            Text(if (item.watched) "보았음" else "보지 않음", fontSize = 13.sp,
                 color = if (item.watched) accent else MaterialTheme.colorScheme.onSurfaceVariant)
             Switch(checked = item.watched, enabled = !busy,
                 onCheckedChange = { onWatchedChange(item, it) },

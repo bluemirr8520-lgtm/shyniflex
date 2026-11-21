@@ -15,6 +15,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
@@ -230,11 +231,28 @@ class CompactDetailScreenTest {
         screen.onNodeWithTag("compact-detail-episodes-jump").assertIsFocused().assertIsDisplayed()
         screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).assertIsDisplayed()
         screen.onNodeWithTag("compact-detail-summary").assertIsDisplayed()
+        assertSplitDetail(episodes.first())
         screen.onNodeWithTag("compact-detail-episodes-jump").performKeyInput { pressKey(Key.DirectionCenter) }
         screen.onNodeWithTag(rowTag(episodes.first())).assertIsDisplayed().assertIsFocused()
         screen.runOnIdle { assertNull("Jumping to the list must not open or play an episode", opened); assertEquals(0, plays) }
         screen.onNodeWithTag(rowTag(episodes.first())).performKeyInput { pressKey(Key.DirectionCenter) }
         screen.runOnIdle { assertEquals(episodes.first(), opened); assertEquals(0, plays) }
+    }
+
+    @Test fun tabletPlacesArtworkAndSummaryLeftOfEpisodes() {
+        render(series(listOf(episode)), tablet = true)
+        assertSplitDetail(episode)
+    }
+
+    private fun assertSplitDetail(firstEpisode: MediaItem) {
+        val overview = screen.onNodeWithTag("detail-overview-pane").fetchSemanticsNode().boundsInRoot
+        val actions = screen.onNodeWithTag("detail-actions-pane").fetchSemanticsNode().boundsInRoot
+        val artwork = screen.onNodeWithTag("compact-detail-art", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val summary = screen.onNodeWithTag("compact-detail-summary").fetchSemanticsNode().boundsInRoot
+        val episode = screen.onNodeWithTag(rowTag(firstEpisode)).fetchSemanticsNode().boundsInRoot
+        assertEquals(overview.width, actions.width, 1f)
+        assertTrue(artwork.right <= overview.right && summary.right <= overview.right)
+        assertTrue(overview.right < actions.left && actions.left <= episode.left)
     }
 
     @Suppress("DEPRECATION")
@@ -254,6 +272,7 @@ class CompactDetailScreenTest {
         onWatched: (MediaItem, Boolean) -> Unit = { _, _ -> },
         overviewFirst: Boolean = false,
         television: Boolean = false,
+        tablet: Boolean = false,
     ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.setInTouchMode(!television)
@@ -264,7 +283,10 @@ class CompactDetailScreenTest {
         screen.mainClock.autoAdvance = true
         screen.setContent {
             inputModeManager = LocalInputModeManager.current
-            CompositionLocalProvider(LocalContext provides context) {
+            val configuration = Configuration(LocalConfiguration.current).apply {
+                smallestScreenWidthDp = if (tablet) 600 else 360
+            }
+            CompositionLocalProvider(LocalContext provides context, LocalConfiguration provides configuration) {
             MaterialTheme(colorScheme = darkColorScheme(), typography = CompactTypography, shapes = CompactShapes) {
                 Surface {
                 CompactDetailContent(detailState?.value ?: detail, versions, selectedPart?.value,
