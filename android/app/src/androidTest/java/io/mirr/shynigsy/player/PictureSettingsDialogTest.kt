@@ -112,8 +112,9 @@ class PictureSettingsDialogTest {
         show()
         click("picture-presets")
         scenario.onActivity {
-            assertEquals("화면 모드", (view("picture-lg-section") as TextView).text.toString())
-            assertTrue((view("picture-lg-note") as TextView).text.contains("밝기·대비·채도를 조절하는"))
+            for (tag in listOf("picture-page-title", "picture-lg-section", "picture-lg-note")) {
+                assertNull(helper.dialog.window!!.decorView.findViewWithTag<View>(tag))
+            }
             for (tag in listOf("picture-builtin-builtin_bright", "picture-builtin-builtin_cinema",
                 "picture-builtin-builtin_vivid", "picture-lg-lg_standard")) {
                 assertNull(helper.dialog.window!!.decorView.findViewWithTag<View>(tag))

@@ -98,7 +98,7 @@ internal class PictureSettingsDialog(
         dialog.dismiss()
     }
 
-    private fun beginPage(title: String, note: String? = null) {
+    private fun beginPage(title: String? = null, note: String? = null) {
         hideKeyboard()
         generation++
         pageShownAt = SystemClock.uptimeMillis()
@@ -107,10 +107,10 @@ internal class PictureSettingsDialog(
         supportLabel = null
         selectedPresetLabel = null
         scroll.scrollTo(0, 0)
-        content.addView(text(title, 16f).apply {
+        title?.let { content.addView(text(it, 16f).apply {
             tag = "picture-page-title"
             setPadding(dp(4), dp(4), dp(4), dp(8))
-        }, matchWrap())
+        }, matchWrap()) }
         note?.let { content.addView(text(it, 12f, secondary = true).apply {
             setPadding(dp(4), 0, dp(4), dp(8))
         }, matchWrap()) }
@@ -186,19 +186,12 @@ internal class PictureSettingsDialog(
     }
 
     private fun showPresets(focusTag: String? = null) {
-        beginPage("영상 프리셋", "밝기 · 대비 · 채도를 함께 적용합니다.")
+        beginPage()
         visibleBuiltInPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-builtin-${preset.id}") {
                 apply(preset.settings, preset.id); showControls("picture-presets")
             }
         }
-        content.addView(text("화면 모드", 13f, secondary = true).apply {
-            tag = "picture-lg-section"; setPadding(dp(4), dp(12), dp(4), dp(4))
-        }, matchWrap())
-        content.addView(text("밝기·대비·채도를 조절하는 영상 프리셋입니다.",
-            12f, secondary = true).apply {
-            tag = "picture-lg-note"; setPadding(dp(4), 0, dp(4), dp(8))
-        }, matchWrap())
         visibleLgInspiredPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-lg-${preset.id}") {
                 apply(preset.settings, preset.id); showControls("picture-presets")
