@@ -36,8 +36,17 @@ internal fun lgInspiredPicturePresets(): List<PicturePreset> = listOf(
     PicturePreset("lg_bright_room", "밝은 공간", PictureSettings(8, 2, 2)),
     PicturePreset("lg_dark_room", "어두운 공간", PictureSettings(-3, -2, -2)),
     // Neutral color processing is intentional; certified FILMMAKER MODE also controls features outside this app.
-    PicturePreset("lg_filmmaker", "필름메이커 느낌", PictureSettings()),
+    PicturePreset("lg_filmmaker", "필름메이커", PictureSettings()),
 )
+
+/** Keep legacy definitions available for restoring saved selections while showing each related look once. */
+internal fun visibleBuiltInPicturePresets(): List<PicturePreset> = builtInPicturePresets().filterNot {
+    it.id in setOf("builtin_bright", "builtin_cinema", "builtin_vivid")
+}
+
+internal fun visibleLgInspiredPicturePresets(): List<PicturePreset> = lgInspiredPicturePresets().filterNot {
+    it.id == "lg_standard"
+}
 
 internal fun normalizedPicturePresetName(value: String): String {
     require(value.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }) {

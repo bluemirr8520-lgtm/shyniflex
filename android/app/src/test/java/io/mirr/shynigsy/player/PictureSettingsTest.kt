@@ -30,7 +30,7 @@ class PictureSettingsTest {
 
     @Test fun lgReferenceModesUseBoundedColorOnlyApproximationsAndNeutralFilmmaker() {
         val presets = lgInspiredPicturePresets()
-        assertEquals(listOf("표준", "선명한 영상", "영화", "스포츠", "게임", "밝은 공간", "어두운 공간", "필름메이커 느낌"),
+        assertEquals(listOf("표준", "선명한 영상", "영화", "스포츠", "게임", "밝은 공간", "어두운 공간", "필름메이커"),
             presets.map { it.name })
         assertEquals(13, (builtInPicturePresets() + presets).map { it.id }.distinct().size)
         assertTrue(presets.all { it.settings.brightness in -10..10 && it.settings.contrast in -15..15 &&
@@ -39,6 +39,23 @@ class PictureSettingsTest {
         assertTrue(presets.first { it.id == "lg_filmmaker" }.settings.isNeutral)
         assertTrue(presets.first { it.id == "lg_bright_room" }.settings.brightness >
             presets.first { it.id == "lg_dark_room" }.settings.brightness)
+    }
+
+    @Test fun visiblePresetsKeepNineLooksWhileLegacySelectionsRetainTheirValues() {
+        val visible = visibleBuiltInPicturePresets() + visibleLgInspiredPicturePresets()
+        assertEquals(listOf("원본", "부드럽게", "선명한 영상", "영화", "스포츠", "게임", "밝은 공간", "어두운 공간", "필름메이커"),
+            visible.map { it.name })
+        assertEquals(9, visible.map { it.id }.distinct().size)
+        val legacyValues = mapOf(
+            "builtin_bright" to PictureSettings(12, -5, 0),
+            "builtin_cinema" to PictureSettings(-3, 10, -5),
+            "builtin_vivid" to PictureSettings(0, 12, 18),
+            "lg_standard" to PictureSettings(),
+        )
+        val all = builtInPicturePresets() + lgInspiredPicturePresets()
+        assertEquals(legacyValues, all.filter { it.id !in visible.map(PicturePreset::id) }
+            .associate { it.id to it.settings })
+        assertEquals(PictureSettings(), visible.single { it.id == "lg_filmmaker" }.settings)
     }
 
     @Test fun currentSettingsRoundTripAndMalformedValuesReturnToOriginal() {

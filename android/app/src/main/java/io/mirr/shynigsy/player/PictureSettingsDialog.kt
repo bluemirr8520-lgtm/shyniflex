@@ -187,7 +187,7 @@ internal class PictureSettingsDialog(
 
     private fun showPresets(focusTag: String? = null) {
         beginPage("영상 프리셋", "밝기 · 대비 · 채도를 함께 적용합니다.")
-        builtInPicturePresets().forEach { preset ->
+        visibleBuiltInPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-builtin-${preset.id}") {
                 apply(preset.settings, preset.id); showControls("picture-presets")
             }
@@ -199,7 +199,7 @@ internal class PictureSettingsDialog(
             12f, secondary = true).apply {
             tag = "picture-lg-note"; setPadding(dp(4), 0, dp(4), dp(8))
         }, matchWrap())
-        lgInspiredPicturePresets().forEach { preset ->
+        visibleLgInspiredPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-lg-${preset.id}") {
                 apply(preset.settings, preset.id); showControls("picture-presets")
             }

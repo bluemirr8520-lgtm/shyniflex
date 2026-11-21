@@ -74,7 +74,7 @@ class PicturePlaybackRegressionTest {
                     .apply { isAccessible = true }.invoke(activity)
                 val dialog = field<PictureSettingsDialog>(activity, "pictureDialog").dialog
                 assertTrue(dialog.window!!.decorView.findViewWithTag<View>("picture-presets").performClick())
-                assertTrue(dialog.window!!.decorView.findViewWithTag<View>("picture-builtin-builtin_bright").performClick())
+                assertTrue(dialog.window!!.decorView.findViewWithTag<View>("picture-lg-lg_bright_room").performClick())
                 assertTrue(dialog.window!!.decorView.findViewWithTag<View>("picture-close").performClick())
             }
             waitFor(scenario, "The first preset must prepare a corrected Exo renderer with visible video") { activity ->
@@ -608,6 +608,6 @@ class PicturePlaybackRegressionTest {
         const val VIEW_ITEM = 17
         const val PART = 77
         const val SPEED = 1.25f
-        val BRIGHT = PictureSettings(12, -5, 0)
+        val BRIGHT = PictureSettings(8, 2, 2)
     }
 }

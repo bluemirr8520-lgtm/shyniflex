@@ -93,7 +93,7 @@ class PictureSettingsDialogTest {
         val oldDown = SystemClock.uptimeMillis() - 100
         show()
         click("picture-presets")
-        val first = builtInPicturePresets()[1]
+        val first = visibleBuiltInPicturePresets()[1]
         scenario.onActivity {
             assertTrue(view("picture-builtin-${first.id}").requestFocus())
             for ((action, repeat) in listOf(KeyEvent.ACTION_DOWN to 2, KeyEvent.ACTION_UP to 0)) {
@@ -107,13 +107,17 @@ class PictureSettingsDialogTest {
         scenario.onActivity { assertEquals(listOf(first.settings), applied) }
     }
 
-    @Test fun lgModeFocusDoesNotApplyAndEveryModeKeepsItsNameEvenWhenNeutral() {
+    @Test fun visibleModesKeepTheirNamesAndRelatedLegacyModesAreHidden() {
         val saved = store.save("보관할 프리셋", PictureSettings(9, 3, -8))
         show()
         click("picture-presets")
         scenario.onActivity {
             assertEquals("화면 모드", (view("picture-lg-section") as TextView).text.toString())
             assertTrue((view("picture-lg-note") as TextView).text.contains("밝기·대비·채도를 조절하는"))
+            for (tag in listOf("picture-builtin-builtin_bright", "picture-builtin-builtin_cinema",
+                "picture-builtin-builtin_vivid", "picture-lg-lg_standard")) {
+                assertNull(helper.dialog.window!!.decorView.findViewWithTag<View>(tag))
+            }
             assertTrue(view("picture-lg-lg_game").requestFocus())
             assertTrue(applied.isEmpty())
         }
@@ -122,7 +126,7 @@ class PictureSettingsDialogTest {
             assertTrue(view("picture-lg-lg_bright_room").hasFocus())
             assertTrue(applied.isEmpty())
         }
-        for (preset in lgInspiredPicturePresets()) {
+        for (preset in visibleLgInspiredPicturePresets()) {
             click("picture-lg-${preset.id}")
             scenario.onActivity {
                 assertEquals(preset.settings, current)
@@ -135,7 +139,7 @@ class PictureSettingsDialogTest {
         scenario.onActivity { helper.dismiss() }
         show()
         scenario.onActivity {
-            assertEquals("현재 프리셋 · 필름메이커 느낌", (view("picture-selected-preset") as TextView).text.toString())
+            assertEquals("현재 프리셋 · 필름메이커", (view("picture-selected-preset") as TextView).text.toString())
             assertEquals(listOf(saved), store.list())
         }
         click("picture-reset")
