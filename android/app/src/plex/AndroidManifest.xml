@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <intent><action android:name="android.settings.CAST_SETTINGS" /></intent>
+    </queries>
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <application android:allowBackup="false" android:usesCleartextTraffic="true"
+        android:icon="@drawable/plex_app_icon" android:roundIcon="@drawable/plex_app_icon"
+        android:banner="@drawable/plex_tv_banner" android:label="@string/plex_app_name"
+        android:theme="@style/Theme.ShyniFlix" android:supportsRtl="true">
+        <activity android:name="io.mirr.shynigsy.player.NativePlayerActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize"
+            android:screenOrientation="sensorLandscape" />
+        <activity android:name="io.mirr.shynigsy.player.SubtitleImportActivity" android:exported="false" />
+        <activity android:name="io.mirr.shynigsy.player.OnlineSubtitleActivity" android:exported="false" />
+        <activity android:name="io.mirr.shynigsy.plex.PlexMainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

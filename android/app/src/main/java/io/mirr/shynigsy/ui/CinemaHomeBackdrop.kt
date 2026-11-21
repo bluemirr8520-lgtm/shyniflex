@@ -49,7 +49,7 @@ internal val ContinueBackdropSlideFraction = SemanticsPropertyKey<Float>("Contin
 @Composable
 internal fun CinemaHomeBackdrop(
     hero: MediaItem?,
-    model: AppViewModel,
+    artwork: @Composable (MediaItem) -> Unit,
     heroHeight: Dp,
     wide: Boolean,
     modifier: Modifier = Modifier,
@@ -79,15 +79,15 @@ internal fun CinemaHomeBackdrop(
                 Box(Modifier.fillMaxSize().graphicsLayer {
                     translationX = -currentMotion.fraction.value * size.width * direction
                 }.testTag("cinema-backdrop-slide-from")) {
-                    CinemaBackdropArtwork(requireNotNull(from), model)
+                    artwork(requireNotNull(from))
                 }
                 if (to != null) Box(Modifier.fillMaxSize().graphicsLayer {
                     translationX = (1f - currentMotion.fraction.value) * size.width * direction
                 }.testTag("cinema-backdrop-slide-to")) {
-                    CinemaBackdropArtwork(to, model)
+                    artwork(to)
                 }
             }
-        } else if (hero != null) CinemaBackdropArtwork(hero, model)
+        } else if (hero != null) artwork(hero)
         if (style == CinemaStyle.LOUNGE) {
             // The lounge uses the user's page color behind text, including dark custom palettes.
             // No cached bitmap tint or offscreen blur is needed when switching styles.
@@ -121,7 +121,7 @@ internal fun CinemaHomeBackdrop(
 
 /** Both moving layers reuse the ordinary account-scoped artwork loader and image proportions. */
 @Composable
-private fun CinemaBackdropArtwork(item: MediaItem, model: AppViewModel) {
+internal fun CinemaBackdropArtwork(item: MediaItem, model: AppViewModel) {
     if ((item.backdrop ?: item.poster).isNullOrBlank()) return
     key(item.libraryId, item.id, item.type, item.viewItemId, item.isSpoiler, item.backdrop ?: item.poster) {
         Poster(item, model, Modifier.fillMaxSize().testTag("cinema-hero-art-${item.libraryId}-${item.id}"),

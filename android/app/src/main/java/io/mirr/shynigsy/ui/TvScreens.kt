@@ -131,9 +131,10 @@ internal fun LibraryHomeButton(onHome: () -> Unit) {
 internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout: () -> Unit,
     libraries: List<Library> = emptyList(), selectedLibraryId: Int? = null, homeSelected: Boolean = true,
     onHome: () -> Unit = {}, onLibrary: (Library) -> Unit = {}, showLocked: Boolean = false,
-    spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: () -> Unit = {},
+    spoilerUnlocked: Boolean = false, onLockSpoiler: () -> Unit = {}, onUpdate: (() -> Unit)? = {},
     onSearch: () -> Unit = {}, searchSelected: Boolean = false, onAppearance: () -> Unit = {},
-    onLibraryOrder: (() -> Unit)? = null) {
+    onLibraryOrder: (() -> Unit)? = null, appName: String = "SHYNIFLEX",
+    onServerConnection: (() -> Unit)? = null) {
     val fontScale = LocalDensity.current.fontScale
     val sidebarWidth = 216.dp + 64.dp * (fontScale - 1f).coerceIn(0f, 1f)
     // Keep focus indicators and headings inside the TV overscan-safe area.
@@ -147,7 +148,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                 contentPadding = sidebarPadding,
                 verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 item(key = "sidebar-brand") {
-                    Text("SHYNIFLEX", Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
+                    Text(appName, Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
                         color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -155,6 +156,9 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                 item(key = "sidebar-home") { TvSidebarItem("홈", cinemaIcon(CinemaGlyph.Home), homeSelected, onHome) }
                 item(key = "sidebar-search") {
                     TvSidebarItem("검색", cinemaIcon(CinemaGlyph.Search), searchSelected, onSearch, Modifier.testTag("sidebar-search"))
+                }
+                if (onServerConnection != null) item(key = "sidebar-server") {
+                    TvSidebarItem("서버 연결", cinemaIcon(CinemaGlyph.Settings), false, onServerConnection, Modifier.testTag("sidebar-server"))
                 }
                 item(key = "sidebar-library-heading") {
                     Text("라이브러리", Modifier.fillMaxWidth().padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
@@ -181,17 +185,19 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
                     TvSidebarItem("라이브러리 순서", cinemaIcon(CinemaGlyph.Library), false, onLibraryOrder,
                         Modifier.testTag("sidebar-library-order"))
                 }
-                item(key = "sidebar-update") { TvSidebarItem("업데이트", cinemaIcon(CinemaGlyph.Update), false, onUpdate) }
+                if (onUpdate != null) item(key = "sidebar-update") { TvSidebarItem("업데이트", cinemaIcon(CinemaGlyph.Update), false, onUpdate) }
                 item(key = "sidebar-account") { TvSidebarItem("계정", cinemaIcon(CinemaGlyph.Account), false, onLogout) }
             }
         } else Column(Modifier.fillMaxSize().padding(sidebarPadding),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("SHYNIFLEX", Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
+            Text(appName, Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp).testTag("tv-sidebar-brand"),
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelMedium, letterSpacing = 1.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             TvSidebarItem("홈", cinemaIcon(CinemaGlyph.Home), homeSelected, onHome)
             TvSidebarItem("검색", cinemaIcon(CinemaGlyph.Search), searchSelected, onSearch, Modifier.testTag("sidebar-search"))
+            if (onServerConnection != null) TvSidebarItem("서버 연결", cinemaIcon(CinemaGlyph.Settings), false,
+                onServerConnection, Modifier.testTag("sidebar-server"))
             Text("라이브러리", Modifier.fillMaxWidth().padding(start = 8.dp, top = 10.dp, bottom = 4.dp).testTag("tv-sidebar-library-heading"),
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -211,7 +217,7 @@ internal fun TvSidebar(onLibraries: () -> Unit, onRefresh: () -> Unit, onLogout:
             TvSidebarItem("화면 스타일", cinemaIcon(CinemaGlyph.Palette), false, onAppearance, Modifier.testTag("sidebar-appearance"))
             if (onLibraryOrder != null) TvSidebarItem("라이브러리 순서", cinemaIcon(CinemaGlyph.Library), false,
                 onLibraryOrder, Modifier.testTag("sidebar-library-order"))
-            TvSidebarItem("업데이트", cinemaIcon(CinemaGlyph.Update), false, onUpdate)
+            if (onUpdate != null) TvSidebarItem("업데이트", cinemaIcon(CinemaGlyph.Update), false, onUpdate)
             TvSidebarItem("계정", cinemaIcon(CinemaGlyph.Account), false, onLogout)
         }
     }
@@ -247,6 +253,23 @@ private fun TvSidebarItem(label: String, icon: ImageVector, selected: Boolean, o
 @Composable
 internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (MediaItem) -> Unit,
     onAppearance: () -> Unit = {}, onSearch: () -> Unit = {}) {
+    CinemaHome(state, "SHYNIFLEX", model::playContinue, model::openItem, model::selectContinueItem,
+        model::refresh, model::retryRecentLibrary, onAppearance, onSearch,
+        backdrop = { CinemaBackdropArtwork(it, model) },
+        card = { item, modifier, selected, onSelect, onClick ->
+            TvMediaCard(item, model, modifier, cinematic = true, selected = selected,
+                onSelect = onSelect, onClick = onClick, onWatchOptions = { onWatchOptions(item) })
+        })
+}
+
+internal typealias CinemaShelfCard = @Composable (MediaItem, Modifier, Boolean, () -> Unit, () -> Unit) -> Unit
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+internal fun CinemaHome(state: AppState, appName: String, onResume: (MediaItem) -> Unit,
+    onOpen: (MediaItem) -> Unit, onSelectContinue: (MediaItem) -> Unit, retryContinue: () -> Unit,
+    retryRecent: (Int) -> Unit, onAppearance: () -> Unit, onSearch: () -> Unit,
+    backdrop: @Composable (MediaItem) -> Unit, card: CinemaShelfCard) {
     val modelIsTelevision = LocalContext.current.isTelevision()
     val controlsBusy = state.busy && !state.homeLoading
     val style = LocalCinemaStyle.current
@@ -284,7 +307,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
     }
     ObserveMobileContinueShelf(continueRow, continueKeys, enabled = !modelIsTelevision && !controlsBusy,
         onBrowse = ::selectMobilePoster,
-        onSettled = { key -> continuing.firstOrNull { tvMediaKey(it) == key }?.let(model::selectContinueItem) },
+        onSettled = { key -> continuing.firstOrNull { tvMediaKey(it) == key }?.let(onSelectContinue) },
         backdrop = mobileBackdrop)
     LaunchedEffect(continueKeys) {
         if (heroKey !in continueKeys) heroKey = continueKeys.firstOrNull().orEmpty()
@@ -369,22 +392,22 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                             finally { touchingContinue = false; interactionRevision++ }
                         }
                     }) {
-                    CinemaHomeBackdrop(hero, model, heroHeight, wide = !compact, modifier = Modifier.matchParentSize(),
+                    CinemaHomeBackdrop(hero, backdrop, heroHeight, wide = !compact, modifier = Modifier.matchParentSize(),
                         motion = mobileBackdrop.takeUnless { modelIsTelevision || controlsBusy }, motionItems = continuing)
                     Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
                         Column(Modifier.fillMaxWidth().height(heroHeight)
                             .onGloballyPositioned { heroVisible = isContinueBackdropVisible(it) }
                             .testTag("tv-continue-hero")) {
                             CinemaHomeHeader(compact, onAppearance, onSearch,
-                                Modifier.fillMaxWidth().height(headerHeight))
+                                Modifier.fillMaxWidth().height(headerHeight), appName = appName)
                             if (hero != null && heroItem != null) {
                                 CinemaHomeHeroContent(hero = hero, source = heroItem, compact = compact,
-                                    busy = controlsBusy, onResume = model::playContinue,
+                                    busy = controlsBusy, onResume = onResume,
                                     onResumeFocus = { heroResumeFocused = it }, modifier = Modifier.fillMaxSize(),
-                                    onDetails = model::openItem)
+                                    onDetails = onOpen)
                             } else CinemaHomeWelcome(compact, onSearch, Modifier.fillMaxSize())
                         }
-                        if (continuing.isNotEmpty()) TvShelf("계속 시청", continuing, model, onWatchOptions,
+                        if (continuing.isNotEmpty()) TvShelf("계속 시청", continuing, card,
                             state = continueRow,
                             modifier = Modifier.testTag("home-continue-row").then(
                                 if (restoreShelf == "continue") Modifier.focusRequester(shelfFocus)
@@ -394,13 +417,13 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                             highlightKey = if (!modelIsTelevision) heroItem?.let(::tvMediaKey).orEmpty() else "",
                             restoreKey = selectedKey, onSelect = {
                                 selectedKey = tvMediaKey(it); heroKey = tvMediaKey(it); interactionRevision++
-                                selectedShelf = "continue"; model.selectContinueItem(it)
+                                selectedShelf = "continue"; onSelectContinue(it)
                                 if (scroll.firstVisibleItemIndex != 0 || scroll.firstVisibleItemScrollOffset != 0) {
                                     homeScope.launch { scroll.animateScrollToItem(0) }
                                 }
                             }, onClick = {
                                 if (!modelIsTelevision) selectMobilePoster(tvMediaKey(it))
-                                model.playContinue(it)
+                                onResume(it)
                             })
                         else Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
                             .padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -410,7 +433,7 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                                 state.continueError != null -> "이어보기를 불러오지 못했습니다"
                                 else -> "이어볼 영상이 없습니다"
                             })
-                            if (state.continueError != null) TvAction("다시 시도", onClick = model::refresh)
+                            if (state.continueError != null) TvAction("다시 시도", onClick = retryContinue)
                         }
                     }
                 }
@@ -421,17 +444,17 @@ internal fun TvHome(state: AppState, model: AppViewModel, onWatchOptions: (Media
                     ?: if (state.recentLoading) RecentLibraryStatus.LOADING else RecentLibraryStatus.ERROR
                 item(key = "recent-${library.id}") {
                     if (media.isEmpty()) HomeRecentLibraryStatus(library.title, status,
-                        onRetry = { model.retryRecentLibrary(library.id) },
+                        onRetry = { retryRecent(library.id) },
                         modifier = Modifier.testTag("home-recent-status-${library.id}"))
                     else Column {
-                        TvShelf("최근 추가된 작품 · ${library.title}", media, model, onWatchOptions,
+                        TvShelf("최근 추가된 작품 · ${library.title}", media, card,
                             modifier = if (restoreShelf == "recent-${library.id}") Modifier.focusRequester(shelfFocus)
                                 .onGloballyPositioned { shelfAttached = true } else Modifier,
                             restoreKey = selectedKey,
                             cinematic = true, cardWidth = homeCardWidth,
-                            onSelect = { selectedKey = tvMediaKey(it); selectedShelf = "recent-${library.id}" }, onClick = model::openItem)
+                            onSelect = { selectedKey = tvMediaKey(it); selectedShelf = "recent-${library.id}" }, onClick = onOpen)
                         if (status == RecentLibraryStatus.ERROR) HomeRecentLibraryRetry(
-                            onRetry = { model.retryRecentLibrary(library.id) })
+                            onRetry = { retryRecent(library.id) })
                     }
                 }
             }
@@ -457,8 +480,7 @@ internal fun TvHomeClock(modifier: Modifier = Modifier, foreground: Color? = nul
 }
 
 @Composable
-private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
-    onWatchOptions: (MediaItem) -> Unit, modifier: Modifier = Modifier,
+private fun TvShelf(title: String, media: List<MediaItem>, card: CinemaShelfCard, modifier: Modifier = Modifier,
     onSelect: (MediaItem) -> Unit, onClick: (MediaItem) -> Unit, wide: Boolean = false, restoreKey: String = "",
     titleColor: Color = MaterialTheme.colorScheme.onSurface, cinematic: Boolean = false, cardWidth: Dp? = null,
     state: LazyListState = rememberLazyListState(), highlightKey: String = "") {
@@ -475,11 +497,9 @@ private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
             contentPadding = PaddingValues(horizontal = sidePadding, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(if (cinematic && style == CinemaStyle.LOUNGE) 18.dp else if (cinematic) 12.dp else 6.dp)) {
             items(media, key = ::tvMediaKey) { item ->
-                TvMediaCard(item, model, Modifier.width(cardWidth ?: if (wide) 200.dp else 114.dp)
+                card(item, Modifier.width(cardWidth ?: if (wide) 200.dp else 114.dp)
                     .then(if (tvMediaKey(item) == restoreKey || (!hasRestoreKey && item == media.first())) Modifier.focusRequester(fallback) else Modifier),
-                    wide = wide, cinematic = cinematic, selected = tvMediaKey(item) == highlightKey,
-                    onSelect = { onSelect(item) }, onClick = { onClick(item) },
-                    onWatchOptions = { onWatchOptions(item) })
+                    tvMediaKey(item) == highlightKey, { onSelect(item) }, { onClick(item) })
             }
         }
     }
@@ -489,10 +509,6 @@ private fun TvShelf(title: String, media: List<MediaItem>, model: AppViewModel,
 internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifier = Modifier,
     wide: Boolean = false, onSelect: () -> Unit = {}, onClick: () -> Unit, onWatchOptions: () -> Unit,
     cinematic: Boolean = false, selected: Boolean = false) {
-    val style = LocalCinemaStyle.current
-    var focused by remember { mutableStateOf(false) }
-    val highlighted = focused || selected
-    val cardInteraction = remember { MutableInteractionSource() }
     val artworkUrl = if (wide) item.thumbnail ?: item.backdrop ?: item.poster else item.poster
     val artworkSettled = remember(item.libraryId, item.id, item.type, item.viewItemId, artworkUrl, item.isSpoiler) {
         kotlinx.coroutines.CompletableDeferred<Unit>().apply { if (artworkUrl.isNullOrBlank()) complete(Unit) }
@@ -505,6 +521,21 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
             value = model.seriesUnwatchedCount(item)
         }
     }
+    CinemaMediaCard(item, modifier, wide, onSelect, onClick, onWatchOptions, cinematic, selected, remaining) {
+        Poster(item, model, Modifier.fillMaxSize(), imageUrl = artworkUrl,
+            onArtworkSettled = { artworkSettled.complete(Unit) })
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+internal fun CinemaMediaCard(item: MediaItem, modifier: Modifier = Modifier, wide: Boolean = false,
+    onSelect: () -> Unit = {}, onClick: () -> Unit, onWatchOptions: () -> Unit,
+    cinematic: Boolean = false, selected: Boolean = false, remaining: Int? = null, artwork: @Composable () -> Unit) {
+    val style = LocalCinemaStyle.current
+    var focused by remember { mutableStateOf(false) }
+    val highlighted = focused || selected
+    val cardInteraction = remember { MutableInteractionSource() }
     val focusModifier = if (cinematic) modifier else modifier.tvFocus()
     Column(focusModifier.semantics { this.selected = highlighted }
         .onFocusChanged { focused = it.isFocused; if (it.isFocused) onSelect() }
@@ -528,8 +559,7 @@ internal fun TvMediaCard(item: MediaItem, model: AppViewModel, modifier: Modifie
             .then(if (cinematic) Modifier.border(if (highlighted) 2.dp else 1.dp,
                 if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = .12f), shape)
                 .clip(shape) else Modifier)) {
-            Poster(item, model, Modifier.fillMaxSize(), imageUrl = artworkUrl,
-                onArtworkSettled = { artworkSettled.complete(Unit) })
+            artwork()
             if (focused && !cinematic) Surface(Modifier.align(Alignment.Center).size(46.dp),
                 color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(23.dp),
                 border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onPrimary)) {

@@ -14,8 +14,8 @@ import javax.crypto.spec.GCMParameterSpec
 data class SavedSession(val server: String, val token: String, val userName: String)
 
 /** Only the session is saved; passwords and one-time codes are never persisted. */
-class SessionStore(context: Context) {
-    private val preferences = context.getSharedPreferences("encrypted_sessions", Context.MODE_PRIVATE)
+class SessionStore(context: Context, preferencesName: String = "encrypted_sessions") {
+    private val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
     private val alias = "shyniflex_session_v1"
 
     @Synchronized private fun key(): SecretKey {

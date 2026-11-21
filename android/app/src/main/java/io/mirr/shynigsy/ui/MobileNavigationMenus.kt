@@ -35,10 +35,11 @@ internal fun MobileMoreMenu(
     onRefresh: () -> Unit,
     onAppearance: () -> Unit,
     onLibraryOrder: (() -> Unit)? = null,
-    onUpdate: () -> Unit,
-    onTvQrScan: () -> Unit = {},
+    onUpdate: (() -> Unit)?,
+    onTvQrScan: (() -> Unit)? = {},
     onLogout: () -> Unit,
-    onSpoilerAccess: () -> Unit,
+    onSpoilerAccess: (() -> Unit)?,
+    onServerConnection: (() -> Unit)? = null,
 ) {
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
     ModalBottomSheet(onDismissRequest = onDismiss,
@@ -53,6 +54,11 @@ internal fun MobileMoreMenu(
             item(key = "heading") {
                 Text("더보기", Modifier.padding(horizontal = 10.dp, vertical = 8.dp).semantics { heading() },
                     style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+            if (onServerConnection != null) item(key = "server-connection") {
+                MobileMoreAction("서버 연결", cinemaIcon(CinemaGlyph.Settings), "mobile-more-server") {
+                    onDismiss(); onServerConnection()
+                }
             }
             item(key = "refresh") {
                 MobileMoreAction("새로고침", cinemaIcon(CinemaGlyph.Refresh), "mobile-more-refresh") {
@@ -69,18 +75,18 @@ internal fun MobileMoreMenu(
                     onDismiss(); onLibraryOrder()
                 }
             }
-            item(key = "spoiler") {
+            if (onSpoilerAccess != null) item(key = "spoiler") {
                 MobileMoreAction(if (spoilerUnlocked) "스포일러 잠그기" else "잠긴 라이브러리",
                     cinemaIcon(if (spoilerUnlocked) CinemaGlyph.Lock else CinemaGlyph.Unlock), "mobile-more-spoiler") {
                     onDismiss(); onSpoilerAccess()
                 }
             }
-            item(key = "update") {
+            if (onUpdate != null) item(key = "update") {
                 MobileMoreAction("업데이트", cinemaIcon(CinemaGlyph.Update), "mobile-more-update") {
                     onDismiss(); onUpdate()
                 }
             }
-            item(key = "tv-login") {
+            if (onTvQrScan != null) item(key = "tv-login") {
                 MobileMoreAction("TV 로그인", cinemaIcon(CinemaGlyph.QrCode), "mobile-more-tv-login") {
                     onDismiss(); onTvQrScan()
                 }

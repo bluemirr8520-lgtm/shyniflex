@@ -80,13 +80,15 @@ internal fun GlobalSearchContent(
     artwork: @Composable (MediaItem, Modifier) -> Unit,
     modifier: Modifier = Modifier,
     searchHydrating: Boolean = false,
+    allowUnscopedResults: Boolean = false,
 ) {
     var text by rememberSaveable(query) { mutableStateOf(query) }
     val knownLibraries = remember(libraries, spoilerUnlocked) {
         libraries.filter { spoilerUnlocked || !it.isSpoiler }.associateBy { it.id to it.isSpoiler }
     }
-    val visibleItems = remember(items, knownLibraries, spoilerUnlocked) {
-        items.filter { (spoilerUnlocked || !it.isSpoiler) && (it.libraryId to it.isSpoiler) in knownLibraries }
+    val visibleItems = remember(items, knownLibraries, spoilerUnlocked, allowUnscopedResults) {
+        items.filter { (spoilerUnlocked || !it.isSpoiler) && ((it.libraryId to it.isSpoiler) in knownLibraries ||
+            (allowUnscopedResults && it.libraryId == 0 && !it.isSpoiler)) }
     }
     val visibleKeys = remember(visibleItems) { visibleItems.mapTo(HashSet<String>(visibleItems.size), ::compactMediaIdentity) }
     var focusedKey by rememberSaveable(query) { mutableStateOf<String?>(null) }
@@ -185,9 +187,11 @@ internal fun GlobalSearchContent(
                     minLines = 1, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (item.type == "episode") Text(episodeLabel(item), style = MaterialTheme.typography.labelSmall,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(knownLibraries.getValue(item.libraryId to item.isSpoiler).title,
-                    Modifier.testTag("global-search-library-$identity"), style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                knownLibraries[item.libraryId to item.isSpoiler]?.let { library ->
+                    Text(library.title, Modifier.testTag("global-search-library-$identity"),
+                        style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }

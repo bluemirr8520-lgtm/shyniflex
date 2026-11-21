@@ -469,14 +469,14 @@ private fun CompletedEpisodeLoadingScreen(
 }
 
 @Composable
-private fun AppHeader(
+internal fun AppHeader(
     loggedIn: Boolean,
     title: String?,
-    userName: String,
-    onBack: () -> Unit,
-    onRefresh: () -> Unit,
-    onLogout: () -> Unit,
-    onLibraries: () -> Unit,
+    userName: String = "",
+    onBack: () -> Unit = {},
+    onRefresh: () -> Unit = {},
+    onLogout: () -> Unit = {},
+    onLibraries: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth().statusBarsPadding()) {
         Row(
@@ -695,6 +695,7 @@ internal fun LibraryPicker(
     modifier: Modifier = Modifier,
     spoilerLibrariesLoading: Boolean = false,
     onLibraryOrder: (() -> Unit)? = null,
+    showSpoilerControl: Boolean = true,
 ) {
     val visibleLibraries = libraries.filter { spoilerUnlocked || !it.isSpoiler }
     if (!television) {
@@ -724,7 +725,7 @@ internal fun LibraryPicker(
                         .testTag("mobile-library-order")) { Text("순서 변경") }
                 }
                 // Cached capability is advisory; a failed status fetch must not hide the PIN entry point.
-                item(key = "spoiler") {
+                if (showSpoilerControl) item(key = "spoiler") {
                     CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
                         enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth()
                             .testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
@@ -769,7 +770,7 @@ internal fun LibraryPicker(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (onLibraryOrder != null) CompactMenuAction(onClick = onLibraryOrder,
                 modifier = Modifier.fillMaxWidth().testTag("tv-library-order")) { Text("순서 변경") }
-            CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
+            if (showSpoilerControl) CompactMenuAction(onClick = if (spoilerUnlocked) onLockSpoiler else onUnlockSpoiler,
                 enabled = !spoilerBusy, modifier = Modifier.fillMaxWidth().testTag(if (spoilerUnlocked) "spoiler-lock" else "spoiler-open-unlock")) {
                 Icon(if (spoilerUnlocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, null)
                 Spacer(Modifier.width(8.dp))

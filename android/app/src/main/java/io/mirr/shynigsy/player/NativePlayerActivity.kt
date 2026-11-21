@@ -62,7 +62,9 @@ import io.mirr.shynigsy.data.PlaybackMarker
 import io.mirr.shynigsy.data.SpoilerAccessRegistry
 import io.mirr.shynigsy.data.ApiException
 import io.mirr.shynigsy.data.SessionStore
-import io.mirr.shynigsy.data.ShyniClient
+import io.mirr.shynigsy.data.PlayerServer
+import io.mirr.shynigsy.data.PlexPlayerServer
+import io.mirr.shynigsy.data.ShyniPlayerServer
 import io.mirr.shynigsy.data.SubtitleTrack
 import io.mirr.shynigsy.data.hasKnownMediaOrigin
 import io.mirr.shynigsy.ui.CinemaAppearancePreferences
@@ -103,7 +105,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var lastDiagnosticAt = 0L
     private var diagnosticStartedAt = 0L
     private lateinit var spec: PlaybackSpec
-    private lateinit var client: ShyniClient
+    private lateinit var client: PlayerServer
     private lateinit var playerView: PlayerView
     private lateinit var gestures: Media3GestureView
     private lateinit var lockButton: Button
@@ -245,7 +247,7 @@ class NativePlayerActivity : AppCompatActivity() {
         PlaybackPresenceLifecycle(open = { source, onForceStop ->
             val label = deviceDisplayName(android.os.Build.MANUFACTURER, android.os.Build.MODEL, television)
                 .removeSuffix(if (television) " (shyniflex TV)" else " (shyniflex)")
-            client.createPlaybackPresence(source, label, if (television) "tv" else "mobile", onForceStop)?.let { connection ->
+            client.shyni?.createPlaybackPresence(source, label, if (television) "tv" else "mobile", onForceStop)?.let { connection ->
                 object : PlaybackPresenceConnection {
                     override fun update(positionMs: Long, durationMs: Long, state: String) =
                         connection.update(positionMs, durationMs, state)
@@ -396,7 +398,8 @@ class NativePlayerActivity : AppCompatActivity() {
         val deviceId = settings.getString("device_id", null) ?: UUID.randomUUID().toString().also {
             settings.edit().putString("device_id", it).apply()
         }
-        client = ShyniClient(server, session.token, deviceId = deviceId)
+        client = if (BuildConfig.IS_PLEX) PlexPlayerServer(server, session.token, deviceId)
+            else ShyniPlayerServer(server, session.token, deviceId)
         if (spec.sourceItem?.isSpoiler == true) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         subtitleLoader = SubtitleLoader(headersFor = client::headersFor)
         lastPosition = savedInstanceState?.getLong("position", spec.resumeMs) ?: spec.resumeMs
@@ -1100,7 +1103,8 @@ class NativePlayerActivity : AppCompatActivity() {
             current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
             pendingTextPreference != null, current.sessionId.isNullOrBlank(),
             nativeFormat = sourceNeedsNativeEngine(current.sourceContainer, current.sourceVideoCodec, current.selectedAudioCodec))
-        if (start == EngineStart.MPV || start == EngineStart.SAFE_MPV) {
+        if (start == EngineStart.MPV || start == EngineStart.SAFE_MPV ||
+            (start == EngineStart.AUTO && client.shyni == null)) {
             if (start == EngineStart.SAFE_MPV) toast("이 재생에는 MPV가 필요해 MPV로 재생합니다.")
             startPreparedPlayer(null, false)
             return
@@ -1143,7 +1147,7 @@ class NativePlayerActivity : AppCompatActivity() {
             var candidateReason = "candidate_policy"
             val candidate = try {
                 kotlinx.coroutines.coroutineScope {
-                    val information = async { client.playbackCodecInfo(current) }
+                    val information = async { client.shyni?.playbackCodecInfo(current) }
                     // Inspect every raw row, including formats omitted from the regular menu.
                     val subtitles = async { client.playbackSubtitlesForEngine(current) }
                     val info = information.await()
@@ -1200,6 +1204,12 @@ class NativePlayerActivity : AppCompatActivity() {
             requiresMpvForEmbeddedTextResume(spec.subtitles, lastPosition)) {
             forceMpvSession = "${spec.sessionId}:${spec.partId}"
             startPreparedPlayer(null, false, chapterCarry = chapterCarry)
+            return
+        }
+        val mediaItem = try {
+            MediaItem.Builder().setMediaId("${spec.partId}").setUri(client.playbackUrl(spec)).build()
+        } catch (error: ApiException) {
+            showError(error.message ?: "영상 주소를 확인할 수 없습니다.")
             return
         }
         val headers = client.playbackHeaders(spec)
@@ -1468,7 +1478,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 refreshSegmentActions()
             }
         })
-        created.setMediaItem(buildMediaItem(), lastPosition.coerceAtLeast(0))
+        created.setMediaItem(mediaItem, lastPosition.coerceAtLeast(0))
         playerView.player = created
         gestures.attachPlayer(created)
         created.trackSelectionParameters = created.trackSelectionParameters.buildUpon()
@@ -1686,10 +1696,6 @@ class NativePlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildMediaItem(): MediaItem {
-        return MediaItem.Builder().setMediaId("${spec.partId}").setUri(spec.url).build()
-    }
-
     private fun refreshTicketAndRestart() {
         if (refreshing || navigationLoading || exiting || closeLockedSpoilerPlayback()) return
         capturePosition(); settleWatchTime(false); enqueueProgress("paused")
@@ -1904,7 +1910,7 @@ class NativePlayerActivity : AppCompatActivity() {
                                 showResizeNotice()
                             }.setNegativeButton("닫기", null).show()
                     }
-                    addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
+                    if (client.shyni != null) addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
                     addRow("오디오 트랙", selectedTrackLabel(C.TRACK_TYPE_AUDIO)) { showTracks(C.TRACK_TYPE_AUDIO) }
                     addRow("자막 선택", if (!subtitlesEnabled) "끔" else selectedTrackLabel(C.TRACK_TYPE_TEXT)) { showTracks(C.TRACK_TYPE_TEXT) }
                     addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
@@ -1920,7 +1926,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 1 -> {
                     addRow("영상 보정", pictureSettingsLabel()) { showPictureSettings() }
-                    addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
+                    if (client.shyni != null) addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
                     addRow("화면 크기", resizeLabel()) {
                         cycleResizeMode(); selectTab(1)
                     }
@@ -2387,8 +2393,10 @@ class NativePlayerActivity : AppCompatActivity() {
         ?: if (spec.isServerConversion) "서버 자동" else "원본"
 
     private fun closeLockedSpoilerPlayback(): Boolean {
-        if (!::spec.isInitialized || !::client.isInitialized || spec.sourceItem?.isSpoiler != true || client.spoilerUnlocked) return false
-        if (activityStarted && spoilerRecovery != null && client.spoilerPlaybackReauthenticationFailed && !exiting) {
+        if (!::spec.isInitialized || !::client.isInitialized || spec.sourceItem?.isSpoiler != true) return false
+        val shyni = client.shyni ?: return false
+        if (shyni.spoilerUnlocked) return false
+        if (activityStarted && spoilerRecovery != null && shyni.spoilerPlaybackReauthenticationFailed && !exiting) {
             showSpoilerReauthenticationFailure()
             return true
         }
@@ -2410,6 +2418,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (!activityStarted || exiting || !prepared || refreshing || conversionLoading || navigationLoading ||
             spoilerRecovery != null || spec.sourceItem?.isSpoiler != true || player == null ||
             player?.playbackState == Player.STATE_ENDED || spoilerReauthenticationJob?.isActive == true) return
+        val shyni = client.shyni ?: return
         val current = player
         val currentSpec = spec
         spoilerReauthenticationJob = scope.launch {
@@ -2417,9 +2426,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 spec.partId == currentSpec.partId && spec.libraryId == currentSpec.libraryId &&
                 spec.viewItemId == currentSpec.viewItemId && spec.sessionId == currentSpec.sessionId) {
                 if (refreshing || conversionLoading || navigationLoading || gestures.isSeekGestureActive) { delay(500); continue }
-                val remaining = client.spoilerRemainingMs
+                val remaining = shyni.spoilerRemainingMs
                 if (remaining <= 0) { closeLockedSpoilerPlayback(); return@launch }
-                val wait = SpoilerPlaybackReauthenticationPolicy.delayMs(remaining, client.spoilerLifetimeMs)
+                val wait = SpoilerPlaybackReauthenticationPolicy.delayMs(remaining, shyni.spoilerLifetimeMs)
                 if (wait > 0) { delay(wait); continue }
                 reauthenticateSpoilerPlayback()
                 return@launch
@@ -2429,6 +2438,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun reauthenticateSpoilerPlayback() {
         val active = player ?: return
+        val shyni = client.shyni ?: return
         if (!activityStarted || exiting || !prepared || refreshing || conversionLoading || navigationLoading ||
             spoilerRotationJob?.isActive == true || spec.sourceItem?.isSpoiler != true) return
         fun snapshot(): ConversionRestore {
@@ -2455,7 +2465,7 @@ class NativePlayerActivity : AppCompatActivity() {
         spoilerRotationJob = scope.launch {
             var rotation: Long? = null
             try {
-                val flushBudget = SpoilerPlaybackReauthenticationPolicy.flushTimeoutMs(client.spoilerRemainingMs)
+                val flushBudget = SpoilerPlaybackReauthenticationPolicy.flushTimeoutMs(shyni.spoilerRemainingMs)
                 if (flushBudget > 0) withTimeoutOrNull(flushBudget) { acknowledgement.await() }
                 if (!activityStarted || exiting || player !== active || spoilerRecovery !== previous) return@launch
                 val epoch = playbackAuthentication.beginRotation()
@@ -2468,10 +2478,10 @@ class NativePlayerActivity : AppCompatActivity() {
                 val watchedBeforePreparation = watchedMs
                 // Keep the existing decoder and buffered frames while the network
                 // prepares fresh authority. No old-context progress crosses unlock.
-                val budget = SpoilerPlaybackReauthenticationPolicy.timeoutMs(client.spoilerRemainingMs)
+                val budget = SpoilerPlaybackReauthenticationPolicy.timeoutMs(shyni.spoilerRemainingMs)
                 if (budget <= 0) throw ApiException("비공개 재생 권한을 다시 확인해야 합니다.", 403)
                 val refreshed = withTimeoutOrNull(budget) {
-                    client.reauthenticateSpoilerPlayback(previous.spec, previous.position, previous.audioIndex)
+                    shyni.reauthenticateSpoilerPlayback(previous.spec, previous.position, previous.audioIndex)
                 } ?: throw ApiException("비공개 재생 권한 확인 시간이 초과되었습니다.")
                 if (!activityStarted || exiting || player !== active || spoilerRecovery !== previous ||
                     !playbackAuthentication.isCurrent(epoch)) return@launch
@@ -2512,7 +2522,7 @@ class NativePlayerActivity : AppCompatActivity() {
             } catch (_: Exception) {
                 if (activityStarted && !exiting && spoilerRecovery === previous &&
                     (rotation == null || playbackAuthentication.isCurrent(rotation))) {
-                    if (!client.spoilerUnlocked && !client.spoilerPlaybackReauthenticationFailed) closeLockedSpoilerPlayback()
+                    if (!shyni.spoilerUnlocked && !shyni.spoilerPlaybackReauthenticationFailed) closeLockedSpoilerPlayback()
                     else showSpoilerReauthenticationFailure()
                 }
             } finally {
@@ -2569,7 +2579,7 @@ class NativePlayerActivity : AppCompatActivity() {
                         (current.url.startsWith("https://", true) || current.url.startsWith("http://", true))) {
                         // Keep the server's source timestamps intact until the
                         // player's actual full duration is known.
-                        val markers = client.playbackMarkers(current, durationMs = 0)
+                        val markers = client.shyni?.playbackMarkers(current, durationMs = 0) ?: current.markers
                         currentCoroutineContext().ensureActive()
                         if (isCurrent() && !closeLockedSpoilerPlayback()) {
                             spec = spec.copy(markers = markers)
@@ -2605,6 +2615,7 @@ class NativePlayerActivity : AppCompatActivity() {
 
     /** Home rows can omit country metadata. Resolve it after READY without restarting playback. */
     private fun resolveSubtitleOrigin(readyPlayer: Player) {
+        val shyni = client.shyni ?: return
         val item = spec.sourceItem ?: return
         val key = subtitlePlaybackContentKey(spec)
         if (subtitleOriginAttemptedKey != key && subtitleOriginJob?.isActive != true) {
@@ -2626,7 +2637,7 @@ class NativePlayerActivity : AppCompatActivity() {
             !conversionLoading && !navigationLoading
         subtitleOriginJob = scope.launch {
             try {
-                val resolved = client.resolvePlaybackOrigin(current) { diagnostic ->
+                val resolved = shyni.resolvePlaybackOrigin(current) { diagnostic ->
                     Log.i("ShyniFlixSubtitle", "origin_probe $diagnostic")
                 }
                 currentCoroutineContext().ensureActive()
@@ -2711,7 +2722,7 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitleListFailed = false
         subtitleListJob = scope.launch {
             try {
-                val tracks = client.playbackSubtitles(current)
+                val tracks = client.shyni?.playbackSubtitles(current) ?: current.subtitles
                 currentCoroutineContext().ensureActive()
                 if (!isCurrent() || closeLockedSpoilerPlayback()) return@launch
                 spec = spec.copy(subtitles = tracks, subtitlesPending = false)
@@ -2787,7 +2798,7 @@ class NativePlayerActivity : AppCompatActivity() {
         neighborsJob = scope.launch {
             var replaced = false
             try {
-                var next = client.playback(target, deferSubtitles = true).copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
+                var next = client.playback(target).copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
                 previous.spec.conversionHeight?.let { height -> next = client.convertPlayback(next, height, 0) }
                 if (exiting || isDestroyed || closeLockedSpoilerPlayback()) return@launch
                 replaced = true
@@ -2830,6 +2841,7 @@ class NativePlayerActivity : AppCompatActivity() {
             text = speedLabel(); contentDescription = "배속 설정, $text"; tooltipText = contentDescription
         }
         playerView.findViewById<Button>(R.id.player_conversion).apply {
+            visibility = if (client.shyni != null) View.VISIBLE else View.GONE
             text = playbackModeButtonLabel(spec); contentDescription = "변환 (데이터 절약), 현재 $mode"; tooltipText = contentDescription
             isEnabled = !conversionLoading && !refreshing
         }
@@ -3764,7 +3776,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     !playbackAuthentication.isCurrent(epoch) || !samePlaybackPresenceSource(previous.spec, spec) ||
                     closeLockedSpoilerPlayback()) return@launch
                 val next = withTimeoutOrNull(20_000) {
-                    var preparedNext = client.playback(target, deferSubtitles = true)
+                    var preparedNext = client.playback(target)
                         .copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
                     previous.spec.conversionHeight?.let { height -> preparedNext = client.convertPlayback(preparedNext, height, 0) }
                     preparedNext
@@ -3857,6 +3869,12 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun finishAfterProgress(acknowledgement: CompletableDeferred<Boolean>) {
+        if (BuildConfig.IS_PLEX && ::spec.isInitialized) {
+            spec.sourceItem?.takeIf { it.playable && it.id == spec.itemId &&
+                it.libraryId == spec.libraryId && it.viewItemId == spec.viewItemId }?.let { played ->
+                setResult(RESULT_OK, Intent().putExtra("playedItem", played.toJson()))
+            }
+        }
         scope.launch {
             // Manual Back gives partial progress a bounded chance to commit first.
             withTimeoutOrNull(4_000) { acknowledgement.await() }
@@ -3951,7 +3969,7 @@ class NativePlayerActivity : AppCompatActivity() {
         cancelSpoilerPlaybackReauthentication()
         if (interruptedSpoilerRotation && ::spec.isInitialized && ::client.isInitialized &&
             spec.sourceItem?.isSpoiler == true) {
-            client.clearSpoilerGrant()
+            client.shyni?.clearSpoilerGrant()
             closeLockedSpoilerPlayback()
         }
         super.onStop()

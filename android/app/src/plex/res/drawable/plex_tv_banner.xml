@@ -1,0 +1,5 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="320dp" android:height="180dp" android:drawable="@color/plex_icon_background" />
+    <item android:width="212dp" android:height="212dp" android:gravity="center"
+        android:drawable="@drawable/plex_mark" />
+</layer-list>

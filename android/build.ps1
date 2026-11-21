@@ -4,6 +4,7 @@ param(
     [switch]$Online,
     [switch]$WithDeviceTestApks,
     [switch]$SkipTests,
+    [switch]$Plex,
     [switch]$PrepareOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -45,10 +46,12 @@ if ($PrepareOnly) { Write-Output 'Android SDK and local shyniflex signing key ar
 Push-Location $taskProject
 try {
     $taskArguments = @('assembleDebug', 'assembleRelease', "-PshyniflexSigningRoot=$taskProject", '--no-daemon', '--max-workers=2', '--console=plain')
+    if ($Plex) { $taskArguments += '-PshyniflexApplicationId=io.mirr.shyniflex.plex' }
     if (-not $SkipTests) { $taskArguments += 'testDebugUnitTest' }
     if ($WithDeviceTestApks) { $taskArguments += 'assembleDebugAndroidTest' }
     if (-not $Online) { $taskArguments += '--offline' }
     & .\gradlew.bat @taskArguments
     if ($LASTEXITCODE -ne 0) { throw 'Android build failed. For missing cached dependencies, retry with -Online.' }
 } finally { Pop-Location }
-Write-Output ('APK: ' + (Join-Path $taskProject 'app/build/outputs/apk/release/app-release.apk'))
+$apkDirectory = if ($Plex) { 'build/plex-app' } else { 'app/build' }
+Write-Output ('APK: ' + (Join-Path $taskProject "$apkDirectory/outputs/apk/release/app-release.apk"))

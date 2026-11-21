@@ -100,7 +100,7 @@ private fun JSONObject.displayLabel(key: String, limit: Int = 100): String? = (o
     ?.takeIf { it.isNotEmpty() && it.length <= limit && !it.contains("://") &&
         it.none { character -> character.isISOControl() } }
 
-private fun safeFileName(value: Any?): String? {
+internal fun safeFileName(value: Any?): String? {
     val raw = (value as? String)?.trim()?.takeIf { it.length <= 4096 && !it.contains("://") &&
         it.none { character -> character.isISOControl() } } ?: return null
     return raw.replace('\\', '/').substringAfterLast('/').takeIf {

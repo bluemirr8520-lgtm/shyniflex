@@ -17,7 +17,11 @@ val runtimeAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 val targetAbi = providers.gradleProperty("shyniflexTargetAbi").orNull
 require(targetAbi == null || targetAbi in runtimeAbis) { "Unsupported shyniflexTargetAbi" }
 val applicationPackage = providers.gradleProperty("shyniflexApplicationId").orElse("io.mirr.shyniflex").get()
-require(applicationPackage in listOf("io.mirr.shyniflex", "io.mirr.shyniflex.renewed")) { "Unsupported application ID" }
+val isPlex = applicationPackage == "io.mirr.shyniflex.plex"
+require(isPlex || applicationPackage in listOf("io.mirr.shyniflex", "io.mirr.shyniflex.renewed")) { "Unsupported application ID" }
+if (isPlex) {
+    layout.buildDirectory.set(rootProject.layout.buildDirectory.dir("plex-app"))
+}
 // Provider policy requires one registered application key, not user-created keys.
 val subtitleServiceProperties = Properties().apply {
     val source = File(rootProject.rootDir, ".local/opensubtitles.properties")
@@ -38,8 +42,9 @@ android {
         manifestPlaceholders["shyniAppLabel"] = "@string/app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = 103
-        versionName = "1.0.102"
+        versionCode = if (isPlex) 4 else 103
+        versionName = if (isPlex) "1.0.3" else "1.0.102"
+        buildConfigField("boolean", "IS_PLEX", isPlex.toString())
         buildConfigField("String", "OPENSUBTITLES_API_KEY", "\"$subtitleApplicationKey\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }
@@ -67,6 +72,15 @@ android {
         }
     }
     // Only the isolated loopback fixture app may use a local HTTP test server.
+    if (isPlex) {
+        sourceSets.getByName("main") {
+            manifest.srcFile("src/plex/AndroidManifest.xml")
+            java.srcDir("src/plex/java")
+            res.srcDir("src/plex/res")
+        }
+        sourceSets.getByName("test").java.srcDir("src/plexTest/java")
+        sourceSets.getByName("androidTest").java.setSrcDirs(listOf("src/plexAndroidTest/java"))
+    }
     if (providers.gradleProperty("shyniflexDebugApplicationIdSuffix").orNull == ".spoilerqa") {
         sourceSets.getByName("debug").manifest.srcFile("src/spoilerqa/AndroidManifest.xml")
     }
@@ -111,6 +125,7 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    if (isPlex) androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation(composeBom)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

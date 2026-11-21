@@ -49,6 +49,7 @@ internal fun CinemaHomeHeader(
     onSearch: () -> Unit,
     modifier: Modifier = Modifier,
     television: Boolean = LocalContext.current.isTelevision(),
+    appName: String = "SHYNIFLEX",
 ) {
     val style = LocalCinemaStyle.current
     val foreground = when (style) {
@@ -59,7 +60,7 @@ internal fun CinemaHomeHeader(
     Row(modifier.fillMaxWidth().padding(horizontal = if (compact) 12.dp else 24.dp, vertical = 4.dp)
         .testTag("cinema-home-header"), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 8.dp)) {
-        Text("SHYNIFLEX", Modifier.weight(1f).padding(start = 4.dp),
+        Text(appName, Modifier.weight(1f).padding(start = 4.dp),
             color = foreground, fontSize = if (compact) 13.sp else 14.sp,
             letterSpacing = if (style == CinemaStyle.OTT) .6.sp else if (compact) 2.sp else 3.sp,
             fontFamily = if (style == CinemaStyle.OTT) FontFamily.SansSerif else FontFamily.Serif,
