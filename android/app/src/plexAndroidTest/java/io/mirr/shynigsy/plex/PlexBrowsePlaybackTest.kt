@@ -29,6 +29,8 @@ import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.player.NativePlayerActivity
 import io.mirr.shynigsy.player.PlaybackCompletionSignals
+import io.mirr.shynigsy.updates.UpdatePhase
+import io.mirr.shynigsy.updates.UpdateViewModel
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -113,10 +115,26 @@ class PlexBrowsePlaybackTest {
             val address = server.url("/").toString().trimEnd('/')
             try {
                 ActivityScenario.launch(PlexMainActivity::class.java).use { scenario ->
+                    if (resultKey == null) {
+                        scenario.onActivity { activity ->
+                            val updates = ViewModelProvider(activity)[UpdateViewModel::class.java]
+                            assertTrue("Startup checks without a server session", updates.state.value.phase != UpdatePhase.IDLE)
+                        }
+                        click("업데이트 확인")
+                        screen.onNodeWithText("업데이트").assertExists()
+                        screen.onNode(hasText("닫기") and hasClickAction()).performClick()
+                    }
                     screen.onNodeWithText("Plex 서버 주소").performScrollTo().performTextInput(address)
                     click("서버 주소와 토큰으로 연결")
                     screen.onNodeWithText("Plex 토큰 (X-Plex-Token)").performScrollTo().performTextInput(fixtureToken)
                     click("서버에 연결")
+                    if (resultKey == null) {
+                        clickTag("cinema-mobile-more")
+                        screen.onNodeWithTag("mobile-more-actions").performScrollToNode(hasTestTag("mobile-more-update"))
+                        clickTag("mobile-more-update")
+                        screen.onNodeWithText("업데이트").assertExists()
+                        screen.onNode(hasText("닫기") and hasClickAction()).performClick()
+                    }
                     clickTag("cinema-mobile-search")
                     screen.onNodeWithTag("global-search-input").performTextInput("Test")
                     clickTag("global-search-submit")

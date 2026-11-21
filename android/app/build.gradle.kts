@@ -42,8 +42,8 @@ android {
         manifestPlaceholders["shyniAppLabel"] = "@string/app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = if (isPlex) 4 else 103
-        versionName = if (isPlex) "1.0.3" else "1.0.102"
+        versionCode = if (isPlex) 5 else 103
+        versionName = if (isPlex) "1.0.4" else "1.0.102"
         buildConfigField("boolean", "IS_PLEX", isPlex.toString())
         buildConfigField("String", "OPENSUBTITLES_API_KEY", "\"$subtitleApplicationKey\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

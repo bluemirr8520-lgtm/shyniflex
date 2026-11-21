@@ -26,7 +26,6 @@ import io.mirr.shynigsy.ui.ArtworkNetworkClient
 import io.mirr.shynigsy.ui.ArtworkBrowsingState
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
@@ -36,6 +35,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import io.mirr.shynigsy.updates.UpdateViewModel
 import io.mirr.shynigsy.updates.UpdateDialog
+import io.mirr.shynigsy.updates.ActivityUpdateInstaller
 import io.mirr.shynigsy.data.parseTvLoginLink
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.PlaybackSpec
@@ -43,15 +43,12 @@ import io.mirr.shynigsy.data.PlaybackSpec
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppViewModel
     private lateinit var updates: UpdateViewModel
+    private lateinit var installFlow: ActivityUpdateInstaller
     private val playbackOrientation by lazy { PlaybackReturnOrientation(this) }
     private val artworkBrowsingOwner = Any()
     private val playbackInFlight = MutableStateFlow(false)
     private val installPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        val attempt = if (::updates.isInitialized) updates.activeInstallAttempt() else null
-        if (attempt != null) {
-            if (packageManager.canRequestPackageInstalls()) installReadyUpdate(attempt)
-            else updates.installError("이 앱의 설치 허용을 켠 뒤 설치를 다시 눌러 주세요.", attempt)
-        }
+        if (::installFlow.isInitialized) installFlow.permissionReturned()
     }
     private var lastCompletionRevision = 0L
     private val playback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -87,6 +84,9 @@ class MainActivity : ComponentActivity() {
         }
         model = ViewModelProvider(this)[AppViewModel::class.java]
         updates = ViewModelProvider(this)[UpdateViewModel::class.java]
+        installFlow = ActivityUpdateInstaller(this, updates, { installPermission.launch(it) }, { updateInstaller.launch(it) }) {
+            playbackInFlight.value || model.state.value.playback != null
+        }
         updates.checkOnStartup()
         consumeTvLoginIntent(intent)
         lifecycleScope.launch {
@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
                 combine(updates.state, model.state, playbackInFlight, PlaybackCompletionSignals.progressWriters) { update, app, playing, writers ->
                     update.automaticInstallPending && writers == 0 && !playing && app.playback == null &&
                         (!app.busy || app.homeLoading) && !app.spoilerBusy
-                }.collect { ready -> if (ready) requestUpdateInstall(automatic = true) }
+                }.collect { ready -> if (ready) installFlow.request(automatic = true) }
             }
         }
         lifecycleScope.launch {
@@ -140,7 +140,7 @@ class MainActivity : ComponentActivity() {
             ShyniApp(model, onUpdate = { updates.check(manual = true) }) { spec ->
                 launchPlayback(spec)
             }
-            UpdateDialog(updateState, onInstall = { requestUpdateInstall() },
+            UpdateDialog(updateState, onInstall = { installFlow.request() },
                 onCheck = { updates.check(manual = true) }, onDismiss = updates::dismiss)
             }
         }
@@ -210,43 +210,4 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
 
-    private fun requestUpdateInstall(automatic: Boolean = false) {
-        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || playbackInFlight.value ||
-            model.state.value.playback != null) return
-        val attempt = updates.beginInstall(automatic) ?: return
-        if (!packageManager.canRequestPackageInstalls()) {
-            try {
-                installPermission.launch(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    android.net.Uri.parse("package:$packageName")))
-                updates.installerOpened(attempt)
-            } catch (_: Exception) { updates.installError("기기 설정에서 이 앱의 설치 허용을 켠 뒤 다시 시도해 주세요.", attempt) }
-        } else installReadyUpdate(attempt)
-    }
-
-    private fun installReadyUpdate(attempt: Long) {
-        if (!updates.isInstallCurrent(attempt)) return
-        lifecycleScope.launch {
-            try {
-                val file = updates.verifiedFile() ?: return@launch
-                if (!updates.isInstallCurrent(attempt)) return@launch
-                if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || playbackInFlight.value ||
-                    PlaybackCompletionSignals.progressWriters.value > 0 ||
-                    model.state.value.playback != null) {
-                    updates.deferInstall(attempt)
-                    return@launch
-                }
-                val uri = androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.updates", file)
-                val installer = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                updateInstaller.launch(installer)
-                updates.installerOpened(attempt)
-            } catch (cancel: CancellationException) {
-                // A rotated/backgrounded preparation has not opened an installer yet.
-                if (!isFinishing) updates.deferInstall(attempt)
-                throw cancel
-            } catch (_: Exception) {
-                updates.installError("설치 화면을 열지 못했습니다. 기기의 앱 설치 설정을 확인해 주세요.", attempt)
-            }
-        }
-    }
 }

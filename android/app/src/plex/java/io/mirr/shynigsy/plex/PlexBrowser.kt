@@ -20,16 +20,16 @@ import io.mirr.shynigsy.ui.*
 private enum class BrowserMenu { LIBRARIES, MORE, APPEARANCE, ORDER, ACCOUNT }
 
 @Composable
-internal fun PlexBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit) {
+internal fun PlexBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit, onUpdate: () -> Unit) {
     if (model.page == PlexPage.Login) {
-        Surface(Modifier.fillMaxSize()) { ConnectionScreen(appName, model) }
+        Surface(Modifier.fillMaxSize()) { ConnectionScreen(appName, model, onUpdate) }
         return
     }
-    key(model.artworkSession) { PlexSessionBrowser(appName, model, play) }
+    key(model.artworkSession) { PlexSessionBrowser(appName, model, play, onUpdate) }
 }
 
 @Composable
-private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit) {
+private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit, onUpdate: () -> Unit) {
     val page = model.page
     val context = LocalContext.current
     val television = context.isTelevision()
@@ -111,7 +111,7 @@ private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (M
                     onRefresh = { close(); model.reload() }, onLogout = { close(); menu = BrowserMenu.ACCOUNT },
                     libraries = libraries, selectedLibraryId = libraryId, homeSelected = home,
                     onHome = { close(); model.goHome() }, onLibrary = { close(); model.openLibrary(it) },
-                    onUpdate = null, onSearch = { close(); if (!search) model.openSearch() }, searchSelected = search,
+                    onUpdate = { close(); onUpdate() }, onSearch = { close(); if (!search) model.openSearch() }, searchSelected = search,
                     onAppearance = { close(); menu = BrowserMenu.APPEARANCE },
                     onLibraryOrder = orderAction?.let { action -> { close(); action() } }, appName = appName,
                     onServerConnection = { close(); model.switchServer() })
@@ -124,7 +124,7 @@ private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (M
             { menu = null; model.openLibrary(it) }, false, false, false, null, {}, {}, onLibraryOrder = orderAction,
             showSpoilerControl = false)
         BrowserMenu.MORE -> MobileMoreMenu(false, { menu = null }, model::reload, { menu = BrowserMenu.APPEARANCE },
-            onLibraryOrder = orderAction, onUpdate = null, onTvQrScan = null,
+            onLibraryOrder = orderAction, onUpdate = onUpdate, onTvQrScan = null,
             onLogout = { menu = BrowserMenu.ACCOUNT }, onSpoilerAccess = null, onServerConnection = model::switchServer)
         BrowserMenu.APPEARANCE -> CinemaAppearanceSettings(appearance.backgroundArgb, { menu = null },
             { appearance.save(it); menu = null })

@@ -14,6 +14,12 @@ internal const val UPDATE_REPOSITORY = "bluemirr8520-lgtm/shyniflex"
 internal const val UPDATE_MANIFEST = "shyniflex-update.json"
 internal const val MAX_UPDATE_BYTES = 300L * 1024 * 1024
 
+internal fun releaseManifest(release: JSONObject, name: String): UpdateAsset? {
+    val assets = release.optJSONArray("assets") ?: return null
+    if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name") == name }) return null
+    return releaseAsset(release, name).also { require(it.size <= 256 * 1024) }
+}
+
 internal data class UpdateAsset(val name: String, val url: String, val size: Long, val apiUrl: String? = null)
 internal data class UpdateCandidate(val packageName: String, val versionCode: Long,
     val versionName: String, val sha256: String, val asset: UpdateAsset, val incompleteScan: Boolean = false)

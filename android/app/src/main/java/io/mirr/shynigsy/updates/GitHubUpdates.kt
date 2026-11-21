@@ -35,23 +35,38 @@ internal class GitHubUpdates(private val context: Context) : UpdateSource {
     private val folder = File(context.cacheDir, "updates").apply { mkdirs() }
 
     override suspend fun latest(installed: Long): UpdateCandidate? = withContext(Dispatchers.IO) {
-        val url = "https://api.github.com/repos/$UPDATE_REPOSITORY/releases?per_page=10"
-        val releases = transport.response(url).use { value ->
+        val api = "https://api.github.com/repos/$UPDATE_REPOSITORY"
+        val packageName = context.packageName
+        val abis = Build.SUPPORTED_ABIS.toList()
+        if (usesPlexMiniUpdates(packageName)) {
+            val refs = transport.response("$api/git/matching-refs/tags/$PLEXMINI_TAG_PREFIX").use { value ->
+                require(value.isSuccessful)
+                JSONArray(limitedBody(value, 1024 * 1024))
+            }
+            return@withContext latestPlexMiniUpdate(refs, packageName, installed, abis, readRelease = { tag ->
+                coroutineContext.ensureActive()
+                transport.response("$api/releases/tags/$tag").use { value ->
+                    if (value.code == 404) null else {
+                        require(value.isSuccessful)
+                        JSONObject(limitedBody(value, 512 * 1024))
+                    }
+                }
+            }, readManifest = ::readManifest)
+        }
+        val releases = transport.response("$api/releases?per_page=10").use { value ->
             require(value.isSuccessful)
             JSONArray(limitedBody(value, 512 * 1024))
         }
         inspectUpdateReleases(releases) { release ->
             if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@inspectUpdateReleases null
-            val assets = release.optJSONArray("assets") ?: return@inspectUpdateReleases null
-            if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name") == UPDATE_MANIFEST })
-                return@inspectUpdateReleases null
-            val manifest = releaseAsset(release, UPDATE_MANIFEST)
-            require(manifest.size <= 256 * 1024)
-            val data = manifestTransport.asset(manifest) { value ->
-                JSONObject(limitedBody(value, 256 * 1024))
-            }
-            updateCandidate(release, data, context.packageName, installed, Build.SUPPORTED_ABIS.toList())
+            if (release.optString("tag_name").startsWith(PLEXMINI_TAG_PREFIX)) return@inspectUpdateReleases null
+            val manifest = releaseManifest(release, UPDATE_MANIFEST) ?: return@inspectUpdateReleases null
+            updateCandidate(release, readManifest(manifest), packageName, installed, abis)
         }
+    }
+
+    private fun readManifest(asset: UpdateAsset): JSONObject = manifestTransport.asset(asset) { value ->
+        JSONObject(limitedBody(value, 256 * 1024))
     }
 
     override suspend fun download(candidate: UpdateCandidate, progress: (Int) -> Unit): File = withContext(Dispatchers.IO) {
