@@ -12,6 +12,7 @@ import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -22,13 +23,21 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.ui.tvOnlyFocus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -89,6 +98,15 @@ internal class PlexLinkModel(application: Application, private val saved: SavedS
         leave()
         restored = true
         runLink { withContext(Dispatchers.IO) { grants.clear() } }
+    }
+
+    fun cancelAuthorization() {
+        job?.cancel()
+        job = null
+        clearPin()
+        saved.remove<Boolean>("hostingLoginTab")
+        message = ""
+        linking = false
     }
 
     fun restore(deviceId: String, preferred: String, chooseServer: Boolean = false) {
@@ -206,12 +224,30 @@ internal class PlexLinkModel(application: Application, private val saved: SavedS
     }
 }
 
+private enum class TvLoginFocus { START, CANCEL, SERVER, RETRY }
+
 @Composable
 internal fun PlexAccountLink(deviceId: String, enabled: Boolean, preferredServer: String,
                              choosingServer: Boolean,
                              onConnect: (PlexServerResource, String) -> Unit) {
     val activity = LocalActivity.current
+    val television = LocalContext.current.isTelevision()
     val link: PlexLinkModel = viewModel()
+    val tvFocus = remember { FocusRequester() }
+    val target = when {
+        !television || !enabled || link.autoServer != null -> null
+        link.servers.isNotEmpty() -> TvLoginFocus.SERVER
+        link.linking && !link.hasAccount -> TvLoginFocus.CANCEL
+        link.linking -> null
+        link.hasAccount -> TvLoginFocus.RETRY
+        else -> TvLoginFocus.START
+    }
+    LaunchedEffect(target) {
+        if (target != null) {
+            withFrameNanos { }
+            tvFocus.requestFocus()
+        }
+    }
     val openPlex: (Uri) -> Unit = { uri ->
         try {
             // A Custom Tab runs in our task. Finishing this specific result request returns to PLEXMINI.
@@ -267,9 +303,11 @@ internal fun PlexAccountLink(deviceId: String, enabled: Boolean, preferredServer
         when {
             link.servers.isNotEmpty() -> {
                 Text(if (enabled) "연결할 서버 선택" else "서버에 연결하는 중…", style = MaterialTheme.typography.titleMedium)
-                link.servers.forEach { server ->
+                link.servers.forEachIndexed { index, server ->
                     val duplicateName = link.servers.count { it.title == server.title } > 1
-                    OutlinedButton(enabled = enabled, modifier = Modifier.fillMaxWidth().tvOnlyFocus(),
+                    OutlinedButton(enabled = enabled, modifier = Modifier.fillMaxWidth()
+                        .then(if (target == TvLoginFocus.SERVER && index == 0) Modifier.focusRequester(tvFocus) else Modifier)
+                        .tvOnlyFocus(),
                         onClick = { link.connecting(); onConnect(server, preferredServer) }) {
                         Text(if (duplicateName) "${server.title} · ${Uri.parse(server.urls.first()).host}" else server.title)
                     }
@@ -284,16 +322,35 @@ internal fun PlexAccountLink(deviceId: String, enabled: Boolean, preferredServer
                     Text(if (link.hasAccount) "Plex 서버를 찾는 중…" else "Plex 계정에 연결하는 중…")
                 } else {
                     Text("휴대폰이나 PC에서 plex.tv/link를 열고 코드를 입력하세요.")
-                    Text(code, style = MaterialTheme.typography.headlineLarge)
-                    TextButton(modifier = Modifier.tvOnlyFocus(), onClick = {
+                    Text(code, style = MaterialTheme.typography.headlineLarge,
+                        fontSize = if (television) 44.sp else MaterialTheme.typography.headlineLarge.fontSize,
+                        lineHeight = if (television) 52.sp else MaterialTheme.typography.headlineLarge.lineHeight,
+                        fontWeight = FontWeight.Bold)
+                    if (!television) TextButton(onClick = {
                         openPlex(Uri.parse("https://plex.tv/link/").buildUpon().appendQueryParameter("pin", code).build())
                     }) { Text("이 기기에서 Plex 열기") }
                 }
-                if (!choosingServer) TextButton(onClick = link::forget, modifier = Modifier.tvOnlyFocus()) { Text("취소") }
+                if (television && !link.hasAccount) {
+                    TextButton(onClick = link::cancelAuthorization,
+                        modifier = Modifier
+                            .then(if (target == TvLoginFocus.CANCEL) Modifier.focusRequester(tvFocus) else Modifier)
+                            .tvOnlyFocus()) { Text("로그인 취소") }
+                } else if (!choosingServer) {
+                    TextButton(onClick = link::forget, modifier = Modifier.tvOnlyFocus()) { Text("취소") }
+                }
             }
             link.hasAccount -> {
-                Button(enabled = enabled, modifier = Modifier.tvOnlyFocus(),
+                Button(enabled = enabled, modifier = Modifier
+                    .then(if (target == TvLoginFocus.RETRY) Modifier.focusRequester(tvFocus) else Modifier)
+                    .tvOnlyFocus(),
                     onClick = { link.retry(deviceId, preferredServer) }) { Text("서버 다시 찾기") }
+            }
+            television -> {
+                Button(enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
+                    .then(if (target == TvLoginFocus.START) Modifier.focusRequester(tvFocus) else Modifier)
+                    .tvOnlyFocus(), onClick = {
+                    link.start(PlexAccount(deviceId), browser = false, preferredServer)
+                }) { Text("TV 연결 코드로 Plex 로그인") }
             }
             else -> {
                 Button(enabled = enabled, modifier = Modifier.tvOnlyFocus(), onClick = {
