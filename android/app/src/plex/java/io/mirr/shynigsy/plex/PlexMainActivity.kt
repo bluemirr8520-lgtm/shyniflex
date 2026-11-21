@@ -129,7 +129,7 @@ class PlexMainActivity : ComponentActivity() {
 }
 
 @Composable
-internal fun ConnectionScreen(appName: String, model: PlexBrowseModel, onUpdate: () -> Unit) {
+internal fun ConnectionScreen(appName: String, model: PlexBrowseModel, onUpdate: () -> Unit, tablet: Boolean) {
     val switching = model.switchingServer
     var address by rememberSaveable(model.savedServer, switching) {
         mutableStateOf(if (switching) "" else model.savedServer)
@@ -140,7 +140,10 @@ internal fun ConnectionScreen(appName: String, model: PlexBrowseModel, onUpdate:
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
         .imePadding(),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        AppHeader(loggedIn = false, title = appName)
+        Row(Modifier.fillMaxWidth().statusBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { AppHeader(loggedIn = false, title = appName) }
+            if (tablet) PlexTabletUpdateButton(onUpdate, Modifier.padding(end = 12.dp))
+        }
         Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(if (switching) "Plex 서버 변경" else "Plex 서버 연결", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -173,7 +176,7 @@ internal fun ConnectionScreen(appName: String, model: PlexBrowseModel, onUpdate:
             }
             if (model.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             model.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            TextButton(onClick = onUpdate, modifier = Modifier.tvOnlyFocus()) { Text("업데이트 확인") }
+            if (!tablet) TextButton(onClick = onUpdate, modifier = Modifier.tvOnlyFocus()) { Text("업데이트 확인") }
         }
     }
 }

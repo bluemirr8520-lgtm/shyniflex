@@ -1,6 +1,7 @@
 package io.mirr.shynigsy.plex
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -10,7 +11,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.mirr.shynigsy.data.*
@@ -21,15 +24,29 @@ private enum class BrowserMenu { LIBRARIES, MORE, APPEARANCE, ORDER, ACCOUNT }
 
 @Composable
 internal fun PlexBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit, onUpdate: () -> Unit) {
+    val config = LocalConfiguration.current
+    val smallestWidth = config.smallestScreenWidthDp.takeIf { it > 0 } ?: minOf(config.screenWidthDp, config.screenHeightDp)
+    val tablet = !LocalContext.current.isTelevision() && smallestWidth >= 600
     if (model.page == PlexPage.Login) {
-        Surface(Modifier.fillMaxSize()) { ConnectionScreen(appName, model, onUpdate) }
+        Surface(Modifier.fillMaxSize()) { ConnectionScreen(appName, model, onUpdate, tablet) }
         return
     }
-    key(model.artworkSession) { PlexSessionBrowser(appName, model, play, onUpdate) }
+    key(model.artworkSession) { PlexSessionBrowser(appName, model, play, onUpdate, tablet) }
 }
 
 @Composable
-private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit, onUpdate: () -> Unit) {
+internal fun PlexTabletUpdateButton(onUpdate: () -> Unit, modifier: Modifier = Modifier) {
+    OutlinedButton(onClick = onUpdate, modifier = modifier.heightIn(min = 48.dp).testTag("plex-tablet-update"),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
+        CinemaIcon(CinemaGlyph.Update, null, Modifier.size(20.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("업데이트 확인")
+    }
+}
+
+@Composable
+private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit,
+    onUpdate: () -> Unit, tablet: Boolean) {
     val page = model.page
     val context = LocalContext.current
     val television = context.isTelevision()
@@ -81,13 +98,20 @@ private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (M
             }
         },
         bottomBar = {
-            if (!television && !mobileDetail) CinemaHomeBottomNavigation(
-                homeSelected = home && menu == null, searchSelected = search && menu == null,
-                librarySelected = menu == BrowserMenu.LIBRARIES || (page is PlexPage.Shelf && menu == null),
-                onHome = model::goHome, onSearch = { if (!search) model.openSearch() },
-                onLibraries = { menu = BrowserMenu.LIBRARIES }, onMore = { menu = BrowserMenu.MORE },
-                moreSelected = menu == BrowserMenu.MORE,
-            )
+            if (!television && (!mobileDetail || tablet)) {
+                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    CinemaHomeBottomNavigation(
+                        homeSelected = home && menu == null, searchSelected = search && menu == null,
+                        librarySelected = menu == BrowserMenu.LIBRARIES || (page is PlexPage.Shelf && menu == null),
+                        onHome = model::goHome, onSearch = { if (!search) model.openSearch() },
+                        onLibraries = { menu = BrowserMenu.LIBRARIES }, onMore = { menu = BrowserMenu.MORE },
+                        moreSelected = menu == BrowserMenu.MORE, modifier = Modifier.weight(1f),
+                    )
+                    if (tablet) PlexTabletUpdateButton(onUpdate, Modifier.padding(end = 12.dp))
+                }
+            }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
