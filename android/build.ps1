@@ -5,9 +5,11 @@ param(
     [switch]$WithDeviceTestApks,
     [switch]$SkipTests,
     [switch]$Plex,
+    [switch]$PlexRenewed,
     [switch]$PrepareOnly
 )
 $ErrorActionPreference = 'Stop'
+if ($Plex -and $PlexRenewed) { throw 'Choose one PLEXMINI edition.' }
 $taskProject = $PSScriptRoot
 if (-not (Test-Path -LiteralPath (Join-Path $JdkPath 'bin/java.exe'))) { throw 'A Java 17 JDK is required. Pass -JdkPath.' }
 if (-not (Test-Path -LiteralPath (Join-Path $AndroidSdkPath 'platforms/android-36/android.jar'))) { throw 'Android SDK platform 36 is required. Pass -AndroidSdkPath.' }
@@ -47,11 +49,12 @@ Push-Location $taskProject
 try {
     $taskArguments = @('assembleDebug', 'assembleRelease', "-PshyniflexSigningRoot=$taskProject", '--no-daemon', '--max-workers=2', '--console=plain')
     if ($Plex) { $taskArguments += '-PshyniflexApplicationId=io.mirr.shyniflex.plex' }
+    if ($PlexRenewed) { $taskArguments += '-PshyniflexApplicationId=io.mirr.shyniflex.plex.renewed' }
     if (-not $SkipTests) { $taskArguments += 'testDebugUnitTest' }
     if ($WithDeviceTestApks) { $taskArguments += 'assembleDebugAndroidTest' }
     if (-not $Online) { $taskArguments += '--offline' }
     & .\gradlew.bat @taskArguments
     if ($LASTEXITCODE -ne 0) { throw 'Android build failed. For missing cached dependencies, retry with -Online.' }
 } finally { Pop-Location }
-$apkDirectory = if ($Plex) { 'build/plex-app' } else { 'app/build' }
+$apkDirectory = if ($PlexRenewed) { 'build/plex-renewed-app' } elseif ($Plex) { 'build/plex-app' } else { 'app/build' }
 Write-Output ('APK: ' + (Join-Path $taskProject "$apkDirectory/outputs/apk/release/app-release.apk"))

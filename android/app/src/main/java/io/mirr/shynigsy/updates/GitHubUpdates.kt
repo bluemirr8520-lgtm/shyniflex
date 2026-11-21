@@ -39,7 +39,7 @@ internal class GitHubUpdates(private val context: Context) : UpdateSource {
         val packageName = context.packageName
         val abis = Build.SUPPORTED_ABIS.toList()
         if (usesPlexMiniUpdates(packageName)) {
-            val refs = transport.response("$api/git/matching-refs/tags/$PLEXMINI_TAG_PREFIX").use { value ->
+            val refs = transport.response("$api/git/matching-refs/tags/${plexMiniTagPrefix(packageName)}").use { value ->
                 require(value.isSuccessful)
                 JSONArray(limitedBody(value, 1024 * 1024))
             }
@@ -59,7 +59,8 @@ internal class GitHubUpdates(private val context: Context) : UpdateSource {
         }
         inspectUpdateReleases(releases) { release ->
             if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@inspectUpdateReleases null
-            if (release.optString("tag_name").startsWith(PLEXMINI_TAG_PREFIX)) return@inspectUpdateReleases null
+            val tag = release.optString("tag_name")
+            if (tag.startsWith(PLEXMINI_TAG_PREFIX) || tag.startsWith(PLEXMINI_RENEWED_TAG_PREFIX)) return@inspectUpdateReleases null
             val manifest = releaseManifest(release, UPDATE_MANIFEST) ?: return@inspectUpdateReleases null
             updateCandidate(release, readManifest(manifest), packageName, installed, abis)
         }

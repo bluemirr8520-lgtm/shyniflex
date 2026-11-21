@@ -17,10 +17,11 @@ val runtimeAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 val targetAbi = providers.gradleProperty("shyniflexTargetAbi").orNull
 require(targetAbi == null || targetAbi in runtimeAbis) { "Unsupported shyniflexTargetAbi" }
 val applicationPackage = providers.gradleProperty("shyniflexApplicationId").orElse("io.mirr.shyniflex").get()
-val isPlex = applicationPackage == "io.mirr.shyniflex.plex"
+val isRenewedPlex = applicationPackage == "io.mirr.shyniflex.plex.renewed"
+val isPlex = isRenewedPlex || applicationPackage == "io.mirr.shyniflex.plex"
 require(isPlex || applicationPackage in listOf("io.mirr.shyniflex", "io.mirr.shyniflex.renewed")) { "Unsupported application ID" }
 if (isPlex) {
-    layout.buildDirectory.set(rootProject.layout.buildDirectory.dir("plex-app"))
+    layout.buildDirectory.set(rootProject.layout.buildDirectory.dir(if (isRenewedPlex) "plex-renewed-app" else "plex-app"))
 }
 // Provider policy requires one registered application key, not user-created keys.
 val subtitleServiceProperties = Properties().apply {
@@ -40,6 +41,7 @@ android {
     defaultConfig {
         applicationId = applicationPackage
         manifestPlaceholders["shyniAppLabel"] = "@string/app_name"
+        manifestPlaceholders["plexAppLabel"] = if (isRenewedPlex) "PLEXMINI Renewed" else "@string/plex_app_name"
         minSdk = 26
         targetSdk = 36
         versionCode = if (isPlex) 7 else 103

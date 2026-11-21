@@ -10,7 +10,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <application android:allowBackup="false" android:usesCleartextTraffic="true"
         android:icon="@drawable/plex_app_icon" android:roundIcon="@drawable/plex_app_icon"
-        android:banner="@drawable/plex_tv_banner" android:label="@string/plex_app_name"
+        android:banner="@drawable/plex_tv_banner" android:label="${plexAppLabel}"
         android:theme="@style/Theme.ShyniFlix" android:supportsRtl="true">
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.updates"
             android:exported="false" android:grantUriPermissions="true">

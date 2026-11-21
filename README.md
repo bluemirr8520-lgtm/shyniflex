@@ -4,6 +4,10 @@ Shyni 서버용 미디어 플레이어입니다. Android 앱은 MPV를 사용하
 
 ## PLEXMINI (Android)
 
+**PLEXMINI Renewed 1.0.6**은 기존 PLEXMINI와 함께 설치할 수 있습니다. 새 앱에서 Plex 계정에 한 번 로그인하세요. Android TV에서는 연결 코드를 사용하고, TV와 태블릿에서는 상세 화면 왼쪽에 포스터와 설명, 오른쪽에 회차 목록을 표시합니다. [PLEXMINI Renewed 1.0.6 설치 파일](https://github.com/bluemirr8520-lgtm/shyniflex/releases/download/plexmini-renewed-v1.0.6/PLEXMINI-1.0.6.apk)
+
+Renewed 패키지는 `io.mirr.shyniflex.plex.renewed`이며 업데이트 태그는 `plexmini-renewed-v<버전>`입니다. `Build-Android.cmd -PlexRenewed`로 빌드하면 `android/build/plex-renewed-app/outputs/apk/release/app-release.apk`가 생성됩니다.
+
 Plex Media Server용 독립 앱입니다. 패키지 ID는 `io.mirr.shyniflex.plex`이며 기존 Shyni 앱과 한 기기에 함께 설치할 수 있습니다.
 
 **태블릿**에서는 로그인한 뒤 하단 오른쪽의 **업데이트 확인**을 누르세요. 로그인 전에도 서버 연결 화면 상단에서 업데이트를 확인할 수 있습니다. 휴대폰에서는 **더보기 → 업데이트**, Android TV에서는 왼쪽 메뉴의 **업데이트**를 사용하세요.

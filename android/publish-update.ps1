@@ -18,10 +18,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the APK.' }
 $taskPackageLine = $taskBadging | Where-Object { $_ -like 'package:*' } | Select-Object -First 1
 if ($taskPackageLine -notmatch "name='([^']+)' versionCode='([0-9]+)' versionName='([^']+)'") { throw 'Invalid APK metadata.' }
 $taskPackageName = $Matches[1]; $taskVersionCode = [long]$Matches[2]; $taskVersionName = $Matches[3]
-$taskIsPlex = $taskPackageName -eq 'io.mirr.shyniflex.plex'
-if ($taskPackageName -notin 'io.mirr.shyniflex','io.mirr.shyniflex.debug','io.mirr.shyniflex.renewed','io.mirr.shyniflex.plex') { throw 'Unexpected APK package.' }
+$taskIsRenewedPlex = $taskPackageName -eq 'io.mirr.shyniflex.plex.renewed'
+$taskIsPlex = $taskIsRenewedPlex -or $taskPackageName -eq 'io.mirr.shyniflex.plex'
+if (-not $taskIsPlex -and $taskPackageName -notin 'io.mirr.shyniflex','io.mirr.shyniflex.debug','io.mirr.shyniflex.renewed') { throw 'Unexpected APK package.' }
 if ($taskIsPlex -or $taskPackageName -eq 'io.mirr.shyniflex.renewed') {
-    $taskExpectedSigner = if ($taskIsPlex) { '771172249ed6bd21eac6d024a2fe58dc0f18d46f5f84dd52e8406fede5aec8e7' } else { '8d4bfd6534ce913ce90ca176878778ef24b6ebd1c4f7790972d2bcdae9b31c79' }
+    $taskExpectedSigner = if ($taskIsRenewedPlex) { 'fd6e643986d0880a13422c3703814be02dd6f3a00f9007f63d270efe1b938e21' } elseif ($taskIsPlex) { '771172249ed6bd21eac6d024a2fe58dc0f18d46f5f84dd52e8406fede5aec8e7' } else { '8d4bfd6534ce913ce90ca176878778ef24b6ebd1c4f7790972d2bcdae9b31c79' }
     $taskSigner = Join-Path $AndroidSdkPath 'build-tools/36.0.0/apksigner.bat'
     $taskCertificate = & $taskSigner verify --print-certs $taskApk
     if ($LASTEXITCODE -ne 0 -or -not ($taskCertificate -match "certificate SHA-256 digest: ${taskExpectedSigner}$")) { throw "Unexpected signing certificate for $taskPackageName." }
@@ -29,9 +30,10 @@ if ($taskIsPlex -or $taskPackageName -eq 'io.mirr.shyniflex.renewed') {
 $taskAssetName = if ($taskIsPlex) { "PLEXMINI-$taskVersionName.apk" } elseif ($taskPackageName.EndsWith('.debug')) { 'shyniflex-tv.apk' } elseif ($taskPackageName.EndsWith('.renewed')) { 'shyniflex-new.apk' } else { 'shyniflex.apk' }
 $taskManifestName = if ($taskIsPlex) { 'plexmini-update.json' } else { 'shyniflex-update.json' }
 $taskSourceName = if ($taskIsPlex) { "PLEXMINI-$taskVersionName-corresponding-source.zip" } else { 'shyniflex-corresponding-source.zip' }
-$taskTitle = if ($taskIsPlex) { "PLEXMINI $taskVersionName" } else { "ShyniFlix TV $taskVersionName" }
-if ($taskIsPlex -and ($taskVersionName -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $Tag -cne "plexmini-v$taskVersionName")) { throw 'The PLEXMINI tag must match the APK version.' }
-if (-not $taskIsPlex -and $Tag.StartsWith('plexmini-v')) { throw 'PLEXMINI tags are reserved for PLEXMINI packages.' }
+$taskTitle = if ($taskIsRenewedPlex) { "PLEXMINI Renewed $taskVersionName" } elseif ($taskIsPlex) { "PLEXMINI $taskVersionName" } else { "ShyniFlix TV $taskVersionName" }
+$taskPlexPrefix = if ($taskIsRenewedPlex) { 'plexmini-renewed-v' } else { 'plexmini-v' }
+if ($taskIsPlex -and ($taskVersionName -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $Tag -cne "$taskPlexPrefix$taskVersionName")) { throw 'The tag must match the PLEXMINI edition and APK version.' }
+if (-not $taskIsPlex -and ($Tag.StartsWith('plexmini-v') -or $Tag.StartsWith('plexmini-renewed-v'))) { throw 'PLEXMINI tags are reserved for PLEXMINI packages.' }
 $taskHash = (Get-FileHash -LiteralPath $taskApk -Algorithm SHA256).Hash.ToLowerInvariant()
 $taskSourceHash = (Get-FileHash -LiteralPath $taskSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $taskManifest = @{ schema = 1; packages = @{ $taskPackageName = @{ versionCode = $taskVersionCode;

@@ -14,7 +14,7 @@ class PlexMiniUpdatesTest {
         fun asset(name: String) = JSONObject().put("name", name).put("size", 80)
             .put("browser_download_url", "https://github.com/$UPDATE_REPOSITORY/releases/download/$tag/$name")
         return JSONObject().put("tag_name", tag).put("assets", JSONArray().put(asset(manifest))
-            .put(asset("PLEXMINI-${tag.removePrefix(PLEXMINI_TAG_PREFIX)}.apk")))
+            .put(asset("PLEXMINI-${tag.substringAfterLast("-v")}.apk")))
     }
 
     private fun manifest(version: String, code: Int = 5, packageName: String = PLEXMINI_PACKAGE) =
@@ -52,6 +52,23 @@ class PlexMiniUpdatesTest {
                 assertEquals(PLEXMINI_PACKAGE, candidate?.packageName)
             }
         }
+    }
+
+    @Test fun renewedEditionOnlyAcceptsItsOwnTagPackageAndReleaseVersion() {
+        val tag = "plexmini-renewed-v1.0.6"
+        val all = refs("plexmini-v2.0.0", tag)
+        val pkg = PLEXMINI_RENEWED_PACKAGE
+        assertEquals(PLEXMINI_RENEWED_TAG_PREFIX, plexMiniTagPrefix("$pkg.debug"))
+        fun candidate(meta: JSONObject) = latestPlexMiniUpdate(all, pkg, 6, emptyList(), {
+            assertEquals(tag, it)
+            release(it)
+        }, { meta })
+        assertEquals(pkg, candidate(manifest("1.0.6", 7, pkg))?.packageName)
+        assertNull(candidate(manifest("1.0.6", 7, PLEXMINI_PACKAGE)))
+        val wrong = manifest("1.0.6", 7, pkg)
+        wrong.getJSONObject("packages").getJSONObject(pkg).put("versionName", "1.0.6-test")
+        assertTrue(runCatching { candidate(wrong) }.isFailure)
+        assertEquals(listOf("plexmini-v2.0.0"), plexMiniReleaseTags(all))
     }
 
     @Test fun skipsUnpublishedPrereleaseAndLegacyTagsWithoutThePlexManifest() {

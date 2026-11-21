@@ -44,7 +44,9 @@ class PlexTabletUpdateTest {
 
     private fun checkViewport(width: Int, height: Int, tablet: Boolean) {
         val app = screen.activity.application
-        assertEquals("Only run inside the isolated test app", "io.mirr.shyniflex.plex.debug", app.packageName)
+        check(app.packageName in setOf("io.mirr.shyniflex.plex.debug", "io.mirr.shyniflex.plex.renewed.debug")) {
+            "Only run inside an isolated PLEXMINI test app"
+        }
         val sessions = SessionStore(app)
         assertNull(sessions.loadLast())
         assertNull(PlexAccountStore(app).load())
