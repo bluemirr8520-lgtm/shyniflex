@@ -20,7 +20,7 @@ import io.mirr.shynigsy.data.*
 import io.mirr.shynigsy.isTelevision
 import io.mirr.shynigsy.ui.*
 
-private enum class BrowserMenu { LIBRARIES, MORE, APPEARANCE, ORDER, ACCOUNT }
+private enum class BrowserMenu { LIBRARIES, MORE, APPEARANCE, ORDER, ACCOUNT, STUDY }
 
 @Composable
 internal fun PlexBrowser(appName: String, model: PlexBrowseModel, play: (MediaItem, Boolean) -> Unit, onUpdate: () -> Unit) {
@@ -149,7 +149,9 @@ private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (M
             showSpoilerControl = false)
         BrowserMenu.MORE -> MobileMoreMenu(false, { menu = null }, model::reload, { menu = BrowserMenu.APPEARANCE },
             onLibraryOrder = orderAction, onUpdate = onUpdate, onTvQrScan = null,
-            onLogout = { menu = BrowserMenu.ACCOUNT }, onSpoilerAccess = null, onServerConnection = model::switchServer)
+            onLogout = { menu = BrowserMenu.ACCOUNT }, onSpoilerAccess = null, onServerConnection = model::switchServer,
+            onLanguageStudy = { menu = BrowserMenu.STUDY })
+        BrowserMenu.STUDY -> LanguageStudyPreferencesDialog(onDismiss = { menu = null })
         BrowserMenu.APPEARANCE -> CinemaAppearanceSettings(appearance.backgroundArgb, { menu = null },
             { appearance.save(it); menu = null })
         BrowserMenu.ORDER -> if (scope != null) LibraryOrderDialog(libraries, false, order.isNotEmpty(),

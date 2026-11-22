@@ -208,6 +208,21 @@ class NativePlayerActivity : AppCompatActivity() {
     private var exoRestoreSubtitlePending = false
     private data class EngineCandidate(val info: PlaybackCodecInfo, val subtitles: List<SubtitleTrack>)
     private var speed = 1f
+    private val studyRepeat = LanguageStudyRepeat()
+    private var studyContentKey: String? = null
+    private var studyAutoOpenedContent: String? = null
+    private var studySentenceSourceKey: String? = null
+    private var studySentenceOffsetMs = 0L
+    private var studyDialog: LanguageStudyDialog? = null
+    private lateinit var studySecondaryOverlay: PlexSubtitleOverlayView
+    private var studySecondaryOffsetMs = 0L
+    private var studySecondaryAtTop = true
+    private val studySecondary by lazy {
+        LanguageStudySecondary(this, scope, ::updateStudySecondaryText, ::toast) {
+            val owner = localSubtitleOwnerKey
+            owner != null && ::client.isInitialized && localSubtitleCurrent(owner, client.token)
+        }
+    }
     private var conversionLoading = false
     private var conversionJob: Job? = null
     private var conversionResumeWhenVisible: Boolean? = null
@@ -312,6 +327,13 @@ class NativePlayerActivity : AppCompatActivity() {
     private val localSubtitlePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         receiveLocalSubtitleResult(result.resultCode, result.data)
     }
+    private val studySubtitlePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val owner = result.data?.getStringExtra(SubtitleImportActivity.EXTRA_OWNER_KEY)
+            val id = result.data?.getStringExtra(SubtitleImportActivity.EXTRA_SUBTITLE_ID)
+            if (owner != null && id != null) studySecondary.acceptImported(owner, id)
+        }
+    }
     private val onlineSubtitlePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         receiveLocalSubtitleResult(result.resultCode, result.data)
     }
@@ -335,6 +357,11 @@ class NativePlayerActivity : AppCompatActivity() {
             ensureSpoilerPlaybackReauthentication()
             val active = player
             if (active != null) samplePlaybackDiagnostics(active)
+            if (active != null && maybeRepeatStudy(active)) {
+                updateStudySecondaryText()
+                handler.postDelayed(this, 50)
+                return
+            }
             if (active != null && playbackEngineSettled(mpvProbePending, active is ExoPlayer && !exoValidated) &&
                 !refreshing && !gestures.isSeekGestureActive && !isExoEmbeddedSeekPending(active) && active.reconcilePlaybackCompletion()) {
                 finishCompletedPlayback()
@@ -346,6 +373,7 @@ class NativePlayerActivity : AppCompatActivity() {
             if (active != null && prepared) {
                 capturePosition()
                 updateSubtitleText()
+                updateStudySecondaryText()
                 updateSegmentSkipButton(segmentPosition)
                 settleWatchTime(visible && active.isPlaying)
                 if (!gestures.isSeekGestureActive && active.playbackState == Player.STATE_READY &&
@@ -369,7 +397,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 !playerGestureActive && !gestures.isSeekGestureActive && !gestures.locked)
                 playbackMarkerRefreshDelayMs(effectiveSegmentMarkers(), segmentPosition, lastDuration,
                     active.playbackParameters.speed, active.isPlaying) else 500L
-            handler.postDelayed(this, minOf(if (needsSubtitleUpdates) 50L else 500L, markerDelay))
+            handler.postDelayed(this, minOf(if (needsSubtitleUpdates || studyRepeat.range != null || studySecondary.timeline != null) 50L else 500L, markerDelay))
         }
     }
 
@@ -570,6 +598,8 @@ class NativePlayerActivity : AppCompatActivity() {
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
         subtitleOverlay = PlexSubtitleOverlayView(this)
         root.addView(subtitleOverlay, FrameLayout.LayoutParams(-1, -1))
+        studySecondaryOverlay = PlexSubtitleOverlayView(this).apply { visibility = View.GONE }
+        root.addView(studySecondaryOverlay, FrameLayout.LayoutParams(-1, -1))
         applySubtitleStyle()
         playerView.controllerShowTimeoutMs = 3500
         playerView.setControllerAnimationEnabled(false)
@@ -1077,6 +1107,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun preparePlayback(autoStart: Boolean) {
         ensureSubtitleDefaults()
         ensureLocalSubtitleSource()
+        ensureStudySource()
         prepared = false
         releasePlayer()
         diagnosticStartedAt = SystemClock.elapsedRealtime()
@@ -1392,7 +1423,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     if (mpvProbePending) { finishMpvProbe?.invoke(); return }
                     if (created is ExoPlayer && !exoValidated) { fallbackFromExo(created); return }
                     handler.post {
-                        if (player === created && !exiting && !refreshing && !isExoEmbeddedSeekPending(created) && created.reconcilePlaybackCompletion())
+                        if (player === created && !exiting && !refreshing && !isExoEmbeddedSeekPending(created) && !maybeRepeatStudy(created) && created.reconcilePlaybackCompletion())
                             finishCompletedPlayback()
                     }
                 }
@@ -1466,7 +1497,13 @@ class NativePlayerActivity : AppCompatActivity() {
             }
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                 if (player !== created) return
-                if (reason == Player.DISCONTINUITY_REASON_SEEK) completionGate().seek(newPosition.positionMs)
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    completionGate().seek(newPosition.positionMs)
+                    studyRepeat.range?.let { range ->
+                        if (newPosition.positionMs < range.startMs - 250 || newPosition.positionMs >= range.endMs)
+                            studyRepeat.clear()
+                    }
+                }
                 if (reason == Player.DISCONTINUITY_REASON_SEEK && !gestures.isSeekGestureActive) {
                     lastPosition = newPosition.positionMs.coerceAtLeast(0)
                     pendingSeek = null
@@ -1581,6 +1618,16 @@ class NativePlayerActivity : AppCompatActivity() {
         if (playbackFirstFrameReported && !subtitleListFailed) loadDeferredSubtitles(created)
         resolveSubtitleOrigin(created)
         refreshPlaybackMetadata(created)
+        if (getSharedPreferences("gsy_settings", MODE_PRIVATE).getBoolean("language_study_auto_open", false)) {
+            val content = studyContentKey
+            handler.post {
+                if (player === created && visible && prepared && !exiting && !isDestroyed &&
+                    content != null && content == studyContentKey && studyAutoOpenedContent != content) {
+                    studyAutoOpenedContent = content
+                    showLanguageStudy()
+                }
+            }
+        }
     }
 
     /** Probe with MPV's raw track list before Exo, which can hide unknown MP4 subtitle tracks. */
@@ -1896,6 +1943,7 @@ class NativePlayerActivity : AppCompatActivity() {
             when (index) {
                 -1 -> {
                     addRow("영상 보정", pictureSettingsLabel()) { showPictureSettings() }
+                    addRow("어학 학습", if (studyRepeat.range != null) "반복 중" else "문장 · 구간 반복 · 동시 자막") { showLanguageStudy() }
                     addRow("배속", speedLabel()) { showSpeed() }
                     addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
                     addRow("재생 상태", playbackModeLabel(spec)) { showPlaybackDiagnostics() }
@@ -1921,6 +1969,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     addRow("싱크 다시 맞추기") { resynchronize() }
                 }
                 0 -> {
+                    addRow("어학 학습", if (studyRepeat.range != null) "반복 중" else "문장 · 구간 반복 · 동시 자막") { showLanguageStudy() }
                     addRow("배속", speedLabel()) { showSpeed() }
                     addRow("재생 엔진", playbackEngineSettingLabel()) { showPlaybackEnginePreference() }
                 }
@@ -2192,7 +2241,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (type == C.TRACK_TYPE_TEXT) {
             choices += TrackChoice("자막 끄기", !subtitlesEnabled) {
                 subtitleManuallySelected = true
-                subtitlesEnabled = false; clearExternalSubtitle()
+                subtitlesEnabled = false; clearExternalSubtitle(); studySecondary.clear()
                 active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setTrackTypeDisabled(type, true).build()
                 playerView.subtitleView?.visibility = View.GONE
             }
@@ -2334,6 +2383,215 @@ class NativePlayerActivity : AppCompatActivity() {
                 setColor(0xFFF5F7F8.toInt()); cornerRadius = dp(3).toFloat()
             })
         }
+    }
+
+    private fun ensureStudySource() {
+        val key = subtitlePlaybackContentKey(spec)
+        if (studyContentKey != key) {
+            studyContentKey = key
+            studyRepeat.clear()
+            studySentenceSourceKey = null
+            studySecondaryOffsetMs = 0L
+            studySecondaryAtTop = getSharedPreferences("gsy_settings", MODE_PRIVATE).getBoolean("study_secondary_top", true)
+            applyStudySecondaryStyle()
+            studyDialog?.dismiss(); studyDialog = null
+        }
+        studySecondary.reset(localSubtitleOwner(client.server, client.token, spec))
+    }
+
+    private fun studyTimeline(): Pair<SubtitleTimeline?, Long> = when {
+        subtitlesEnabled && localSubtitleActiveId != null -> localSubtitleTimeline to subtitleOffsetMs
+        subtitlesEnabled && externalSubtitleId != null -> subtitleTimeline to subtitleOffsetMs
+        else -> studySecondary.timeline to studySecondaryOffsetMs
+    }
+
+    private fun syncStudySentenceSource() {
+        val (_, offset) = studyTimeline()
+        // The same selected subtitle can briefly lose its parsed timeline while an engine reloads.
+        val key = when {
+            subtitlesEnabled && localSubtitleActiveId != null -> "local:$localSubtitleActiveId"
+            subtitlesEnabled && externalSubtitleId != null -> "server:$externalSubtitleId"
+            else -> "secondary:${System.identityHashCode(studySecondary.timeline)}"
+        }
+        if (key != studySentenceSourceKey || offset != studySentenceOffsetMs) {
+            studyRepeat.cancelSentence()
+            studySentenceSourceKey = key
+            studySentenceOffsetMs = offset
+        }
+    }
+
+    private fun studyPosition() = (player?.currentPosition ?: lastPosition).coerceAtLeast(0)
+
+    private fun studyTime(value: Long): String {
+        val seconds = value.coerceAtLeast(0) / 1000
+        return String.format(Locale.KOREAN, "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+
+    private fun studyReady(requireUnlocked: Boolean = true) = visible && prepared && player != null && !exiting && !refreshing &&
+        !conversionLoading && !navigationLoading && !mpvProbePending && !playerGestureActive &&
+        !gestures.isSeekGestureActive && (!requireUnlocked || !gestures.locked) &&
+        player?.isCurrentMediaItemSeekable == true &&
+        player?.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) == true &&
+        playbackEngineSettled(mpvProbePending, player is ExoPlayer && !exoValidated)
+
+    private fun studySnapshot(): LanguageStudySnapshot {
+        syncStudySentenceSource()
+        val (timeline, offset) = studyTimeline()
+        val position = studyPosition()
+        val current = timeline?.studyCueAt(position, offset)
+        val range = studyRepeat.range
+        val ready = studyReady()
+        val status = when {
+            prepared && player?.isCurrentMediaItemSeekable == false -> "이 영상은 위치 이동을 지원하지 않아 문장·구간 반복을 사용할 수 없습니다."
+            !ready -> "재생 준비가 끝나면 사용할 수 있습니다."
+            timeline == null -> "문장 이동·반복은 시간 정보가 있는 자막이 필요합니다. 내장 자막은 A–B 반복을 이용하세요."
+            current == null -> "현재 자막이 없는 구간입니다. 이전·다음 문장으로 이동할 수 있습니다."
+            else -> "선택한 텍스트 자막의 시간을 기준으로 이동합니다."
+        }
+        return LanguageStudySnapshot(status = status, sentenceText = current?.text.orEmpty(),
+            canPrevious = ready && timeline?.previousStudyCue(position, offset) != null,
+            canNext = ready && timeline?.nextStudyCue(position, offset) != null,
+            canRepeatSentence = ready && current != null && current.endMs - current.startMs >= 500,
+            repeatLabel = when {
+                range != null -> "${if (studyRepeat.sentence) "문장 반복" else "A–B 반복"} · ${studyTime(range.startMs)} – ${studyTime(range.endMs)}"
+                studyRepeat.startMs != null -> "A ${studyTime(studyRepeat.startMs!!)} · B를 지정하세요"
+                else -> "반복 꺼짐"
+            },
+            canMarkEnd = ready && studyRepeat.startMs?.let { position - it >= 500 } == true,
+            secondaryLabel = if (studySecondary.loading) "번역 자막 불러오는 중" else studySecondary.label,
+            speedLabel = speedLabel())
+    }
+
+    private fun showLanguageStudy() {
+        if (exiting || isDestroyed || !::gestures.isInitialized || gestures.locked || closeLockedSpoilerPlayback()) return
+        studyDialog?.dismiss()
+        studyDialog = LanguageStudyDialog(this, ::studySnapshot,
+            onPrevious = { seekStudySentence(false) }, onNext = { seekStudySentence(true) },
+            onRepeatSentence = {
+                if (studyReady()) {
+                    val (timeline, offset) = studyTimeline()
+                    timeline?.studyCueAt(studyPosition(), offset)?.let { cue ->
+                        if (studyRepeat.repeatSentence(StudyInterval(cue.startMs, cue.endMs), lastDuration))
+                            startStudyRepeat()
+                    }
+                }
+            },
+            onMarkStart = { if (studyReady()) studyRepeat.markStart(studyPosition()) },
+            onMarkEnd = {
+                if (studyReady() && studyRepeat.markEnd(studyPosition(), lastDuration))
+                    startStudyRepeat()
+                else toast("A보다 0.5초 이상 뒤에서 B를 지정해 주세요.")
+            },
+            onClearRepeat = { studyRepeat.clear() },
+            onSecondarySubtitles = ::showStudySubtitles, onSpeed = ::showSpeed).also { it.show() }
+    }
+
+    private fun seekStudySentence(next: Boolean) {
+        if (!studyReady()) return
+        val (timeline, offset) = studyTimeline()
+        val cue = if (next) timeline?.nextStudyCue(studyPosition(), offset)
+            else timeline?.previousStudyCue(studyPosition(), offset)
+        cue ?: return
+        studyRepeat.clear()
+        seekForStudy(cue.startMs)
+    }
+
+    private fun startStudyRepeat() {
+        val range = studyRepeat.range ?: return
+        // Arm the pending-seek guard before the asynchronous initial seek, too.
+        val decision = studyRepeat.poll(range.endMs, ended = false, SystemClock.elapsedRealtime())
+        if (decision is StudyRepeatDecision.Seek) seekForStudy(decision.positionMs, resume = true)
+    }
+
+    private fun seekForStudy(target: Long, resume: Boolean = false) {
+        val active = player ?: return
+        val position = if (lastDuration > 0) target.coerceIn(0, lastDuration - 1) else target.coerceAtLeast(0)
+        completionGate().seek(position)
+        lastPosition = position; pendingSeek = position
+        active.seekTo(position)
+        if (resume) { resumeWhenVisible = true; active.play() }
+        updateSubtitleText(); updateStudySecondaryText(); refreshSegmentActions()
+    }
+
+    /** Return true while a repeat seek owns the boundary, before EOF/auto-next handling. */
+    private fun maybeRepeatStudy(active: Player, playIntent: Boolean = active.playWhenReady): Boolean {
+        syncStudySentenceSource()
+        if (studyRepeat.range == null || !studyReady(requireUnlocked = false) || !playIntent || isExoEmbeddedSeekPending(active)) return false
+        if (active.playbackState != Player.STATE_READY && active.playbackState != Player.STATE_ENDED) return false
+        return when (val decision = studyRepeat.poll(active.currentPosition,
+            active.playbackState == Player.STATE_ENDED, SystemClock.elapsedRealtime())) {
+            StudyRepeatDecision.Idle -> false
+            is StudyRepeatDecision.Seek -> { seekForStudy(decision.positionMs, resume = true); true }
+            StudyRepeatDecision.Waiting -> true
+            StudyRepeatDecision.Failed -> { toast("반복 위치로 이동하지 못해 반복을 해제했습니다."); false }
+        }
+    }
+
+    private fun showStudySubtitles() {
+        if (exiting || isDestroyed || closeLockedSpoilerPlayback()) return
+        if (spec.subtitlesPending && !subtitleListFailed) player?.let(::loadDeferredSubtitles)
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        fun choice(label: String, action: () -> Unit) { labels += label; actions += action }
+        choice("원문 자막 선택 · ${selectedTrackLabel(C.TRACK_TYPE_TEXT)}") { showTracks(C.TRACK_TYPE_TEXT) }
+        choice("번역 자막 끄기") { studySecondary.clear() }
+        spec.subtitles.filterNot { isMpvBitmapSubtitle(it.format ?: it.mimeType) }.forEach { track ->
+            choice("번역 · ${subtitleMenuLabel(track.label, track.language, track.format ?: track.mimeType,
+                if (track.isEmbedded) "서버 내장" else "서버 외부", track.forced == true, track.sdh == true)}") {
+                studySecondary.loadServer(track, subtitleLoader)
+            }
+        }
+        if (spec.subtitlesPending) choice("서버 자막 목록 다시 확인") {
+            player?.let(::loadDeferredSubtitles); showStudySubtitles()
+        }
+        choice("번역 자막 파일 불러오기") {
+            val owner = studySecondary.ownerKey
+            if (owner == null) toast("현재 영상의 자막 저장 정보를 확인할 수 없습니다.")
+            else try {
+                studySubtitlePicker.launch(Intent(this, SubtitleImportActivity::class.java)
+                    .putExtra(SubtitleImportActivity.EXTRA_OWNER_KEY, owner))
+            } catch (_: Exception) { toast("이 기기에서 파일 선택 창을 열 수 없습니다.") }
+        }
+        choice("저장된 번역 자막 불러오기") { studySecondary.loadLocal() }
+        choice("번역 자막 위치 · ${if (studySecondaryAtTop) "위" else "아래"}") {
+            studySecondaryAtTop = !studySecondaryAtTop
+            getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putBoolean("study_secondary_top", studySecondaryAtTop).apply()
+            applyStudySecondaryStyle(); showStudySubtitles()
+        }
+        choice("번역 자막 싱크 · ${String.format(Locale.KOREAN, "%+.1f초", studySecondaryOffsetMs / 1000.0)}") {
+            AlertDialog.Builder(this).setTitle("번역 자막 싱크")
+                .setItems(arrayOf("0.5초 빠르게", "0.5초 느리게", "초기화")) { _, index ->
+                    studySecondaryOffsetMs = when (index) {
+                        0 -> (studySecondaryOffsetMs + 500).coerceAtMost(60_000)
+                        1 -> (studySecondaryOffsetMs - 500).coerceAtLeast(-60_000)
+                        else -> 0
+                    }
+                    updateStudySecondaryText(); showStudySubtitles()
+                }.setNegativeButton("닫기", null).show()
+        }
+        AlertDialog.Builder(this).setTitle("원문·번역 자막")
+            .setItems(labels.toTypedArray()) { _, index -> actions[index]() }
+            .setNegativeButton("닫기", null).show()
+    }
+
+    private fun applyStudySecondaryStyle() {
+        if (!::studySecondaryOverlay.isInitialized) return
+        studySecondaryOverlay.appearance = subtitleAppearance.copy(verticalWriting = false,
+            horizontalOffsetPercent = 0, verticalOffsetPercent = 0,
+            horizontalAlignment = SubtitleHorizontalAlignment.CENTER,
+            verticalAlignment = if (studySecondaryAtTop) SubtitleVerticalAlignment.TOP else SubtitleVerticalAlignment.BOTTOM)
+        studySecondaryOverlay.subtitleTypeface = PlexSubtitleFonts.typeface(this, subtitleFont)
+    }
+
+    private fun updateStudySecondaryText() {
+        if (!::studySecondaryOverlay.isInitialized) return
+        val timeline = studySecondary.timeline
+        val canDraw = timeline != null && visible && prepared && player != null && !exiting &&
+            studySecondary.ownerKey == languageStudySecondaryOwner(localSubtitleOwnerKey)
+        studySecondaryOverlay.visibility = if (canDraw) View.VISIBLE else View.GONE
+        if (!canDraw) { studySecondaryOverlay.subtitleText = ""; return }
+        val position = if (::gestures.isInitialized) gestures.pendingSeekPositionMs ?: studyPosition() else studyPosition()
+        studySecondaryOverlay.subtitleText = timeline?.textAt((position + studySecondaryOffsetMs).coerceAtLeast(0)).orEmpty()
     }
 
     private fun showSpeed() {
@@ -3402,6 +3660,7 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitleFont = PlexSubtitleFonts.normalizedKey(this, subtitleFont)
         val typeface = PlexSubtitleFonts.typeface(this, subtitleFont)
         subtitleOverlay.appearance = subtitleAppearance; subtitleOverlay.subtitleTypeface = typeface
+        applyStudySecondaryStyle()
         playerView.subtitleView?.let { applyPlexSubtitleStyle(it, subtitleAppearance, typeface) }
         player?.let { renderEmbeddedCues(it.currentCues) }
         getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("subtitle_font", subtitleFont)
@@ -3699,6 +3958,10 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun finishCompletedPlayback() {
         if (exiting || endingAfterCompletion || isDestroyed) return
+        if (player?.let { maybeRepeatStudy(it) } == true) {
+            handler.removeCallbacks(ticker); handler.postDelayed(ticker, 50)
+            return
+        }
         if (continuousPlaybackGate.isActive()) return
         val shouldContinue = getSharedPreferences("gsy_settings", MODE_PRIVATE).getBoolean("continuous_playback", false) &&
             spec.sourceItem?.type == "episode" && visible && activityStarted && player != null && !closeLockedSpoilerPlayback()
@@ -3885,6 +4148,11 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        studyDialog?.dismiss(); studyDialog = null
+        studyRepeat.resetPending()
+        if (::studySecondaryOverlay.isInitialized) {
+            studySecondaryOverlay.subtitleText = ""; studySecondaryOverlay.visibility = View.GONE
+        }
         exoPictureRedraw?.let(handler::removeCallbacks); exoPictureRedraw = null
         exoPictureFrameTimeout?.let(handler::removeCallbacks); exoPictureFrameTimeout = null
         exoPictureEffect = null; exoPictureOwner = null; exoPictureRestartPending = null
@@ -3962,6 +4230,7 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        studyDialog?.dismiss(); studyDialog = null
         dismissPictureSettings()
         dismissTvSubtitlePosition()
         val interruptedSpoilerRotation = spoilerRecovery != null || spoilerRotationJob?.isActive == true
@@ -3980,7 +4249,7 @@ class NativePlayerActivity : AppCompatActivity() {
         if (closeLockedSpoilerPlayback()) return
         if (endingAfterCompletion || exiting) return
         if (!refreshing && playbackEngineSettled(mpvProbePending, player is ExoPlayer && !exoValidated) &&
-            player?.let { !isExoEmbeddedSeekPending(it) && it.reconcilePlaybackCompletion() } == true) {
+            player?.let { !isExoEmbeddedSeekPending(it) && !maybeRepeatStudy(it, resumeWhenVisible) && it.reconcilePlaybackCompletion() } == true) {
             finishCompletedPlayback()
             return
         }
@@ -3997,6 +4266,9 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        studyDialog?.dismiss(); studyDialog = null
+        studyRepeat.resetPending()
+        if (::studySecondaryOverlay.isInitialized) studySecondaryOverlay.visibility = View.GONE
         diagnosticDialog?.dismiss()
         diagnosticDialog = null
         dismissTvSubtitlePosition()
@@ -4045,6 +4317,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        studyDialog?.dismiss(); studyDialog = null
+        studySecondary.release()
         dismissPictureSettings()
         dismissContinuousLoading()
         resizeNotice?.cancel()
