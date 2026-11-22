@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.State
@@ -12,7 +13,11 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
@@ -28,6 +33,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -57,6 +64,53 @@ class DetailDiscoveryUiTest {
     private val privateWork = MediaItem(300, 8, "합성 비공개 작품", "movie", viewItemId = 800, isSpoiler = true)
     private val libraries = listOf(Library(7, "합성 TV", "tv"), Library(8, "합성 비공개", "movie", true),
         Library(9, "합성 영화", "movie"))
+
+    @Test fun castWrapsIntoLeftAlignedRowsWithoutHorizontalScrolling() {
+        var selected: CastMember? = null
+        val cast = renderWrappedCast(onActor = { selected = it })
+        val first = screen.onNodeWithTag("detail-cast-0").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val third = screen.onNodeWithTag("detail-cast-2").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val fourth = screen.onNodeWithTag("detail-cast-3").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val grid = screen.onNodeWithTag("detail-cast")
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.ScrollBy)).fetchSemanticsNode().boundsInRoot
+        assertEquals(first.top, third.top, 1f)
+        assertEquals(first.left, fourth.left, 1f)
+        assertTrue("Cast wraps to a second row", fourth.top >= first.bottom)
+        assertTrue("Every row starts at the left edge", first.left >= grid.left && third.right <= grid.right)
+        screen.onNodeWithTag("detail-cast-5").assertIsDisplayed().performClick()
+        screen.runOnIdle { assertEquals(cast.last(), selected) }
+    }
+
+    @Test fun remoteCanMoveDownIntoWrappedCastAndSelectAnActor() {
+        var selected: CastMember? = null
+        val cast = renderWrappedCast(remote = true, onActor = { selected = it })
+        screen.onNodeWithTag("detail-cast-0").assertIsFocused()
+            .performKeyInput { pressKey(Key.DirectionDown) }
+        screen.onNodeWithTag("detail-cast-3").assertIsFocused().assertIsDisplayed()
+            .performKeyInput { pressKey(Key.DirectionCenter) }
+        screen.runOnIdle { assertEquals(cast[3], selected) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun renderWrappedCast(remote: Boolean = false, onActor: (CastMember) -> Unit): List<CastMember> {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        assumeTrue(instrumentation.targetContext.packageName.endsWith(".spoilerqa"))
+        instrumentation.setInTouchMode(!remote)
+        val cast = (0..5).map { actor.copy(name = "배우 $it", ppkey = "person-$it") }
+        val focus = FocusRequester()
+        screen.setContent {
+            MaterialTheme(colorScheme = ShyniColors, typography = CompactTypography, shapes = CompactShapes) {
+                Surface(Modifier.width(280.dp)) {
+                    DetailDiscoverySections(parent, cast, null, libraries, false, false, onActor,
+                        onOpen = {}, onWatchOptions = {}, onRetryRelated = {},
+                        artwork = { _, _ -> }, portrait = { _, _ -> },
+                        requestFocus = remote, focus = focus)
+                }
+            }
+        }
+        screen.waitForIdle()
+        return cast
+    }
 
     @Test fun selectingCastShowsOwnedWorksInlineAndDoesNotPlayTheSource() {
         val frame = mutableStateOf<DetailDiscoveryState?>(DetailDiscoveryState(parent,

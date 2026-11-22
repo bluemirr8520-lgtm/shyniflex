@@ -3,6 +3,8 @@ package io.mirr.shynigsy.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -181,19 +183,17 @@ internal fun CompactDetailContent(
     val hasOverviewAction = overviewFirst && !item.playable && children.isNotEmpty()
     val list = rememberLazyListState()
     val jumpScope = rememberCoroutineScope()
+    val discoveryBringIntoView = remember { BringIntoViewRequester() }
     val seasonList = rememberLazyListState()
     var focusRequested by remember(identity, detail.selectedSeasonId, childKeys, overviewFirst) { mutableStateOf(false) }
     var expanded by rememberSaveable(identity) { mutableStateOf(false) }
     val hasFocusTarget = item.playable || children.isNotEmpty() || seasons.isNotEmpty() || discoveryTargets.isNotEmpty()
     val hasResolutionChoice = remember(versions) { resolutionFolders(versions).size > 1 }
-    val primaryRows = if (item.playable) 1 + (if (hasResolutionChoice) 1 else 0) else children.size.coerceAtLeast(1)
     val firstEpisodeIndex = (if (seasons.isNotEmpty()) 1 else 0) + (if (error != null) 1 else 0)
-    val discoveryIndex = firstEpisodeIndex + primaryRows + (if (item.playable && fileInformation != null) 1 else 0)
     LaunchedEffect(television, busy, hasFocusTarget, restoredChild, detail.selectedSeasonId, overviewFirst) {
         if (!television || busy) return@LaunchedEffect
         if (!hasFocusTarget || focusRequested) return@LaunchedEffect
         if ((focusedDiscovery != null || (!item.playable && children.isEmpty() && seasons.isEmpty())) && discoveryTargets.isNotEmpty()) {
-            list.scrollToItem(discoveryIndex)
             restoreDiscoveryFocus = true
             focusRequested = true
             return@LaunchedEffect
@@ -249,7 +249,7 @@ internal fun CompactDetailContent(
                             TvAction("출연진 · 관련 작품", Modifier.testTag("compact-detail-discovery-jump"), enabled = !busy) {
                                 focusedDiscovery = null
                                 jumpScope.launch {
-                                    list.scrollToItem(discoveryIndex)
+                                    discoveryBringIntoView.bringIntoView()
                                     if (television && discoveryTargets.isNotEmpty()) restoreDiscoveryFocus = true
                                 }
                             }
@@ -278,6 +278,13 @@ internal fun CompactDetailContent(
                 if (onRefreshDetail != null) TvAction("새로고침", enabled = !busy, onClick = onRefreshDetail)
                 if (cast != null) TvAction("전송", onClick = cast)
                 if (showRating && ratingScope != null) DetailRatingDialog(item, ratingScope) { showRating = false }
+            }
+            Box(Modifier.fillMaxWidth().bringIntoViewRequester(discoveryBringIntoView)) {
+                DetailDiscoverySections(item, detail.castMembers, frame, libraries, spoilerUnlocked, busy,
+                    onSelectActor, onOpenItem, onWatchOptions, onRetryRelated, artwork, portrait,
+                    restoreTarget = focusedDiscovery, requestFocus = restoreDiscoveryFocus, focus = discoveryFocus,
+                    onFocused = { focusedDiscovery = it }, onRestoreDone = { restoreDiscoveryFocus = false },
+                    onSearchActorMovies = onSearchActorMovies, onCancelActorMovieSearch = onCancelActorMovieSearch)
             }
         }
         LazyColumn(Modifier.weight(1f).fillMaxHeight().testTag("detail-actions-pane"), state = list,
@@ -332,13 +339,6 @@ internal fun CompactDetailContent(
                 }
             }
             if (item.playable && fileInformation != null) item(key = "file-information") { fileInformation() }
-            item(key = "discovery") {
-                DetailDiscoverySections(item, detail.castMembers, frame, libraries, spoilerUnlocked, busy,
-                    onSelectActor, onOpenItem, onWatchOptions, onRetryRelated, artwork, portrait,
-                    restoreTarget = focusedDiscovery, requestFocus = restoreDiscoveryFocus, focus = discoveryFocus,
-                    onFocused = { focusedDiscovery = it }, onRestoreDone = { restoreDiscoveryFocus = false },
-                    onSearchActorMovies = onSearchActorMovies, onCancelActorMovieSearch = onCancelActorMovieSearch)
-            }
         }
     }
 }

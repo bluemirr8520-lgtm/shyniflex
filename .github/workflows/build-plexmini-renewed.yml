@@ -1,0 +1,79 @@
+name: Build PLEXMINI Renewed
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact PLEXMINI release source commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate source commit
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          if ($env:SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'An exact commit SHA is required.' }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare verified Gradle distribution
+        shell: pwsh
+        run: ./.github/scripts/get-pinned-gradle.ps1
+      - name: Restore signing configuration
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.PLEXMINI_RENEWED_KEYSTORE }}
+          SIGNING_PROPERTIES: ${{ secrets.PLEXMINI_RENEWED_PROPERTIES }}
+        run: |
+          if (-not $env:SIGNING_KEY -or -not $env:SIGNING_PROPERTIES) { throw 'Signing secrets are missing.' }
+          $signRoot = Join-Path $env:RUNNER_TEMP 'shyniflex-signing'
+          $signDir = Join-Path $signRoot '.local'
+          New-Item -ItemType Directory -Path $signDir -Force | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $signDir 'release.keystore'), [Convert]::FromBase64String($env:SIGNING_KEY))
+          [IO.File]::WriteAllText((Join-Path $signDir 'release.properties'), $env:SIGNING_PROPERTIES, [Text.UTF8Encoding]::new($false))
+      - name: Prepare pinned playback runtime
+        shell: pwsh
+        run: |
+          ./android/setup-mpv.ps1
+          git restore -- android/app/src/main/assets/licenses/NATIVE-RUNTIME.txt
+      - name: Build signed APK
+        shell: pwsh
+        env:
+          SHYNIFLEX_OPENSUBTITLES_API_KEY: ${{ secrets.SHYNIFLEX_OPENSUBTITLES_API_KEY }}
+        run: |
+          $signRoot = Join-Path $env:RUNNER_TEMP 'shyniflex-signing'
+          $gradle = Join-Path $env:RUNNER_TEMP 'gradle-8.13/bin/gradle.bat'
+          & $gradle -p android assembleRelease '-PshyniflexApplicationId=io.mirr.shyniflex.plex.renewed' "-PshyniflexSigningRoot=$signRoot" --no-daemon --console=plain
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          $signer = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
+          $certificate = & $signer verify --print-certs android/build/plex-renewed-app/outputs/apk/release/app-release.apk
+          if ($LASTEXITCODE -ne 0 -or -not ($certificate -match 'fd6e643986d0880a13422c3703814be02dd6f3a00f9007f63d270efe1b938e21')) { throw 'Unexpected signing certificate.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plexmini-renewed-apk
+          path: android/build/plex-renewed-app/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        run: |
+          $signDir = Join-Path (Join-Path $env:RUNNER_TEMP 'shyniflex-signing') '.local'
+          foreach ($name in @('release.keystore', 'release.properties')) {
+            $file = Join-Path $signDir $name
+            if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+          }

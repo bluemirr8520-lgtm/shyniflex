@@ -45,6 +45,8 @@ import androidx.compose.ui.test.pressKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.mirr.shynigsy.data.MediaDetails
+import io.mirr.shynigsy.data.CastMember
+import io.mirr.shynigsy.data.Library
 import io.mirr.shynigsy.R
 import io.mirr.shynigsy.data.MediaItem
 import io.mirr.shynigsy.data.MediaVersion
@@ -244,6 +246,22 @@ class CompactDetailScreenTest {
         assertSplitDetail(episode)
     }
 
+    @Test fun tabletKeepsEveryCastCardInLeftOverviewAndEpisodesVisibleOnRight() {
+        val cast = (0..11).map { CastMember("합성 배우 $it", "역할", ppkey = "person-$it") }
+        var selected: CastMember? = null
+        var played = 0
+        render(series(listOf(episode)).copy(castMembers = cast), tablet = true,
+            onActor = { selected = it }, onPlay = { _, _ -> played++ })
+        val firstEpisode = screen.onNodeWithTag(rowTag(episode)).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        screen.onNodeWithTag("detail-cast-11").performScrollTo().assertIsDisplayed().performClick()
+        val overview = screen.onNodeWithTag("detail-overview-pane").fetchSemanticsNode().boundsInRoot
+        val lastActor = screen.onNodeWithTag("detail-cast-11").fetchSemanticsNode().boundsInRoot
+        assertTrue("Cast stays inside the left overview", lastActor.left >= overview.left && lastActor.right <= overview.right)
+        val stillVisible = screen.onNodeWithTag(rowTag(episode)).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals("Scrolling cast must not scroll the episode list", firstEpisode.top, stillVisible.top, 1f)
+        screen.runOnIdle { assertEquals(cast.last(), selected); assertEquals(0, played) }
+    }
+
     private fun assertSplitDetail(firstEpisode: MediaItem) {
         val overview = screen.onNodeWithTag("detail-overview-pane").fetchSemanticsNode().boundsInRoot
         val actions = screen.onNodeWithTag("detail-actions-pane").fetchSemanticsNode().boundsInRoot
@@ -273,6 +291,7 @@ class CompactDetailScreenTest {
         overviewFirst: Boolean = false,
         television: Boolean = false,
         tablet: Boolean = false,
+        onActor: (CastMember) -> Unit = {},
     ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.setInTouchMode(!television)
@@ -294,7 +313,8 @@ class CompactDetailScreenTest {
                     onPlay, onOpen, onSeason, onVersion, onWatchOptions, onWatched,
                     artwork = { item, modifier -> Image(painterResource(R.drawable.cinema_paradiso_backdrop), null,
                         modifier.testTag(artTag(item)), contentScale = ContentScale.Crop) },
-                    overviewFirst = overviewFirst, ratingScope = "device-test-account")
+                    overviewFirst = overviewFirst, ratingScope = "device-test-account",
+                    libraries = listOf(Library(7, "합성 TV", "tv")), onSelectActor = onActor)
                 }
             }
             }
