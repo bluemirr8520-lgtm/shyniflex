@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +41,7 @@ internal fun MobileMoreMenu(
     onTvQrScan: () -> Unit = {},
     onLogout: () -> Unit,
     onSpoilerAccess: () -> Unit,
+    onLanguageStudy: () -> Unit = {},
 ) {
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
     ModalBottomSheet(onDismissRequest = onDismiss,
@@ -62,6 +65,11 @@ internal fun MobileMoreMenu(
             item(key = "appearance") {
                 MobileMoreAction("화면 스타일", cinemaIcon(CinemaGlyph.Palette), "mobile-more-appearance") {
                     onDismiss(); onAppearance()
+                }
+            }
+            item(key = "language-study") {
+                MobileMoreAction("어학 학습", Icons.Rounded.MenuBook, "mobile-more-study") {
+                    onDismiss(); onLanguageStudy()
                 }
             }
             if (onLibraryOrder != null) item(key = "library-order") {

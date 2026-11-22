@@ -177,6 +177,7 @@ fun ShyniApp(
     var libraryPickerOpen by rememberSaveable { mutableStateOf(false) }
     var appearanceOpen by rememberSaveable { mutableStateOf(false) }
     var mobileMoreOpen by rememberSaveable { mutableStateOf(false) }
+    var studyPreferencesOpen by rememberSaveable { mutableStateOf(false) }
     var libraryOrderOpen by rememberSaveable(orderScope) { mutableStateOf(false) }
     val openLibraryOrder: (() -> Unit)? = orderScope?.let {
         { libraryPickerOpen = false; mobileMoreOpen = false; libraryOrderOpen = true }
@@ -189,6 +190,7 @@ fun ShyniApp(
     val mobileDetail = state.loggedIn && !tv && detail != null && completedEpisodePending == null
     LaunchedEffect(state.loggedIn) {
         if (!state.loggedIn) {
+            studyPreferencesOpen = false
             libraryPickerOpen = false
             mobileMoreOpen = false
             appearanceOpen = false
@@ -206,6 +208,7 @@ fun ShyniApp(
     }
     LaunchedEffect(state.tvLoginApproval?.link) {
         if (state.tvLoginApproval != null) {
+            studyPreferencesOpen = false
             mobileMoreOpen = false
             libraryPickerOpen = false
             appearanceOpen = false
@@ -357,6 +360,7 @@ fun ShyniApp(
             onRefresh = viewModel::refresh,
             onAppearance = { appearanceOpen = true },
             onLibraryOrder = openLibraryOrder,
+            onLanguageStudy = { studyPreferencesOpen = true },
             onUpdate = onUpdate,
             onTvQrScan = scanTvQr,
             onLogout = { logoutConfirm = true },
@@ -368,6 +372,8 @@ fun ShyniApp(
         if (appearanceOpen) CinemaAppearanceSettings(initialBackground = appearance.backgroundArgb,
             onDismiss = { appearanceOpen = false },
             onApply = { color -> appearance.save(color); appearanceOpen = false })
+        if (studyPreferencesOpen && state.loggedIn) LanguageStudyPreferencesDialog(
+            onDismiss = { studyPreferencesOpen = false })
         if (libraryOrderOpen && state.loggedIn && orderScope != null) LibraryOrderDialog(
             libraries = state.libraries,
             spoilerUnlocked = state.spoilerUnlocked,
