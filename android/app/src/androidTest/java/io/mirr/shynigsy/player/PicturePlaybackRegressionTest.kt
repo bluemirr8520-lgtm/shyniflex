@@ -256,6 +256,85 @@ class PicturePlaybackRegressionTest {
         }
     }
 
+    @Test fun correctedExoResizesSameSurfaceWithoutFreezingVideo() = withFixture(BRIGHT) { fixture, settings ->
+        launch(fixture).use { scenario ->
+            awaitVisibleAndPause(scenario, useExo = true)
+            assertRenderedColor(scenario)
+            lateinit var originalPlayer: ExoPlayer
+            lateinit var originalSurface: android.view.Surface
+            var originalLayoutWidth = 0
+            var originalLayoutHeight = 0
+            var originalViewWidth = 0
+            var originalViewHeight = 0
+            scenario.onActivity { activity ->
+                originalPlayer = field(activity, "player")
+                val view = field<PlayerView>(activity, "playerView")
+                originalSurface = (view.videoSurfaceView as SurfaceView).holder.surface
+                originalLayoutWidth = view.layoutParams.width
+                originalLayoutHeight = view.layoutParams.height
+                originalViewWidth = view.width
+                originalViewHeight = view.height
+                assertTrue(originalViewWidth > 0 && originalViewHeight > 0)
+            }
+
+            fun resizeAndVerify(width: Int, height: Int) {
+                var previousSurfaceSize = 0 to 0
+                scenario.onActivity { activity ->
+                    assertSame(originalPlayer, field<Player>(activity, "player"))
+                    assertFalse(originalPlayer.playWhenReady)
+                    val view = field<PlayerView>(activity, "playerView")
+                    val surface = view.videoSurfaceView as SurfaceView
+                    previousSurfaceSize = surface.width to surface.height
+                    view.layoutParams = view.layoutParams.apply {
+                        this.width = width
+                        this.height = height
+                    }
+                }
+                waitFor(scenario, "The same output Surface must receive new dimensions") { activity ->
+                    val surface = field<PlayerView>(activity, "playerView").videoSurfaceView as SurfaceView
+                    surface.width > 0 && surface.height > 0 &&
+                        (surface.width to surface.height) != previousSurfaceSize &&
+                        surface.holder.surfaceFrame.width() == surface.width &&
+                        surface.holder.surfaceFrame.height() == surface.height
+                }
+                val resized = awaitFrame(scenario, "Corrected video must remain visible after a Surface resize") {
+                    it.coloredSamples > 15
+                }
+                var pausedPosition = 0L
+                scenario.onActivity { activity ->
+                    val surface = field<PlayerView>(activity, "playerView").videoSurfaceView as SurfaceView
+                    assertSame("Resizing must not replace the player", originalPlayer, field<Player>(activity, "player"))
+                    assertSame("The test must exercise the existing output Surface", originalSurface, surface.holder.surface)
+                    assertFalse("Resizing must preserve pause", originalPlayer.playWhenReady)
+                    pausedPosition = originalPlayer.currentPosition
+                    originalPlayer.play()
+                }
+                waitFor(scenario, "Playback must continue after resizing the effect output") { activity ->
+                    val active = field<Player>(activity, "player")
+                    active === originalPlayer && active.isPlaying && active.currentPosition >= pausedPosition + 500
+                }
+                scenario.onActivity { originalPlayer.pause() }
+                // testsrc2 animates: a reported first frame and advancing audio clock alone
+                // cannot pass if the old-sized EGL buffer leaves a frozen video Surface.
+                awaitFrame(scenario, "New video frames must reach the resized Surface, not only advance the clock") {
+                    it.coloredSamples > 15 && it.meanDifference(resized) > 1.0
+                }
+                scenario.onActivity { activity ->
+                    assertSame(originalPlayer, field<Player>(activity, "player"))
+                    assertNull(originalPlayer.playerError)
+                    assertEquals(SPEED, originalPlayer.playbackParameters.speed, .001f)
+                    assertEquals(BRIGHT, field<PictureSettings>(activity, "pictureSettings"))
+                    assertEquals(BRIGHT, PicturePresetStore(settings).readCurrent())
+                }
+            }
+
+            // This reproduces the tablet's full-window -> video-aspect resize without
+            // changing the Surface object; restoring also covers rotation/window growth.
+            resizeAndVerify(originalViewWidth * 2 / 3, originalViewHeight * 2 / 3)
+            resizeAndVerify(originalLayoutWidth, originalLayoutHeight)
+        }
+    }
+
     private fun selectPicturePreset(scenario: ActivityScenario<NativePlayerActivity>, preset: PicturePreset) {
         scenario.onActivity { activity ->
             NativePlayerActivity::class.java.getDeclaredMethod("showPictureSettings")
