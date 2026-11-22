@@ -2,6 +2,7 @@ package io.mirr.shynigsy.player
 
 import android.content.Context
 import android.os.Handler
+import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
@@ -47,6 +48,22 @@ internal class ExoPictureRenderersFactory(context: Context) : DefaultRenderersFa
 /** Keep MediaCodec's renderer lifecycle; only opt its effect graph into paused redraws. */
 @UnstableApi
 private class ReplayablePictureVideoRenderer(builder: MediaCodecVideoRenderer.Builder) : MediaCodecVideoRenderer(builder) {
+    private var pictureGraph: PlaybackVideoGraphWrapper? = null
+    private var outputSize = Size.UNKNOWN
+
+    override fun handleMessage(messageType: Int, message: Any?) {
+        if (messageType == Renderer.MSG_SET_VIDEO_OUTPUT_RESOLUTION && message is Size &&
+            message.width > 0 && message.height > 0 && message != outputSize) {
+            // Media3 1.10.1 updates the viewport but keeps the EGL producer when only
+            // the size changes. Some SurfaceView BufferQueues reject every subsequent
+            // buffer with the old dimensions. Clear before the superclass reapplies
+            // this resolution, so both the graph's size cache and EGL surface reset.
+            pictureGraph?.clearOutputSurfaceInfo()
+            outputSize = message
+        }
+        super.handleMessage(messageType, message)
+    }
+
     override fun createPlaybackVideoGraphWrapper(
         context: Context,
         videoFrameReleaseControl: VideoFrameReleaseControl,
@@ -55,5 +72,14 @@ private class ReplayablePictureVideoRenderer(builder: MediaCodecVideoRenderer.Bu
         .setEnableReplayableCache(true)
         .experimentalSetLateThresholdToDropInputUs(DEFAULT_LATE_THRESHOLD_TO_DROP_DECODER_INPUT_US)
         .setClock(getClock())
-        .build()
+        .build().also { pictureGraph = it }
+
+    override fun onRelease() {
+        try {
+            super.onRelease()
+        } finally {
+            pictureGraph = null
+            outputSize = Size.UNKNOWN
+        }
+    }
 }
