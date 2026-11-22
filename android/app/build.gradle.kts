@@ -44,8 +44,8 @@ android {
         manifestPlaceholders["plexAppLabel"] = if (isRenewedPlex) "PLEXMINI Renewed" else "@string/plex_app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = if (isPlex) 7 else 103
-        versionName = if (isPlex) "1.0.6" else "1.0.102"
+        versionCode = if (isPlex) 8 else 103
+        versionName = if (isPlex) "1.0.7" else "1.0.102"
         buildConfigField("boolean", "IS_PLEX", isPlex.toString())
         buildConfigField("String", "OPENSUBTITLES_API_KEY", "\"$subtitleApplicationKey\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

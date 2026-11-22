@@ -7,9 +7,11 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,7 +77,6 @@ internal fun DetailDiscoverySections(
     val related = visibleDetailWorks(frame?.relatedItems.orEmpty(), libraries, spoilerUnlocked)
     val targets = discoveryFocusTargets(parent, cast, frame, libraries, spoilerUnlocked)
     val target = restoreTarget?.takeIf { it in targets } ?: targets.firstOrNull()
-    val castScroll = rememberLazyListState()
     val actorScroll = rememberLazyListState()
     val relatedScroll = rememberLazyListState()
     // Only Back restoration requests focus. Network arrivals never take it from Play/episodes.
@@ -82,7 +84,8 @@ internal fun DetailDiscoverySections(
         if (!requestFocus || target == null || focus == null) return@LaunchedEffect
         try {
             when {
-                target.startsWith("cast:") -> castScroll.scrollToItem(cast.indexOfFirst { discoveryActorTarget(it) == target }.coerceAtLeast(0))
+                // Every cast card is composed; its focus target scrolls the overview vertically.
+                target.startsWith("cast:") -> Unit
                 target.startsWith("actor:") -> actorScroll.scrollToItem(actorWorks.indexOfFirst { discoveryWorkTarget("actor", it) == target }.coerceAtLeast(0))
                 else -> relatedScroll.scrollToItem(related.indexOfFirst { discoveryWorkTarget("related", it) == target }.coerceAtLeast(0))
             }
@@ -94,13 +97,13 @@ internal fun DetailDiscoverySections(
         .then(if (target == key && focus != null) Modifier.focusRequester(focus) else Modifier)
         .onFocusChanged { if (it.hasFocus) onFocused(key) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.testTag("detail-discovery")) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().testTag("detail-discovery")) {
         if (cast.isNotEmpty()) {
             Text("출연진", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            LazyRow(state = castScroll, modifier = Modifier.focusRestorer().focusGroup().testTag("detail-cast"),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(cast.size, key = { cast[it].key }) { index ->
-                    val actor = cast[index]
+            FlowRow(modifier = Modifier.fillMaxWidth().focusRestorer().focusGroup().testTag("detail-cast"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                cast.forEachIndexed { index, actor -> key(actor.key) {
                     val supported = canDiscoverActorWorks(actor, parent, libraries, spoilerUnlocked)
                     val selected = frame?.selectedActor?.key == actor.key
                     CompactMenuAction(onClick = { onActor(actor) },
@@ -124,7 +127,7 @@ internal fun DetailDiscoverySections(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                }
+                } }
             }
         }
         frame?.selectedActor?.let { actor ->
