@@ -174,6 +174,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var pictureDialog: PictureSettingsDialog? = null
     private var exoPictureEffect: ExoPictureEffect? = null
     private var exoPictureOwner: ExoPlayer? = null
+    private var exoPictureSurfaceRebinder: CorrectedExoSurfaceRebinder? = null
     private var exoPictureRestartPending: ExoPlayer? = null
     private var exoPictureRedraw: Runnable? = null
     private var exoPictureFrameTimeout: Runnable? = null
@@ -1822,6 +1823,24 @@ class NativePlayerActivity : AppCompatActivity() {
                 val active = player ?: return
                 val native = (active as? MpvPlayer)?.streamDiagnostics()
                 val cache = native?.cacheSeconds ?: (active.totalBufferedDuration.coerceAtLeast(0) / 1000.0)
+                fun dimensions(width: Int, height: Int): String? =
+                    if (width > 0 && height > 0) "$width × $height" else null
+                // Read the stream the engine is playing, never the server's source-file metadata.
+                // Effects can suppress Exo's VideoSize; MPV's VideoSize is its display size.
+                val streamSize = (active as? ExoPlayer)?.videoFormat
+                    ?.let { dimensions(it.width, it.height) }
+                    ?: active.currentTracks.groups.asSequence()
+                        .filter { it.type == C.TRACK_TYPE_VIDEO }
+                        .flatMap { group ->
+                            (0 until group.length).asSequence()
+                                .filter { group.isTrackSelected(it) }
+                                .map { group.getTrackFormat(it) }
+                        }
+                        .mapNotNull { dimensions(it.width, it.height) }
+                        .distinct().singleOrNull()
+                val displaySize = active.videoSize.let { dimensions(it.width, it.height) }
+                val requestedConversion = spec.conversionHeight?.takeIf { it > 0 }?.let { "${it}p" }
+                    ?: if (spec.isServerConversion) "확인 중" else "원본"
                 val state = when (active.playbackState) {
                     Player.STATE_BUFFERING -> "불러오는 중"
                     Player.STATE_ENDED -> "재생 완료"
@@ -1831,6 +1850,9 @@ class NativePlayerActivity : AppCompatActivity() {
                 dialog.setMessage(buildString {
                     appendLine("${playbackModeLabel(spec)} · ${if (active is MpvPlayer) "MPV" else "ExoPlayer"}")
                     appendLine(state)
+                    appendLine("요청 변환: $requestedConversion")
+                    appendLine("영상 해상도: ${streamSize ?: "확인 중"} (재생 트랙)")
+                    appendLine("엔진 표시 크기: ${displaySize ?: "확인 중"}")
                     appendLine("미리 받은 영상: ${diagnosticNumber(cache)}초")
                     if (native != null) {
                         appendLine("디코딩: ${diagnosticDecoder(native.hardwareDecoder)}")
@@ -3405,6 +3427,11 @@ class NativePlayerActivity : AppCompatActivity() {
             ?: exoPictureAspectRatio(active.currentTracks) ?: return
         playerView.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame)
             ?.setAspectRatio(aspect)
+        val surface = playerView.videoSurfaceView as? android.view.SurfaceView ?: return
+        val rebinder = exoPictureSurfaceRebinder ?: CorrectedExoSurfaceRebinder(surface, active) {
+            player === active && exoPictureOwner === active && !exiting && !isDestroyed
+        }.also { exoPictureSurfaceRebinder = it }
+        rebinder.requestForCurrentLayout()
     }
 
     private fun captureTrackPreferencesForReplacement() {
@@ -4137,6 +4164,7 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         exoPictureRedraw?.let(handler::removeCallbacks); exoPictureRedraw = null
         exoPictureFrameTimeout?.let(handler::removeCallbacks); exoPictureFrameTimeout = null
+        exoPictureSurfaceRebinder?.close(); exoPictureSurfaceRebinder = null
         exoPictureEffect = null; exoPictureOwner = null; exoPictureRestartPending = null
         chapterCreditsOwner = null
         chapterCreditsEvidence = null
