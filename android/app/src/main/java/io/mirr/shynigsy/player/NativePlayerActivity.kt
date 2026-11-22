@@ -176,6 +176,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var pictureDialog: PictureSettingsDialog? = null
     private var exoPictureEffect: ExoPictureEffect? = null
     private var exoPictureOwner: ExoPlayer? = null
+    private var exoPictureSurfaceRebinder: CorrectedExoSurfaceRebinder? = null
     private var exoPictureRestartPending: ExoPlayer? = null
     private var exoPictureRedraw: Runnable? = null
     private var exoPictureFrameTimeout: Runnable? = null
@@ -3417,6 +3418,11 @@ class NativePlayerActivity : AppCompatActivity() {
             ?: exoPictureAspectRatio(active.currentTracks) ?: return
         playerView.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame)
             ?.setAspectRatio(aspect)
+        val surface = playerView.videoSurfaceView as? android.view.SurfaceView ?: return
+        val rebinder = exoPictureSurfaceRebinder ?: CorrectedExoSurfaceRebinder(surface, active) {
+            player === active && exoPictureOwner === active && !exiting && !isDestroyed
+        }.also { exoPictureSurfaceRebinder = it }
+        rebinder.requestForCurrentLayout()
     }
 
     private fun captureTrackPreferencesForReplacement() {
@@ -4155,6 +4161,7 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         exoPictureRedraw?.let(handler::removeCallbacks); exoPictureRedraw = null
         exoPictureFrameTimeout?.let(handler::removeCallbacks); exoPictureFrameTimeout = null
+        exoPictureSurfaceRebinder?.close(); exoPictureSurfaceRebinder = null
         exoPictureEffect = null; exoPictureOwner = null; exoPictureRestartPending = null
         chapterCreditsOwner = null
         chapterCreditsEvidence = null
