@@ -191,6 +191,38 @@ class PicturePlaybackRegressionTest {
         }
     }
 
+    @Test fun livePlezyPresetLoadsItsOrderedHooksAndClearsWithoutRestartingPlayback() = withFixture(BRIGHT) { fixture, settings ->
+        settings.edit().putString("playback_engine", "mpv").commit()
+        launch(fixture).use { scenario ->
+            awaitVisibleAndPause(scenario, useExo = false)
+            val selected = BRIGHT.copy(libraryShaderId = "plezy/anime4k_fast_modeA")
+            lateinit var original: MpvPlayer
+            scenario.onActivity { activity ->
+                original = field<MpvPlayer>(activity, "player")
+                original.setPictureSettings(selected)
+            }
+            waitFor(scenario, "The renderer must load the complete Plezy preset in order") { activity ->
+                val assets = requireNotNull(BundledShaderCatalog.from(activity).find(selected.libraryShaderId)).assetPaths
+                val paths = MPVLib.getPropertyString("glsl-shaders").orEmpty().split(':')
+                if (paths.size != assets.size || paths.any { it.isBlank() }) return@waitFor false
+                for ((asset, file) in assets.zip(paths)) {
+                    assertArrayEquals(activity.assets.open(asset).use { it.readBytes() }, java.io.File(file).readBytes())
+                }
+                true
+            }
+            scenario.onActivity { original.setPictureSettings(BRIGHT) }
+            waitFor(scenario, "Disabling the preset must keep color correction on the same paused player") { activity ->
+                if (!MPVLib.getPropertyString("glsl-shaders").isNullOrEmpty()) return@waitFor false
+                assertSame(original, field<Player>(activity, "player"))
+                assertFalse(original.playWhenReady)
+                assertNull(original.playerError)
+                assertPictureProperties(BRIGHT)
+                true
+            }
+            assertRenderedColor(scenario)
+        }
+    }
+
     @Test fun pausedExoUpdatesBrightnessContrastSaturationAndNeutralWithoutReplacingItsRenderer() = withFixture(BRIGHT) { fixture, settings ->
         val store = PicturePresetStore(settings)
         val neutral = store.save("원본 픽셀 검사", PictureSettings())

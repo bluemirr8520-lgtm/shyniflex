@@ -56,18 +56,37 @@ class CreditsPlaybackTest {
             waitFor(scenario, "Intro action must be visible") {
                 it.findViewById<View>(R.id.player_segment_skip).isShown
             }
-            scenario.onActivity { assertPillBackground(it.findViewById(R.id.player_segment_skip)) }
+            scenario.onActivity {
+                val skip = it.findViewById<Button>(R.id.player_segment_skip)
+                assertPillBackground(skip)
+                assertLabelFits(skip)
+            }
             seekPaused(scenario, 3_000)
             waitFor(scenario, "Credit and next actions must be visible") {
                 it.findViewById<View>(R.id.player_segment_skip).isShown &&
                     it.findViewById<View>(R.id.player_credits_next).isShown
             }
             scenario.onActivity {
-                assertPillBackground(it.findViewById(R.id.player_segment_skip))
-                assertPillBackground(it.findViewById(R.id.player_credits_next))
+                for (id in listOf(R.id.player_segment_skip, R.id.player_credits_next)) {
+                    val button = it.findViewById<Button>(id)
+                    assertPillBackground(button)
+                    assertLabelFits(button)
+                }
             }
             fixture.assertHealthy()
         }
+
+    private fun assertLabelFits(button: Button) {
+        val layout = requireNotNull(button.layout)
+        val width = button.width - button.compoundPaddingLeft - button.compoundPaddingRight
+        val height = button.height - button.compoundPaddingTop - button.compoundPaddingBottom
+        assertEquals(button.text.length, layout.getLineEnd(layout.lineCount - 1))
+        for (line in 0 until layout.lineCount) {
+            assertEquals(0, layout.getEllipsisCount(line))
+            assertTrue("Every glyph must fit horizontally", layout.getLineWidth(line) <= width + 1)
+        }
+        assertTrue("The full label must fit vertically", layout.height <= height)
+    }
 
     private fun assertPillBackground(button: Button) {
         val background = requireNotNull(button.background.constantState).newDrawable().mutate()

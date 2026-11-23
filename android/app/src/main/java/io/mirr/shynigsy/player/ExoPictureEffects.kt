@@ -47,11 +47,14 @@ internal fun exoPictureColorMatrix(settings: PictureSettings, useHdr: Boolean = 
     val red = .2126f * (1f - saturation)
     val green = .7152f * (1f - saturation)
     val blue = .0722f * (1f - saturation)
+    // Blend corrected red towards 75% green + 25% blue. Their common luma and
+    // brightness offset cancel, so neutral tones keep the same brightness.
+    val redMix = -value.redTone / 100f * saturation
     val offset = value.brightness / 100f + (1f - gain) * .5f
     return floatArrayOf(
-        gain * (red + saturation), gain * red, gain * red, 0f,
-        gain * green, gain * (green + saturation), gain * green, 0f,
-        gain * blue, gain * blue, gain * (blue + saturation), 0f,
+        gain * (red + saturation - redMix), gain * red, gain * red, 0f,
+        gain * (green + .75f * redMix), gain * (green + saturation), gain * green, 0f,
+        gain * (blue + .25f * redMix), gain * blue, gain * (blue + saturation), 0f,
         offset, offset, offset, 1f,
     )
 }

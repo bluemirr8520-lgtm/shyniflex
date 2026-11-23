@@ -5,6 +5,34 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PicturePresetStoreTest {
+    @Test fun androidPlaybackStartsBrighterUntilTheUserSavesAPictureSetting() {
+        val prefs = MemoryPreferences()
+        val store = PicturePresetStore(prefs)
+        assertEquals(PictureSettings(brightness = 8, redTone = -8), store.readCurrent())
+        assertTrue(prefs.all.isEmpty())
+        for (chosen in listOf(PictureSettings(), PictureSettings(-2, 4, 1))) {
+            store.writeCurrent(chosen)
+            assertEquals(chosen, PicturePresetStore(prefs).readCurrent())
+        }
+    }
+
+    @Test fun previousDefaultMigratesWithItsShaderWhileCustomValuesAndNamedPresetsAreKept() {
+        val prefs = MemoryPreferences()
+        val store = PicturePresetStore(prefs)
+        val old = """{"schema":1,"brightness":5,"contrast":0,"saturation":0,"libraryShaderId":"plezy/nvscaler"}"""
+        prefs.edit().putString("picture_settings_v1", old).apply()
+        assertEquals(defaultAndroidPicture.copy(libraryShaderId = "plezy/nvscaler"), store.readCurrent())
+        val previousLook = PictureSettings(brightness = 5, libraryShaderId = "plezy/nvscaler")
+        val saved = store.save("내 설정", previousLook)
+        prefs.edit().putString("picture_selected_preset_v1", saved.id).apply()
+        assertEquals(previousLook, store.readCurrent())
+        store.clearSelectedPreset()
+        store.writeCurrent(previousLook)
+        assertEquals(previousLook, store.readCurrent())
+        prefs.edit().putString("picture_settings_v1", old.replace("\"brightness\":5", "\"brightness\":4")).apply()
+        assertEquals(previousLook.copy(brightness = 4), store.readCurrent())
+    }
+
     @Test fun currentVideoSettingsSurviveANewStoreWithoutTouchingPlaybackOrSubtitleSettings() {
         val preferences = MemoryPreferences()
         preferences.edit().putString("subtitle_font", "system").putFloat("playback_speed", 1.5f)
@@ -17,6 +45,25 @@ class PicturePresetStoreTest {
         assertEquals(4, preferences.getInt("resize_mode", -1))
         assertEquals("exo", preferences.getString("playback_engine", null))
         assertEquals(5, preferences.all.size)
+    }
+
+    @Test fun selectedColorPresetKeepsItsIdentityAcrossShaderTogglesAndStoreReopen() {
+        val preferences = MemoryPreferences()
+        val store = PicturePresetStore(preferences)
+        val active = PictureSettings(8, 2, -1, libraryShaderId = "plezy/artcnn_c4f16_dn")
+        val saved = store.save("테스트", active)
+        assertEquals(PictureSettings(8, 2, -1), saved.settings)
+        store.writeCurrent(active)
+        assertTrue(store.selectAppliedPreset(saved.id, active))
+        val reopened = PicturePresetStore(preferences)
+        assertEquals(active, reopened.readCurrent())
+        assertEquals(saved, reopened.currentPreset())
+        for (id in listOf("plezy/nvscaler", null)) {
+            val changed = active.copy(libraryShaderId = id)
+            reopened.writeCurrent(changed)
+            assertEquals(saved, reopened.currentPreset())
+            assertEquals(changed, PicturePresetStore(preferences).readCurrent())
+        }
     }
 
     @Test fun customSaveReplaceAndDeletePersistAcrossStoreInstances() {
@@ -101,7 +148,7 @@ class PicturePresetStoreTest {
     }
 
     /** In-memory SharedPreferences contract fixture; no Android storage or mocking library. */
-    private class MemoryPreferences : SharedPreferences {
+    internal class MemoryPreferences : SharedPreferences {
         private val values = linkedMapOf<String, Any>()
         override fun getAll(): MutableMap<String, *> = LinkedHashMap(values)
         override fun getString(key: String?, defValue: String?): String? = values[key] as? String ?: defValue

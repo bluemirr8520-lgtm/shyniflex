@@ -32,6 +32,32 @@ class ExoPictureEffectsTest {
             apply(PictureSettings(contrast = 50), floatArrayOf(.25f, .5f, .75f)), .00001f)
     }
 
+    @Test fun defaultRedCorrectionReducesARedCastWithoutTintingNeutralHighlights() {
+        val redOnly = PictureSettings(redTone = -8)
+        val lifted = redOnly.copy(brightness = 8)
+        val sample = floatArrayOf(.8f, .4f, .2f)
+        assertArrayEquals(floatArrayOf(.764f, .4f, .2f), apply(redOnly, sample), .00001f)
+        assertArrayEquals(floatArrayOf(.844f, .48f, .28f), apply(lifted, sample), .00001f)
+        for (level in listOf(0f, .25f, .5f, 1f)) {
+            val neutral = FloatArray(3) { level }
+            assertArrayEquals(neutral, apply(redOnly, neutral), .00001f)
+        }
+        assertArrayEquals(identity, exoPictureColorMatrix(lifted, useHdr = true), 0f)
+    }
+
+    @Test fun redAdjustmentComposesWithExistingColorControlsAndCanBeReversedOrCleared() {
+        val controls = PictureSettings(brightness = 7, contrast = 12, saturation = 30)
+        val sample = floatArrayOf(.35f, .6f, .27f)
+        val original = apply(controls, sample)
+        for (redTone in listOf(-8, 0, 8)) {
+            val (r, g, b) = original
+            val wanted = r - redTone / 100f * (.75f * g + .25f * b - r)
+            assertArrayEquals(floatArrayOf(wanted, g, b), apply(controls.copy(redTone = redTone), sample), .00001f)
+        }
+        val monochrome = controls.copy(saturation = -100)
+        assertArrayEquals(apply(monochrome, sample), apply(monochrome.copy(redTone = -8), sample), 0f)
+    }
+
     @Test fun zeroSaturationProducesGrayscaleWithBt709Luminance() {
         assertArrayEquals(floatArrayOf(.2126f, .2126f, .2126f),
             apply(PictureSettings(saturation = -100), floatArrayOf(1f, 0f, 0f)), .00001f)

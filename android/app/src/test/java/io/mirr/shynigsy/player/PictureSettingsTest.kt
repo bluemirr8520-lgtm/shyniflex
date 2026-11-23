@@ -13,9 +13,45 @@ class PictureSettingsTest {
     @Test fun neutralAndBoundedAdjustmentsRetainIndependentAxes() {
         assertTrue(PictureSettings().isNeutral)
         assertFalse(PictureSettings(saturation = -1).isNeutral)
+        assertFalse(PictureSettings(redTone = -8).isNeutral)
+        assertEquals(30, PictureSettings(redTone = 99).normalized().redTone)
+        val tinted = PictureSettings(8, 2, 3, redTone = -8)
+        assertEquals(tinted, decodePictureSettings(encodePictureSettings(tinted)))
         assertEquals(PictureSettings(50, -50, 100), PictureSettings(Int.MAX_VALUE, Int.MIN_VALUE, 101).normalized())
         assertEquals(PictureSettings(-50, 50, -100), PictureSettings(-51, 51, -101).normalized())
         assertEquals(PictureSettings(12, -5, 0), PictureSettings(12, -5, 0).normalized())
+    }
+
+    @Test fun retiredShadersAreClearedWithoutChangingColors() {
+        val colors = PictureSettings(5, -4, 8)
+        val legacy = JSONObject(encodePictureSettings(colors))
+            .put("sharpen", true).put("denoise", true).put("chromaDenoise", true)
+        for (id in listOf("anime4k/anime4k-mode-c-fast", "hongyue/profile-hd", "../../other")) {
+            assertEquals(colors, decodePictureSettings(legacy.put("libraryShaderId", id).toString()))
+        }
+    }
+
+    @Test fun plezySelectionPersistsSeparatelyFromColorPresets() {
+        val settings = PictureSettings(libraryShaderId = "plezy/anime4k_fast_modeA")
+        assertEquals(settings, decodePictureSettings(encodePictureSettings(settings)))
+        assertFalse(settings.hasBuiltInEffects)
+        assertFalse(settings.isNeutral)
+        assertEquals(PictureSettings(), settings.colorsOnly())
+    }
+
+    @Test fun catalogIncludesInstalledPlezyPresetsAndRetainsRepeatedPasses() {
+        val root = java.io.File("src/main/assets")
+        val catalog = BundledShaderCatalog.parse(root.resolve("shaders/plezy/catalog.json").readText())
+        assertEquals(listOf(1, 6, 6, 6), catalog.groups.map { it.entries.size })
+        for (shader in catalog.groups.flatMap { it.entries }) {
+            assertEquals(shader, catalog.find(shader.id))
+            assertTrue(shader.descriptionKo.any { it in '가'..'힣' })
+            for (path in shader.assetPaths) assertTrue(path, root.resolve(path).isFile)
+        }
+        assertEquals("shaders/plezy/nvscaler/NVScaler.glsl", catalog.find("plezy/nvscaler")!!.assetPaths.single())
+        val doubleRestore = catalog.find("plezy/anime4k_fast_modeAA")!!.assetPaths
+        assertEquals(listOf("Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl", "Anime4K_Restore_CNN_M.glsl"),
+            doubleRestore.map { it.substringAfterLast('/') })
     }
 
     @Test fun builtInsOfferOneNeutralResetAndFourDistinctVideoLooks() {
