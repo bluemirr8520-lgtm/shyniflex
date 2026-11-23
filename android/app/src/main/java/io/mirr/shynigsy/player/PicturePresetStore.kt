@@ -8,7 +8,7 @@ internal class PicturePresetStore(private val preferences: SharedPreferences) {
     fun readCurrent(): PictureSettings {
         val saved = preferences.all[CURRENT_KEY]
         if (saved == null) return defaultAndroidPicture
-        return decodePictureSettings(saved as? String)
+        return decodePictureSettings(saved as? String, upgradeOldDefault = !preferences.contains(SELECTED_KEY))
     }
 
     fun writeCurrent(value: PictureSettings) = synchronized(lock) {
