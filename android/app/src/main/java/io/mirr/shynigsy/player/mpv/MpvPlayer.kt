@@ -36,6 +36,7 @@ import androidx.media3.common.util.UnstableApi
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import `is`.xyz.mpv.MPVLib
+import io.mirr.shynigsy.player.BundledShaderCatalog
 import io.mirr.shynigsy.player.PictureSettings
 import java.io.File
 import java.util.Locale
@@ -95,6 +96,23 @@ class MpvPlayer(
     private var surfaceSize = Size.ZERO
     private var configuredVideoLayout: Triple<Boolean, Boolean, Float>? = null
     private var configuredPictureSettings = PictureSettings()
+    private val shaderChain = MpvShaderChain(
+        directory = File(app.filesDir, "mpv-plezy-shaders"),
+        lookup = { BundledShaderCatalog.from(app).find(it)?.assetPaths.orEmpty() },
+        openAsset = { app.assets.open(it) },
+        capabilities = { mpvShaderGpu },
+        post = { action -> dispatch(action) },
+        setPaths = ::setShaderPaths,
+        unavailable = { id -> onLibraryShaderUnavailable?.invoke(id) },
+    )
+    private val shaderLogObserver = object : MPVLib.LogObserver {
+        override fun logMessage(prefix: String, level: Int, text: String) {
+            if (!prefix.startsWith("vo/gpu") || level !in 1..MPVLib.MpvLogLevel.MPV_LOG_LEVEL_ERROR) return
+            if (text.contains("shader source:", true) || text.contains("shader compile log (status=0)", true) ||
+                text.contains("shader link log (status=0)", true) || text.contains("parsing user shader", true) ||
+                text.contains("failed to create texture", true)) shaderChain.rendererFailed()
+        }
+    }
     private var firstFrame = false
     private var nativeFirstFrameSeen = false
     private var stopRequested = false
@@ -130,6 +148,7 @@ class MpvPlayer(
     }
 
     var onNativeSubtitleText: ((String) -> Unit)? = null
+    var onLibraryShaderUnavailable: ((String) -> Unit)? = null
     var onNativePosition: ((Long) -> Unit)? = null
     /** Called after the current file's headers/tracks are loaded, before a frame
      * is required. Hosts must post a handoff instead of releasing in this callback. */
@@ -218,8 +237,10 @@ class MpvPlayer(
             options.putAll(playbackProfile.mpvOptions())
             options.forEach { (key, value) -> MPVLib.setOptionString(key, value) }
             MPVLib.addObserver(this)
+            MPVLib.addLogObserver(shaderLogObserver)
             MPVLib.init()
             alive = true
+            shaderChain.discardPreviousShaderCache(app.filesDir)
             observe("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
             observe("duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
             observe("demuxer-cache-duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
@@ -243,6 +264,7 @@ class MpvPlayer(
                     return try { block(); true } catch (_: LinkageError) { false } catch (_: Exception) { false }
                 }
                 if (nativeCreateAttempted) {
+                    cleanup { MPVLib.removeLogObserver(shaderLogObserver) }
                     val observerRemoved = cleanup { MPVLib.removeObserver(this) }
                     // The bundled JNI does not expose whether destroy is safe
                     // between create and init. Keep ownership in that state.
@@ -294,6 +316,8 @@ class MpvPlayer(
         bufferedMs = positionMs; durationMs = conversionTimeline?.duration(null) ?: originalDuration.durationMs ?: C.TIME_UNSET
         seekable = isServerConverted && durationMs > 0
         loaded = false; loading = false; status = Player.STATE_IDLE; failure = null
+        shaderChain.setRedTone(0)
+        if (item?.localConfiguration?.drmConfiguration != null) shaderChain.select(null)
         startObserved = false; firstFrame = false; nativeFirstFrameSeen = false; readiness.reset()
         tracks = Tracks.EMPTY; nativeTracks = emptyList(); video = VideoSize.UNKNOWN; clearCues()
         return done()
@@ -411,6 +435,8 @@ class MpvPlayer(
     override fun handleRelease(): ListenableFuture<*> {
         if (released) return done()
         released = true
+        shaderChain.close()
+        onLibraryShaderUnavailable = null
         onNativeHeadersReady = null
         loadGeneration++
         main.removeCallbacksAndMessages(null)
@@ -419,6 +445,7 @@ class MpvPlayer(
         if (receiverRegistered) { app.unregisterReceiver(noisy); receiverRegistered = false }
         clearOutput()
         MPVLib.removeObserver(this)
+        MPVLib.removeLogObserver(shaderLogObserver)
         if (alive) { alive = false; MPVLib.destroy() }
         synchronized(OWNER_LOCK) { if (owner === this) owner = null }
         status = Player.STATE_IDLE; loading = false; loaded = false; clearCues()
@@ -584,7 +611,10 @@ class MpvPlayer(
     override fun eventProperty(property: String) = dispatchNative {
         when (property) {
             "track-list" -> { nativeTracks = emptyList(); tracks = Tracks.EMPTY }
-            "video-params" -> if (loaded) updateVideoSize()
+            "video-params" -> if (loaded) {
+                updateVideoSize()
+                if (configuredPictureSettings.libraryShaderId == PLEZY_NVSCALER_ID || configuredPictureSettings.redTone != 0) applyLibraryShader()
+            }
             "sub-text" -> clearCues()
             "eof-reached" -> reconcileNativeEof()
         }
@@ -751,6 +781,27 @@ class MpvPlayer(
         MPVLib.setPropertyDouble("brightness", configuredPictureSettings.brightness.toDouble())
         MPVLib.setPropertyDouble("contrast", configuredPictureSettings.contrast.toDouble())
         MPVLib.setPropertyDouble("saturation", configuredPictureSettings.saturation.toDouble())
+        applyLibraryShader()
+    }
+
+    private fun applyLibraryShader() {
+        if (item?.localConfiguration?.drmConfiguration != null) {
+            shaderChain.select(null)
+            shaderChain.setRedTone(0)
+            return
+        }
+        val requested = configuredPictureSettings.libraryShaderId
+        shaderChain.select(effectivePlezyShader(requested, MPVLib::getPropertyString))
+        shaderChain.setRedTone(if (loaded) sdrRedTone(configuredPictureSettings.redTone, MPVLib::getPropertyString) else 0)
+    }
+
+    private fun setShaderPaths(paths: List<File>) {
+        // Only GPU errors are needed for shader fallback. Keep streams, demuxers and all other logs disabled.
+        val shadersEnabled = paths.isNotEmpty()
+        MPVLib.setPropertyString("msg-level", if (shadersEnabled) "all=no,vo/gpu=error" else "all=no")
+        val value = paths.joinToString(":") { it.absolutePath }
+        MPVLib.setPropertyString("glsl-shaders", value)
+        if (shadersEnabled && MPVLib.getPropertyString("glsl-shaders") != value) shaderChain.rendererFailed()
     }
 
     private fun attach(surface: Surface) {

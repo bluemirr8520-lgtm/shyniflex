@@ -1,0 +1,206 @@
+{
+  "groups": [
+    {
+      "name": "NVIDIA Image Scaling",
+      "entries": [
+        {
+          "id": "nvscaler",
+          "label": "NVScaler",
+          "files": [
+            "nvscaler/NVScaler.glsl"
+          ],
+          "descriptionKo": "SDR 영상을 확대할 때 윤곽을 선명하게 합니다."
+        }
+      ]
+    },
+    {
+      "name": "ArtCNN",
+      "entries": [
+        {
+          "id": "artcnn_c4f16_neutral",
+          "label": "ArtCNN C4F16",
+          "files": [
+            "artcnn/ArtCNN_C4F16.glsl"
+          ],
+          "descriptionKo": "경량 · 밝기 성분을 두 배로 확대합니다."
+        },
+        {
+          "id": "artcnn_c4f16_dn",
+          "label": "ArtCNN C4F16 Denoise",
+          "files": [
+            "artcnn/ArtCNN_C4F16_DN.glsl"
+          ],
+          "descriptionKo": "경량 · 노이즈를 줄이고 부드럽게 확대합니다."
+        },
+        {
+          "id": "artcnn_c4f16_ds",
+          "label": "ArtCNN C4F16 Denoise + Sharpen",
+          "files": [
+            "artcnn/ArtCNN_C4F16_DS.glsl"
+          ],
+          "descriptionKo": "경량 · 노이즈를 줄이고 윤곽을 선명하게 확대합니다."
+        },
+        {
+          "id": "artcnn_c4f32_neutral",
+          "label": "ArtCNN C4F32",
+          "files": [
+            "artcnn/ArtCNN_C4F32.glsl"
+          ],
+          "descriptionKo": "고화질 · 밝기 성분을 두 배로 확대합니다."
+        },
+        {
+          "id": "artcnn_c4f32_dn",
+          "label": "ArtCNN C4F32 Denoise",
+          "files": [
+            "artcnn/ArtCNN_C4F32_DN.glsl"
+          ],
+          "descriptionKo": "고화질 · 노이즈를 줄이고 부드럽게 확대합니다."
+        },
+        {
+          "id": "artcnn_c4f32_ds",
+          "label": "ArtCNN C4F32 Denoise + Sharpen",
+          "files": [
+            "artcnn/ArtCNN_C4F32_DS.glsl"
+          ],
+          "descriptionKo": "고화질 · 노이즈를 줄이고 윤곽을 선명하게 확대합니다."
+        }
+      ]
+    },
+    {
+      "name": "Anime4K Fast",
+      "entries": [
+        {
+          "id": "anime4k_fast_modeA",
+          "label": "Anime4K Fast A",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl"
+          ],
+          "descriptionKo": "빠른 모드 · 애니메이션의 선과 윤곽을 복원합니다."
+        },
+        {
+          "id": "anime4k_fast_modeB",
+          "label": "Anime4K Fast B",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_M.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "빠른 모드 · 선과 윤곽을 복원한 뒤 확대합니다."
+        },
+        {
+          "id": "anime4k_fast_modeC",
+          "label": "Anime4K Fast C",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_M.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "빠른 모드 · 애니메이션을 확대해 화면 크기에 맞춥니다."
+        },
+        {
+          "id": "anime4k_fast_modeAA",
+          "label": "Anime4K Fast A+A",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl"
+          ],
+          "descriptionKo": "빠른 모드 · 선과 윤곽을 두 차례 복원합니다."
+        },
+        {
+          "id": "anime4k_fast_modeBB",
+          "label": "Anime4K Fast B+B",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_M.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "빠른 모드 · 선과 윤곽을 두 차례 복원한 뒤 확대합니다."
+        },
+        {
+          "id": "anime4k_fast_modeCA",
+          "label": "Anime4K Fast C+A",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_M.glsl",
+            "anime4k/Anime4K_Restore_CNN_M.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "빠른 모드 · 먼저 확대한 뒤 선과 윤곽을 복원합니다."
+        }
+      ]
+    },
+    {
+      "name": "Anime4K HQ",
+      "entries": [
+        {
+          "id": "anime4k_hq_modeA",
+          "label": "Anime4K HQ A",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl"
+          ],
+          "descriptionKo": "고화질 모드 · 애니메이션의 선과 윤곽을 복원합니다."
+        },
+        {
+          "id": "anime4k_hq_modeB",
+          "label": "Anime4K HQ B",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_VL.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "고화질 모드 · 선과 윤곽을 복원한 뒤 확대합니다."
+        },
+        {
+          "id": "anime4k_hq_modeC",
+          "label": "Anime4K HQ C",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_VL.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "고화질 모드 · 애니메이션을 확대해 화면 크기에 맞춥니다."
+        },
+        {
+          "id": "anime4k_hq_modeAA",
+          "label": "Anime4K HQ A+A",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl"
+          ],
+          "descriptionKo": "고화질 모드 · 선과 윤곽을 두 차례 복원합니다."
+        },
+        {
+          "id": "anime4k_hq_modeBB",
+          "label": "Anime4K HQ B+B",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_VL.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "고화질 모드 · 선과 윤곽을 두 차례 복원한 뒤 확대합니다."
+        },
+        {
+          "id": "anime4k_hq_modeCA",
+          "label": "Anime4K HQ C+A",
+          "files": [
+            "anime4k/Anime4K_Clamp_Highlights.glsl",
+            "anime4k/Anime4K_Upscale_CNN_x2_VL.glsl",
+            "anime4k/Anime4K_Restore_CNN_VL.glsl",
+            "anime4k/Anime4K_AutoDownscalePre_x2.glsl"
+          ],
+          "descriptionKo": "고화질 모드 · 먼저 확대한 뒤 선과 윤곽을 복원합니다."
+        }
+      ]
+    }
+  ]
+}

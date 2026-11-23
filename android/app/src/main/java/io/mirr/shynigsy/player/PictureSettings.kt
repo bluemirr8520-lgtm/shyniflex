@@ -6,11 +6,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Video image adjustments only, independent of subtitles, resizing and the source file. */
-internal data class PictureSettings(val brightness: Int = 0, val contrast: Int = 0, val saturation: Int = 0) {
+internal data class PictureSettings(val brightness: Int = 0, val contrast: Int = 0, val saturation: Int = 0,
+    val libraryShaderId: String? = null, val redTone: Int = 0) {
     fun normalized() = copy(brightness = brightness.coerceIn(-50, 50),
-        contrast = contrast.coerceIn(-50, 50), saturation = saturation.coerceIn(-100, 100))
-    val isNeutral: Boolean get() = brightness == 0 && contrast == 0 && saturation == 0
+        contrast = contrast.coerceIn(-50, 50), saturation = saturation.coerceIn(-100, 100),
+        redTone = redTone.coerceIn(RED_TONE_RANGE))
+    fun colorsOnly() = copy(libraryShaderId = null)
+    val hasBuiltInEffects: Boolean get() = brightness != 0 || contrast != 0 || saturation != 0 || redTone != 0
+    val isNeutral: Boolean get() = !hasBuiltInEffects && libraryShaderId == null
 }
+
+internal val RED_TONE_RANGE = -30..30
+internal val defaultAndroidPicture = PictureSettings(brightness = 8, redTone = -8)
+
+private val libraryIdPattern = Regex("plezy/[A-Za-z0-9_]{1,80}")
+internal fun validLibraryShaderId(id: String): Boolean = libraryIdPattern.matches(id)
 
 internal data class PicturePreset(val id: String, val name: String, val settings: PictureSettings)
 internal const val MAX_PICTURE_PRESETS = 20
@@ -73,19 +83,24 @@ internal fun updatedPicturePresets(previous: List<PicturePreset>, name: String, 
         require(previous.size < MAX_PICTURE_PRESETS) { "프리셋은 최대 20개까지 저장할 수 있습니다." }
         require(customPresetId.matches(newId) && previous.none { it.id == newId }) { "프리셋을 저장하지 못했습니다." }
     }
-    val preset = PicturePreset(replaceId ?: newId, normalizedName, settings.normalized())
+    val preset = PicturePreset(replaceId ?: newId, normalizedName, settings.normalized().colorsOnly())
     return previous.toMutableList().apply { if (replacing == null) add(preset) else set(replacing, preset) }
 }
 
 internal fun encodePictureSettings(value: PictureSettings): String =
-    value.normalized().toJson().put("schema", 1).toString()
+    value.normalized().toJson().put("schema", 1)
+        .put("libraryShaderId", value.libraryShaderId).toString()
 
-internal fun decodePictureSettings(value: String?): PictureSettings {
+internal fun decodePictureSettings(value: String?, upgradeOldDefault: Boolean = false): PictureSettings {
     if (value == null || value.length !in 1..512) return PictureSettings()
     return runCatching {
         val root = JSONObject(value)
         require(root.strictInt("schema") == 1)
-        root.toPictureSettings()
+        val decoded = root.toPictureSettings().copy(
+            libraryShaderId = (root.opt("libraryShaderId") as? String)?.takeIf(::validLibraryShaderId))
+        if (upgradeOldDefault && !root.has("redTone") && decoded.colorsOnly() == PictureSettings(brightness = 5))
+            defaultAndroidPicture.copy(libraryShaderId = decoded.libraryShaderId)
+        else decoded
     }.getOrDefault(PictureSettings())
 }
 
@@ -127,9 +142,9 @@ internal fun decodePicturePresets(value: String?): List<PicturePreset> {
 }
 
 private fun PictureSettings.toJson() = JSONObject().put("brightness", brightness)
-    .put("contrast", contrast).put("saturation", saturation)
+    .put("contrast", contrast).put("saturation", saturation).put("redTone", redTone)
 private fun JSONObject.toPictureSettings() = PictureSettings(strictInt("brightness"),
-    strictInt("contrast"), strictInt("saturation")).normalized()
+    strictInt("contrast"), strictInt("saturation"), redTone = if (has("redTone")) strictInt("redTone") else 0).normalized()
 private fun JSONObject.strictInt(key: String): Int {
     val number = get(key) as? Number ?: error("integer")
     val value = number.toLong()

@@ -3,6 +3,7 @@ package io.mirr.shynigsy.player
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.SystemClock
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -12,8 +13,14 @@ import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.test.core.app.ActivityScenario
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.action.ViewActions.click as touchClick
+import androidx.test.espresso.action.ViewActions.scrollTo
+import androidx.test.espresso.matcher.RootMatchers.isDialog
+import androidx.test.espresso.matcher.ViewMatchers.withTagValue
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.hamcrest.CoreMatchers.equalTo
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -45,12 +52,6 @@ class PictureSettingsDialogTest {
             it.setTheme(io.mirr.shynigsy.R.style.Theme_ShyniFlix)
             originalTouchMode = it.window.decorView.isInTouchMode
         }
-        // This fixture explicitly creates the TV dialog on a phone. A phone's touch mode
-        // prevents its remote-only rows from receiving focus and consumes the first DPAD
-        // event merely to leave touch mode. Establish the real remote input mode first.
-        instrumentation.setInTouchMode(false)
-        changedInputMode = true
-        idle()
     }
 
     @Suppress("DEPRECATION")
@@ -86,7 +87,83 @@ class PictureSettingsDialogTest {
         press(KeyEvent.KEYCODE_DPAD_DOWN)
         scenario.onActivity { assertTrue(view("picture-saturation").hasFocus()) }
         press(KeyEvent.KEYCODE_DPAD_DOWN)
+        scenario.onActivity { assertTrue(view("picture-red-tone").hasFocus()) }
+        press(KeyEvent.KEYCODE_DPAD_LEFT)
+        scenario.onActivity { assertEquals(-1, current.redTone) }
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
+        scenario.onActivity { assertTrue(view("picture-library").hasFocus()) }
+        press(KeyEvent.KEYCODE_DPAD_DOWN)
         scenario.onActivity { assertTrue(view("picture-reset").hasFocus()) }
+    }
+
+    @Test fun browsingTheLibraryAppliesOnlyTheConfirmedSelection() {
+        show()
+        click("picture-library")
+        val id = "plezy/anime4k_fast_modeA"
+        scenario.onActivity { assertTrue(applied.isEmpty()) }
+        click(id)
+        scenario.onActivity {
+            assertEquals(id, store.readCurrent().libraryShaderId)
+            assertTrue(view(id).hasFocus())
+            val lines = (view(id) as TextView).text.lines()
+            assertEquals("✓ Anime4K Fast A", lines.first())
+            assertTrue(lines[1].contains("복원"))
+            assertEquals("셰이더", (view("picture-page-title") as TextView).text.toString())
+        }
+        click("shader-off")
+        scenario.onActivity { assertNull(store.readCurrent().libraryShaderId) }
+    }
+
+    @Test fun touchscreenSelectsPlezyPresetsAndRestoresTheSavedSelection() {
+        val baseline = PictureSettings(brightness = 5, saturation = 8)
+        val scaler = "plezy/nvscaler"
+        val denoise = "plezy/artcnn_c4f16_dn"
+        assertEquals(defaultAndroidPicture, store.readCurrent())
+        current = baseline
+        store.writeCurrent(baseline)
+        show(television = false)
+        scenario.onActivity {
+            assertTrue(helper.dialog.window!!.decorView.isInTouchMode)
+            assertEquals(Gravity.BOTTOM, helper.dialog.window!!.attributes.gravity)
+        }
+
+        tap("picture-library")
+        scenario.onActivity { assertTrue(applied.isEmpty()) }
+        tap(scaler)
+        scenario.onActivity { assertEquals(listOf(baseline.copy(libraryShaderId = scaler)), applied) }
+        tap(denoise)
+        scenario.onActivity {
+            assertEquals(baseline.copy(libraryShaderId = denoise), store.readCurrent())
+            helper.dismiss()
+            current = PicturePresetStore(preferences).readCurrent()
+        }
+
+        show(television = false)
+        tap("picture-library")
+        scenario.onActivity {
+            assertTrue((view(denoise) as TextView).text.startsWith("✓"))
+            assertEquals(2, applied.size)
+        }
+        tap("shader-off")
+        scenario.onActivity {
+            assertEquals(baseline, current)
+            assertEquals(baseline, PicturePresetStore(preferences).readCurrent())
+            assertEquals(3, applied.size)
+        }
+    }
+
+    @Test fun colorPresetsPreserveTheSelectedPlezyShaderAndOriginalResetClearsIt() {
+        current = PictureSettings(libraryShaderId = "plezy/artcnn_c4f16_dn")
+        show()
+        click("picture-presets")
+        click("picture-lg-lg_vivid")
+        scenario.onActivity {
+            val vivid = lgInspiredPicturePresets().single { it.id == "lg_vivid" }
+            assertEquals(vivid.settings.copy(libraryShaderId = "plezy/artcnn_c4f16_dn"), current)
+            assertEquals(vivid, store.currentPreset())
+        }
+        click("picture-reset")
+        scenario.onActivity { assertEquals(PictureSettings(), store.readCurrent()) }
     }
 
     @Test fun staleOpeningConfirmAndPresetFocusNeverApplyAnImageChange() {
@@ -229,15 +306,20 @@ class PictureSettingsDialogTest {
         }
     }
 
-    private fun show() {
+    @Suppress("DEPRECATION")
+    private fun show(television: Boolean = true) {
+        // A phone consumes the first DPAD event when leaving touch mode. Set the input mode
+        // before showing each fixture so remote and touchscreen tests exercise their normal paths.
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(!television)
+        changedInputMode = true
         scenario.onActivity { activity ->
-            helper = PictureSettingsDialog(activity, true, store, { current }, { value ->
+            helper = PictureSettingsDialog(activity, television, store, { current }, { value ->
                 current = value; applied += value; store.writeCurrent(value)
             }, supportNote = { "적용 값 ${current.brightness}" })
             helper.show()
         }
         idle()
-        awaitInitialRemoteFocus()
+        if (television) awaitInitialRemoteFocus()
     }
 
     private fun awaitInitialRemoteFocus() {
@@ -264,6 +346,10 @@ class PictureSettingsDialogTest {
     private fun click(tag: String) {
         scenario.onActivity { assertTrue(view(tag).performClick()) }
         idle()
+    }
+
+    private fun tap(tag: String) {
+        onView(withTagValue(equalTo<Any>(tag))).inRoot(isDialog()).perform(scrollTo(), touchClick())
     }
 
     private fun press(key: Int) {

@@ -5,7 +5,11 @@ import java.util.UUID
 
 /** Device-local video preferences. No media identity, playback engine or subtitle settings are stored here. */
 internal class PicturePresetStore(private val preferences: SharedPreferences) {
-    fun readCurrent(): PictureSettings = decodePictureSettings(preferences.all[CURRENT_KEY] as? String)
+    fun readCurrent(): PictureSettings {
+        val stored = preferences.all[CURRENT_KEY]
+        return if (stored == null) defaultAndroidPicture
+        else decodePictureSettings(stored as? String, upgradeOldDefault = !preferences.contains(SELECTED_KEY))
+    }
 
     fun writeCurrent(value: PictureSettings) = synchronized(lock) {
         val normalized = value.normalized()
@@ -17,12 +21,14 @@ internal class PicturePresetStore(private val preferences: SharedPreferences) {
 
     /** Identity distinguishes neutral LG modes from Original without changing the color values. */
     fun currentPreset(value: PictureSettings = readCurrent()): PicturePreset? = synchronized(lock) {
-        selectedPreset(value.normalized()) ?: builtInPicturePresets().firstOrNull { it.settings == value.normalized() }
+        val colors = value.normalized().colorsOnly()
+        selectedPreset(colors) ?: builtInPicturePresets().firstOrNull { it.settings == colors }
     }
 
     fun selectAppliedPreset(id: String, value: PictureSettings): Boolean = synchronized(lock) {
         val normalized = value.normalized()
-        val found = availablePresets().firstOrNull { it.id == id && it.settings == normalized }
+        val colors = normalized.colorsOnly()
+        val found = availablePresets().firstOrNull { it.id == id && it.settings == colors }
         if (found == null || readCurrent() != normalized) return@synchronized false
         preferences.edit().putString(SELECTED_KEY, found.id).apply()
         true
@@ -34,7 +40,8 @@ internal class PicturePresetStore(private val preferences: SharedPreferences) {
 
     private fun selectedPreset(value: PictureSettings): PicturePreset? {
         val id = preferences.all[SELECTED_KEY] as? String ?: return null
-        return availablePresets().firstOrNull { it.id == id && it.settings == value }
+        val colors = value.colorsOnly()
+        return availablePresets().firstOrNull { it.id == id && it.settings == colors }
     }
 
     fun list(): List<PicturePreset> = synchronized(lock) {

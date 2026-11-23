@@ -6,6 +6,9 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.SystemClock
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.RelativeSizeSpan
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
@@ -42,6 +45,8 @@ internal class PictureSettingsDialog(
     private var pageShownAt = Long.MAX_VALUE
     private var generation = 0
     private var dismissed = false
+    private var libraryBack: (() -> Unit)? = null
+    private val shaderCatalog by lazy { BundledShaderCatalog.from(context) }
     private var supportLabel: TextView? = null
     private var selectedPresetLabel: TextView? = null
     private val focusRows = mutableListOf<View>()
@@ -66,6 +71,10 @@ internal class PictureSettingsDialog(
 
     init {
         dialog.setOnKeyListener { _, code, event ->
+            if (code == KeyEvent.KEYCODE_BACK && libraryBack != null) {
+                if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) libraryBack?.invoke()
+                return@setOnKeyListener true
+            }
             // The opening settings button may still have a confirm release/repeat in flight.
             val confirm = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER ||
                 code == KeyEvent.KEYCODE_NUMPAD_ENTER
@@ -100,6 +109,7 @@ internal class PictureSettingsDialog(
 
     private fun beginPage(title: String? = null, note: String? = null) {
         hideKeyboard()
+        libraryBack = null
         generation++
         pageShownAt = SystemClock.uptimeMillis()
         content.removeAllViews()
@@ -118,7 +128,7 @@ internal class PictureSettingsDialog(
 
     private fun showControls(focusTag: String = "picture-brightness") {
         value = current().normalized()
-        beginPage("영상 화면 설정", "기기 밝기가 아닌 영상의 밝기·색을 조절합니다." +
+        beginPage("영상 화면 설정", "밝기·대비·채도·붉은색을 조절하고 셰이더를 선택합니다." +
             if (television) "\n좌우로 조절 · 위아래로 이동" else "\n설정은 기기에 자동 저장합니다.")
         supportLabel = text("", 12f, secondary = true).apply {
             tag = "picture-support-note"; setPadding(dp(4), 0, dp(4), dp(8))
@@ -133,13 +143,56 @@ internal class PictureSettingsDialog(
         adjustment("밝기", "picture-brightness", -50..50, { it.brightness }) { next, amount -> next.copy(brightness = amount) }
         adjustment("대비 (농도)", "picture-contrast", -50..50, { it.contrast }) { next, amount -> next.copy(contrast = amount) }
         adjustment("채도", "picture-saturation", -100..100, { it.saturation }) { next, amount -> next.copy(saturation = amount) }
+        adjustment("붉은색", "picture-red-tone", RED_TONE_RANGE, { it.redTone }) { next, amount -> next.copy(redTone = amount) }
+        val selected = value.libraryShaderId?.let { shaderCatalog.find(it) }
+        action(selected?.let { shaderLabel(it, "셰이더 · ${it.label}") } ?: "셰이더 · 끔", "picture-library") { showShaderLibrary() }
         action("원본으로 되돌리기", "picture-reset") {
             apply(PictureSettings(), "builtin_original"); showControls("picture-reset")
+        }
+        action("기본 보정 적용", "picture-default") {
+            apply(defaultAndroidPicture.copy(libraryShaderId = value.libraryShaderId))
+            showControls("picture-default")
         }
         action("프리셋 불러오기·관리", "picture-presets") { showPresets() }
         action("현재 설정 저장", "picture-save-current") { showNameEditor(null, value) }
         action("닫기", "picture-close") { dismiss() }
         finishPage(focusTag)
+    }
+
+    private fun showShaderLibrary() {
+        beginPage("셰이더", "재생 중 하나를 선택해 적용합니다. NVScaler는 SDR 영상 업스케일에 적용됩니다.")
+        libraryBack = { showControls("picture-library") }
+        action(if (value.libraryShaderId == null) "✓ 끔" else "끔", "shader-off") {
+            apply(value.copy(libraryShaderId = null), store.currentPreset(value)?.id)
+            showControls("picture-library")
+        }
+        for (group in shaderCatalog.groups) {
+            content.addView(text(group.name, 14f, secondary = true).apply {
+                setPadding(dp(4), dp(12), dp(4), dp(4))
+            }, matchWrap())
+            for (shader in group.entries) {
+                val name = if (value.libraryShaderId == shader.id) "✓ ${shader.label}" else shader.label
+                action(shaderLabel(shader, name), shader.id) {
+                    val previous = shaderCatalog.find(value.libraryShaderId)
+                    apply(value.copy(libraryShaderId = shader.id), store.currentPreset(value)?.id)
+                    val previousTag = previous?.id ?: "shader-off"
+                    content.findViewWithTag<TextView>(previousTag)?.text = previous?.let { shaderLabel(it, it.label) } ?: "끔"
+                    content.findViewWithTag<TextView>(shader.id)?.text = shaderLabel(shader, "✓ ${shader.label}")
+                    if (television) focus(shader.id)
+                }
+            }
+        }
+        action("영상 화면 설정으로", "shader-back") { showControls("picture-library") }
+        finishPage(value.libraryShaderId ?: "shader-off")
+    }
+
+    private fun shaderLabel(shader: BundledShader, title: String): CharSequence =
+        SpannableString("$title\n${shader.descriptionKo}").apply {
+            setSpan(RelativeSizeSpan(0.92f), title.length + 1, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+
+    fun refreshShaderSelection() {
+        if (dialog.isShowing && !dismissed) showControls("picture-library")
     }
 
     private fun adjustment(label: String, tagName: String, range: IntRange,
@@ -189,12 +242,12 @@ internal class PictureSettingsDialog(
         beginPage()
         visibleBuiltInPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-builtin-${preset.id}") {
-                apply(preset.settings, preset.id); showControls("picture-presets")
+                applyColorPreset(preset)
             }
         }
         visibleLgInspiredPicturePresets().forEach { preset ->
             action("${preset.name}  ·  ${summary(preset.settings)}", "picture-lg-${preset.id}") {
-                apply(preset.settings, preset.id); showControls("picture-presets")
+                applyColorPreset(preset)
             }
         }
         content.addView(text("내 프리셋", 13f, secondary = true).apply {
@@ -212,7 +265,7 @@ internal class PictureSettingsDialog(
 
     private fun showSavedPreset(preset: PicturePreset) {
         beginPage(preset.name, summary(preset.settings))
-        action("적용", "picture-apply") { apply(preset.settings, preset.id); showControls("picture-presets") }
+        action("적용", "picture-apply") { applyColorPreset(preset) }
         action("현재 설정으로 덮어쓰기", "picture-overwrite") {
             showConfirmation("프리셋 덮어쓰기", "‘${preset.name}’을 현재 영상 설정으로 바꿀까요?", "덮어쓰기") {
                 store.save(preset.name, value, preset.id)
@@ -277,6 +330,11 @@ internal class PictureSettingsDialog(
         }
     }
 
+    private fun applyColorPreset(preset: PicturePreset) {
+        apply(preset.settings.copy(libraryShaderId = value.libraryShaderId), preset.id)
+        showControls("picture-presets")
+    }
+
     private fun apply(settings: PictureSettings, presetId: String? = null) {
         value = settings.normalized()
         store.clearSelectedPreset()
@@ -296,8 +354,10 @@ internal class PictureSettingsDialog(
         supportLabel?.apply { text = note.orEmpty(); visibility = if (note == null) View.GONE else View.VISIBLE }
     }
 
-    private fun action(label: String, tagName: String, onClick: () -> Unit) {
+    private fun action(label: CharSequence, tagName: String, onClick: () -> Unit) {
         val view = button(label, tagName, onClick).apply {
+            setSingleLine(false)
+            ellipsize = null
             gravity = Gravity.CENTER_VERTICAL or Gravity.START
             setPadding(dp(8), dp(4), dp(8), dp(4))
         }
@@ -305,7 +365,7 @@ internal class PictureSettingsDialog(
         focusRows.add(view)
     }
 
-    private fun button(label: String, tagName: String, onClick: () -> Unit) = Button(context).apply {
+    private fun button(label: CharSequence, tagName: String, onClick: () -> Unit) = Button(context).apply {
         id = View.generateViewId(); tag = tagName; text = label
         textSize = 13f; isAllCaps = false; setTextColor(colors.onSurface.toArgb())
         minHeight = dp(44); minimumHeight = dp(44); minWidth = 0; minimumWidth = 0
@@ -369,7 +429,7 @@ internal class PictureSettingsDialog(
     }
 
     private fun summary(settings: PictureSettings) =
-        "밝기 ${signed(settings.brightness)} · 대비 ${signed(settings.contrast)} · 채도 ${signed(settings.saturation)}"
+        "밝기 ${signed(settings.brightness)} · 대비 ${signed(settings.contrast)} · 채도 ${signed(settings.saturation)} · 붉은색 ${signed(settings.redTone)}"
     private fun signed(value: Int) = if (value > 0) "+$value" else "$value"
     private fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
     private fun matchWrap() = LinearLayout.LayoutParams(-1, -2)

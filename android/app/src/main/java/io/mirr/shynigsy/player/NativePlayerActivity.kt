@@ -152,6 +152,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var subtitleListJob: Job? = null
     private var subtitleListFailed = false
     private var subtitleManuallySelected = false
+    private lateinit var seriesSubtitles: SeriesSubtitlePreferences
     private var deferredSubtitlePreference: SubtitleTrack? = null
     private var playbackFirstFrameReported = false
     private var subtitleDialog: AlertDialog? = null
@@ -422,6 +423,10 @@ class NativePlayerActivity : AppCompatActivity() {
         savedInstanceState?.getStringArrayList("watchedReached")?.let { watchedReached.addAll(it) }
         val settings = getSharedPreferences("gsy_settings", MODE_PRIVATE)
         pictureSettings = pictureStore.readCurrent()
+        if (pictureSettings.libraryShaderId?.let { BundledShaderCatalog.from(this).find(it) == null } == true) {
+            pictureSettings = pictureSettings.copy(libraryShaderId = null)
+            pictureStore.writeCurrent(pictureSettings)
+        }
         val deviceId = settings.getString("device_id", null) ?: UUID.randomUUID().toString().also {
             settings.edit().putString("device_id", it).apply()
         }
@@ -438,7 +443,10 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitlePolicyContentKey = subtitlePlaybackContentKey(spec)
         subtitleDefaultAudioLanguage = savedInstanceState?.getString("subtitleDefaultAudioLanguage")
         subtitleAudioDefaultOff = savedInstanceState?.getBoolean("subtitleAudioDefaultOff", false) ?: false
-        subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", defaultSubtitlesEnabled(spec)) ?: defaultSubtitlesEnabled(spec)
+        seriesSubtitles = SeriesSubtitlePreferences(getSharedPreferences("series_subtitles", MODE_PRIVATE),
+            subtitleAccountScope(server, session.userName, session.token))
+        val initialSubtitles = seriesSubtitles.enabled(spec, subtitleDefaultAudioLanguage)
+        subtitlesEnabled = savedInstanceState?.getBoolean("subtitles", initialSubtitles) ?: initialSubtitles
         subtitleManuallySelected = savedInstanceState?.getBoolean("subtitleManuallySelected", false) ?: false
         restoredLocalSubtitleId = savedInstanceState?.getString("localSubtitle")
         externalSubtitleId = if (!subtitlesEnabled) null else if (savedInstanceState != null)
@@ -704,19 +712,13 @@ class NativePlayerActivity : AppCompatActivity() {
             }
         }
         root.addView(lockButton, FrameLayout.LayoutParams(dp(62), dp(48), Gravity.TOP or Gravity.END))
-        segmentSkipButton = Button(this).apply {
+        segmentSkipButton = segmentActionButton().apply {
             id = R.id.player_segment_skip
-            visibility = View.GONE
-            textSize = 14f; setTextColor(Color.WHITE); applySegmentActionHighlight(this)
-            setPadding(dp(16), 0, dp(16), 0)
             setOnClickListener { skipCurrentSegment() }
         }
-        creditsNextButton = Button(this).apply {
+        creditsNextButton = segmentActionButton().apply {
             id = R.id.player_credits_next
-            visibility = View.GONE
-            text = "다음 화"; textSize = 14f
-            setTextColor(Color.WHITE); applySegmentActionHighlight(this)
-            setPadding(dp(12), 0, dp(16), 0)
+            text = "다음 화"
             setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_player_next_episode, 0, 0, 0)
             compoundDrawablePadding = dp(6)
             contentDescription = "다음 화 재생"
@@ -728,8 +730,9 @@ class NativePlayerActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             descendantFocusability = if (television) ViewGroup.FOCUS_BLOCK_DESCENDANTS else ViewGroup.FOCUS_AFTER_DESCENDANTS
             visibility = View.GONE
-            addView(segmentSkipButton, LinearLayout.LayoutParams(-2, dp(48)))
-            addView(creditsNextButton, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(8) })
+            val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+            addView(segmentSkipButton, LinearLayout.LayoutParams(wrap, wrap))
+            addView(creditsNextButton, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = dp(8) })
         }
         root.addView(segmentActions, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.RIGHT))
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
@@ -777,8 +780,6 @@ class NativePlayerActivity : AppCompatActivity() {
                     isFocusableInTouchMode = true
                 }
             }
-            applySegmentActionHighlight(segmentSkipButton)
-            applySegmentActionHighlight(creditsNextButton)
             segmentSkipButton.isFocusableInTouchMode = true
             creditsNextButton.isFocusableInTouchMode = true
             listOf(segmentSkipButton, creditsNextButton).forEach { button ->
@@ -936,8 +937,10 @@ class NativePlayerActivity : AppCompatActivity() {
         if (!::segmentActions.isInitialized) return
         val safe = insets?.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
         (segmentActions.layoutParams as? FrameLayout.LayoutParams)?.let { layout ->
-            layout.leftMargin = dp(24) + (safe?.left ?: 0)
-            layout.rightMargin = dp(24) + (safe?.right ?: 0)
+            // Keep the complete label inside the visible area on TVs with overscan.
+            val sideMargin = if (television) maxOf(dp(24), dp(resources.configuration.screenWidthDp) / 20) else dp(24)
+            layout.leftMargin = sideMargin + (safe?.left ?: 0)
+            layout.rightMargin = sideMargin + (safe?.right ?: 0)
             layout.bottomMargin = dp(if (playerView.isControllerFullyVisible) 148 else 124) + (safe?.bottom ?: 0)
             segmentActions.layoutParams = layout
         }
@@ -1245,7 +1248,7 @@ class NativePlayerActivity : AppCompatActivity() {
                     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
                 val data = OkHttpDataSource.Factory(http).setDefaultRequestProperties(headers)
                 ExoPlayer.Builder(this).apply {
-                    if (!pictureSettings.isNeutral && exoPictureBypassContent != subtitlePlaybackContentKey(spec))
+                    if (pictureSettings.hasBuiltInEffects && exoPictureBypassContent != subtitlePlaybackContentKey(spec))
                         setRenderersFactory(ExoPictureRenderersFactory(this@NativePlayerActivity))
                 }.setMediaSourceFactory(DefaultMediaSourceFactory(data))
                     .setHandleAudioBecomingNoisy(true).build().apply {
@@ -1253,7 +1256,7 @@ class NativePlayerActivity : AppCompatActivity() {
                         setAudioAttributes(AudioAttributes.DEFAULT, true)
                         // A neutral first playback keeps Exo's direct surface. Install a real effect
                         // before prepare only when needed; never activate an empty effects pipeline.
-                        if (!pictureSettings.isNeutral && exoPictureBypassContent != subtitlePlaybackContentKey(spec)) {
+                        if (pictureSettings.hasBuiltInEffects && exoPictureBypassContent != subtitlePlaybackContentKey(spec)) {
                             val effect = ExoPictureEffect(pictureSettings)
                             setVideoEffects(listOf(effect))
                             exoPictureEffect = effect; exoPictureOwner = this
@@ -1290,6 +1293,17 @@ class NativePlayerActivity : AppCompatActivity() {
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
+        if (created is MpvPlayer) {
+            created.onLibraryShaderUnavailable = { id ->
+                if (player === created && pictureSettings.libraryShaderId == id) {
+                    pictureSettings = pictureSettings.copy(libraryShaderId = null)
+                    pictureStore.writeCurrent(pictureSettings)
+                    created.setPictureSettings(pictureSettings)
+                    pictureDialog?.refreshShaderSelection()
+                    toast("이 기기에서 셰이더를 적용할 수 없어 셰이더 모음을 껐습니다.")
+                }
+            }
+        }
         applyPictureToPlayer()
         chapterCreditsOwner = created.takeIf { created is ExoPlayer && chapterCarry != null &&
             chapterCarry.source == originalChapterSource(spec) }
@@ -1573,9 +1587,10 @@ class NativePlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun fallbackFromExoAtPosition(active: Player, requestedPosition: Long?, playIntent: Boolean? = null) {
+    private fun fallbackFromExoAtPosition(active: Player, requestedPosition: Long?, playIntent: Boolean? = null,
+        explainManualFallback: Boolean = true) {
         if (active !is ExoPlayer || player !== active || exiting || isDestroyed || refreshing) return
-        if (manualExoInUse) toast("이 영상 또는 자막을 ExoPlayer에서 지원하지 않아 MPV로 재생합니다.")
+        if (explainManualFallback && manualExoInUse) toast("이 영상 또는 자막을 ExoPlayer에서 지원하지 않아 MPV로 재생합니다.")
         val playing = playIntent ?: if (!visible || !exoValidated) resumeWhenVisible else active.playWhenReady
         // Before track validation Exo's default position can still be zero;
         // preserve the authorized resume point until it has a valid timeline.
@@ -1772,10 +1787,19 @@ class NativePlayerActivity : AppCompatActivity() {
         (view as? TextView)?.setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
     }
 
-    private fun applySegmentActionHighlight(view: View) {
-        applyControlHighlight(view)
-        view.background = getDrawable(R.drawable.player_credit_action)
-        view.backgroundTintList = null
+    private fun segmentActionButton() = Button(this).apply {
+        applyControlHighlight(this)
+        background = getDrawable(R.drawable.player_credit_action)
+        backgroundTintList = null
+        visibility = View.GONE
+        textSize = 14f
+        setTextColor(Color.WHITE)
+        setSingleLine(false)
+        ellipsize = null
+        includeFontPadding = true
+        if (android.os.Build.VERSION.SDK_INT >= 28) setFallbackLineSpacing(true)
+        minHeight = dp(48)
+        setPaddingRelative(dp(16), dp(6), dp(16), dp(6))
     }
 
     private fun applyMenuHighlight(view: View) {
@@ -2073,6 +2097,11 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun applyPlaybackEnginePreference(next: PlaybackEnginePreference) {
         if (exiting || isDestroyed || refreshing || navigationLoading) return
+        if (next == PlaybackEnginePreference.EXO && pictureSettings.libraryShaderId != null) {
+            pictureSettings = pictureSettings.copy(libraryShaderId = null)
+            pictureStore.writeCurrent(pictureSettings)
+            toast("ExoPlayer를 선택해 MPV 셰이더 모음을 껐습니다.")
+        }
         getSharedPreferences("gsy_settings", MODE_PRIVATE).edit().putString("playback_engine", next.key).apply()
         enginePreferenceForContent = next
         forceMpvSession = null
@@ -2119,7 +2148,7 @@ class NativePlayerActivity : AppCompatActivity() {
         subtitleOriginAttemptedKey = null
         subtitleDefaultAudioLanguage = null; subtitleAudioDefaultOff = false
         subtitleAutomaticRestoreRevision = null
-        subtitlesEnabled = defaultSubtitlesEnabled(spec)
+        subtitlesEnabled = seriesSubtitles.enabled(spec)
         subtitleManuallySelected = false; restoredLocalSubtitleId = null
         clearExternalSubtitle(); externalSubtitleId = if (subtitlesEnabled) preferredSubtitle(spec)?.id else null
         pendingTextPreference = null; deferredSubtitlePreference = null
@@ -2147,7 +2176,7 @@ class NativePlayerActivity : AppCompatActivity() {
             if (!localSubtitleCurrent(owner, account) || revision != localSubtitleChoiceRevision) return@launch
             localSubtitleRecord = record
             val restoreManualChoice = subtitleManuallySelected && subtitlesEnabled && record?.id == restoredLocalSubtitleId
-            if (record?.selected == true && (defaultSubtitlesEnabled(spec, subtitleDefaultAudioLanguage) || restoreManualChoice))
+            if (record?.selected == true && (seriesSubtitles.enabled(spec, subtitleDefaultAudioLanguage) || restoreManualChoice))
                 loadLocalSubtitle(owner, record, revision, account, manualSelection = restoreManualChoice)
         }
     }
@@ -2170,6 +2199,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 localSubtitleActiveId = record.id; localSubtitleTimeline = timeline
                 restoredLocalSubtitleId = record.id
                 subtitlesEnabled = true; subtitleManuallySelected = subtitleManuallySelected || manualSelection
+                if (manualSelection) seriesSubtitles.remember(spec, subtitleDefaultAudioLanguage, true)
                 player?.let { active ->
                     active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
@@ -2360,6 +2390,8 @@ class NativePlayerActivity : AppCompatActivity() {
                     deactivateLocalSubtitle()
                 }
                 choices[index].apply()
+                if (type == C.TRACK_TYPE_TEXT && choices[index].changesSelection)
+                    seriesSubtitles.remember(spec, subtitleDefaultAudioLanguage, subtitlesEnabled)
             }
             dialog.dismiss()
         }
@@ -2938,8 +2970,8 @@ class NativePlayerActivity : AppCompatActivity() {
         // track is a new unknown language; conversion output can omit the known source label.
         if (selectedAudio != null && (selectedAudio.language != null || !spec.isServerConversion))
             subtitleDefaultAudioLanguage = selectedAudio.language
+        val enabled = seriesSubtitles.enabled(spec, subtitleDefaultAudioLanguage)
         if (subtitleManuallySelected) return
-        val enabled = defaultSubtitlesEnabled(spec, subtitleDefaultAudioLanguage)
         if (enabled) {
             if (!subtitleAudioDefaultOff) return
             // A later foreign origin or a newly selected non-Korean audio restores the normal default.
@@ -3213,13 +3245,16 @@ class NativePlayerActivity : AppCompatActivity() {
             subtitleDefaultAudioLanguage = null; subtitleAudioDefaultOff = false
             subtitleAutomaticRestoreRevision = null
         }
-        subtitlesEnabled = if (sameSource) previous.subtitleEnabled else defaultSubtitlesEnabled(refreshed)
+        subtitlesEnabled = if (sameSource) previous.subtitleEnabled else seriesSubtitles.enabled(refreshed)
         subtitleManuallySelected = sameSource && previous.subtitleManual
         restoredLocalSubtitleId = previous.localSubtitle.takeIf { sameSource && subtitlesEnabled }
         clearExternalSubtitle(); externalSubtitleId = null
-        deferredSubtitlePreference = previous.subtitle.takeIf { subtitlesEnabled && refreshed.subtitlesPending }
-        val nativeText = previous.text.takeIf { subtitlesEnabled && !refreshed.isServerConversion && restoredLocalSubtitleId == null }
-        val preferredText = previous.subtitle ?: previous.text?.let { preference ->
+        val carryText = sameSource || seriesSubtitles.sameSeries(previous.spec, refreshed)
+        val previousSubtitle = previous.subtitle.takeIf { carryText }
+        val previousText = previous.text.takeIf { carryText }
+        deferredSubtitlePreference = previousSubtitle.takeIf { subtitlesEnabled && refreshed.subtitlesPending }
+        val nativeText = previousText.takeIf { subtitlesEnabled && !refreshed.isServerConversion && restoredLocalSubtitleId == null }
+        val preferredText = previousSubtitle ?: previousText?.let { preference ->
             matchingPlaybackTrack(preference, refreshed.subtitles.map { PlaybackTrackPreference(it.language, it.title ?: it.label) })
                 ?.let(refreshed.subtitles::get)
         }
@@ -3289,10 +3324,14 @@ class NativePlayerActivity : AppCompatActivity() {
         else -> "변환을 시작하지 못했습니다. 기존 재생을 유지합니다."
     }
 
-    private fun pictureSettingsLabel(): String = pictureStore.currentPreset(pictureSettings)?.name ?: "사용자 조절"
+    private fun pictureSettingsLabel(): String {
+        val color = pictureStore.currentPreset(pictureSettings)?.name ?: "사용자 조절"
+        return listOfNotNull(color,
+            pictureSettings.libraryShaderId?.let { BundledShaderCatalog.from(this).find(it)?.label }).joinToString(" · ")
+    }
 
     private fun pictureSupportNote(): String =
-        "MPV와 ExoPlayer에 같은 보정값을 적용합니다. ExoPlayer에서 처음 보정을 켤 때는 현재 위치에서 화면을 다시 준비합니다. HDR·Dolby Vision 보정은 MPV를 사용하며, 보호된 영상은 보정을 지원하지 않습니다."
+        "밝기·대비·채도는 두 엔진에서 조절합니다. 붉은색 보정은 SDR 영상에 적용됩니다. 셰이더와 HDR·Dolby Vision 보정은 MPV에서 적용합니다. 보호된 영상은 보정을 지원하지 않습니다."
 
     private fun showPictureSettings() {
         if (exiting || isFinishing || isDestroyed) return
@@ -3321,13 +3360,13 @@ class NativePlayerActivity : AppCompatActivity() {
                 if (exoPictureBypassContent == subtitlePlaybackContentKey(spec)) return
                 val effect = exoPictureEffect.takeIf { exoPictureOwner === active }
                 if (effect == null) {
-                    if (!pictureSettings.isNeutral) scheduleExoPictureRestart(active)
+                    if (pictureSettings.hasBuiltInEffects) scheduleExoPictureRestart(active)
                     return
                 }
                 effect.update(pictureSettings)
                 exoPictureRedraw?.let(handler::removeCallbacks)
                 exoPictureRedraw = null
-                // A live matrix updates on the next rendered frame. Paused playback needs the
+                // Live picture effects update on the next frame. Paused playback needs the
                 // replayable-frame cache; debounce slider input rather than flushing every step.
                 if (prepared && active.playbackState == Player.STATE_READY && !active.isPlaying) {
                     val redraw = Runnable {
@@ -3345,7 +3384,8 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     private fun handleUnsupportedExoPicture(active: ExoPlayer): Boolean {
-        val reason = exoPictureUnsupportedReason(active.currentTracks) ?: return false
+        val tracks = active.currentTracks
+        val reason = exoPictureUnsupportedReason(tracks)
         if (reason == ExoPictureUnsupportedReason.DRM) {
             val key = subtitlePlaybackContentKey(spec)
             if (exoPictureBypassContent != key) {
@@ -3355,19 +3395,26 @@ class NativePlayerActivity : AppCompatActivity() {
             if (exoPictureOwner === active) scheduleExoPictureRestart(active)
             return exoPictureOwner === active
         }
+        if (reason == null) {
+            if (pictureSettings.libraryShaderId == null || !tracks.isTypeSelected(C.TRACK_TYPE_VIDEO)) return false
+            schedulePictureMpvFallback(active, "선택한 셰이더를 MPV에서 적용합니다.", requiresLibrary = true)
+            return true
+        }
         schedulePictureMpvFallback(active, "HDR·Dolby Vision 영상 보정은 MPV에서 적용합니다.")
         return true
     }
 
-    private fun schedulePictureMpvFallback(active: ExoPlayer, message: String) {
+    private fun schedulePictureMpvFallback(active: ExoPlayer, message: String, requiresLibrary: Boolean = false) {
         if (exoPictureRestartPending === active) return
         exoPictureRestartPending = active
         handler.post {
             if (player !== active || exoPictureRestartPending !== active) return@post
             exoPictureRestartPending = null
-            if (exiting || isDestroyed || refreshing) return@post
+            if (exiting || isDestroyed || refreshing || navigationLoading || conversionLoading || closeLockedSpoilerPlayback() ||
+                exoPictureUnsupportedReason(active.currentTracks) == ExoPictureUnsupportedReason.DRM ||
+                (requiresLibrary && pictureSettings.libraryShaderId == null)) return@post
             captureTrackPreferencesForReplacement()
-            fallbackFromExo(active)
+            fallbackFromExoAtPosition(active, null, explainManualFallback = false)
             toast(message)
         }
     }
