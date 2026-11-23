@@ -35,7 +35,6 @@ internal data class LanguageStudySnapshot(
     val canMarkEnd: Boolean,
     val secondaryLabel: String,
     val speedLabel: String,
-    val canExplain: Boolean = false,
 )
 
 /** Keeps one scroll/focus tree while the playing sentence and repeat state change. */
@@ -50,7 +49,6 @@ internal class LanguageStudyDialog(
     private val onClearRepeat: () -> Unit,
     private val onSecondarySubtitles: () -> Unit,
     private val onSpeed: () -> Unit,
-    private val onExplain: () -> Unit = {},
 ) {
     // Keep the viewport that opened this menu, while still respecting smaller parent measures.
     private val contentHeightLimit = (context.resources.displayMetrics.heightPixels - dp(140)).coerceAtLeast(dp(100))
@@ -94,7 +92,6 @@ internal class LanguageStudyDialog(
     private val markEnd: Button
     private val secondary: Button
     private val speed: Button
-    private val explain: Button
     val dialog: AlertDialog = AlertDialog.Builder(context).setView(scroll).create()
     private val refresh = object : Runnable {
         override fun run() {
@@ -115,10 +112,6 @@ internal class LanguageStudyDialog(
         action("A 시작점 지정", "study-mark-a", onMarkStart)
         markEnd = action("B 끝점 지정", "study-mark-b", onMarkEnd)
         action("반복 해제", "study-clear-repeat", onClearRepeat)
-        explain = action("어휘·문법", "study-explain") {
-            dismiss()
-            onExplain()
-        }
         secondary = action("원문·번역 자막", "study-secondary") {
             dismiss()
             onSecondarySubtitles()
@@ -174,7 +167,6 @@ internal class LanguageStudyDialog(
         next.isEnabled = value.canNext
         sentenceRepeat.isEnabled = value.canRepeatSentence
         markEnd.isEnabled = value.canMarkEnd
-        explain.isEnabled = value.canExplain
         setTextIfChanged(secondary, "원문·번역 자막 · ${value.secondaryLabel.ifBlank { "꺼짐" }}")
         setTextIfChanged(speed, "배속 · ${value.speedLabel}")
         focusRows.forEach { row -> row.alpha = if (row.isEnabled) 1f else .4f }
