@@ -161,24 +161,29 @@ class LanguageStudyDialogTest {
     @Suppress("DEPRECATION")
     private fun show(television: Boolean, smallLandscape: Boolean = false) {
         scenario.onActivity { activity ->
-            val configuration = Configuration(activity.resources.configuration).apply {
-                uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or
-                    if (television) Configuration.UI_MODE_TYPE_TELEVISION else Configuration.UI_MODE_TYPE_NORMAL
-                if (smallLandscape) {
-                    orientation = Configuration.ORIENTATION_LANDSCAPE
-                    screenWidthDp = 640
-                    screenHeightDp = 360
-                }
-            }
-            val metrics = DisplayMetrics().apply {
-                setTo(activity.resources.displayMetrics)
-                if (smallLandscape) { widthPixels = (640 * density).toInt(); heightPixels = (360 * density).toInt() }
-            }
+            val fixtureConfiguration = Configuration(activity.resources.configuration)
+            val fixtureMetrics = DisplayMetrics().apply { setTo(activity.resources.displayMetrics) }
             // Keep the Activity's real window token while giving the production dialog a small viewport.
-            val fixtureResources = Resources(activity.assets, metrics, configuration)
+            // Resources' deprecated constructor may adopt the display's real dimensions; the
+            // explicit getters make this synthetic viewport stable before the dialog is created.
+            val fixtureResources = object : Resources(activity.assets, fixtureMetrics, fixtureConfiguration) {
+                override fun getDisplayMetrics(): DisplayMetrics = fixtureMetrics
+                override fun getConfiguration(): Configuration = fixtureConfiguration
+            }
+            fixtureConfiguration.uiMode = (fixtureConfiguration.uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or
+                if (television) Configuration.UI_MODE_TYPE_TELEVISION else Configuration.UI_MODE_TYPE_NORMAL
+            if (smallLandscape) {
+                fixtureConfiguration.orientation = Configuration.ORIENTATION_LANDSCAPE
+                fixtureConfiguration.screenWidthDp = 640
+                fixtureConfiguration.screenHeightDp = 360
+                fixtureMetrics.widthPixels = (640 * fixtureMetrics.density).toInt()
+                fixtureMetrics.heightPixels = (360 * fixtureMetrics.density).toInt()
+            }
             val context = object : ContextThemeWrapper(activity, R.style.Theme_ShyniFlix) {
                 override fun getResources(): Resources = fixtureResources
             }
+            if (smallLandscape) assertEquals("The fixture must supply the short viewport before creating the dialog",
+                (360 * fixtureMetrics.density).toInt(), context.resources.displayMetrics.heightPixels)
             helper = LanguageStudyDialog(context,
                 snapshot = { reads.incrementAndGet(); state },
                 onPrevious = { previousCalls++ },

@@ -52,7 +52,6 @@ internal class LanguageStudyDialog(
     private val onSpeed: () -> Unit,
     private val onExplain: () -> Unit = {},
 ) {
-    // Window attachment can replace a wrapped Context's display metrics (notably on Samsung).
     // Keep the viewport that opened this menu, while still respecting smaller parent measures.
     private val contentHeightLimit = (context.resources.displayMetrics.heightPixels - dp(140)).coerceAtLeast(dp(100))
     private val windowWidth = minOf(dp(360), (context.resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(1))
