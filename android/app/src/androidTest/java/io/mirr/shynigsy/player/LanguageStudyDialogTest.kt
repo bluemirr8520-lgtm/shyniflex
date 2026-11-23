@@ -38,6 +38,8 @@ class LanguageStudyDialogTest {
     private var endCalls = 0
     private var secondaryCalls = 0
     private var secondaryWasDismissed = false
+    private var explanationCalls = 0
+    private var explanationWasDismissed = false
 
     @Suppress("DEPRECATION")
     @Before fun launchIsolatedApplication() {
@@ -140,6 +142,21 @@ class LanguageStudyDialogTest {
         assertEquals("Dismiss removes the scheduled 500 ms refresh", readsAfterDismiss, reads.get())
     }
 
+    @Test fun explanationActionStartsDisabledAndClosesMenuBeforeOpeningExplanation() {
+        show(television = false)
+        scenario.onActivity {
+            assertFalse("Existing snapshots default to unavailable explanation", view("study-explain").isEnabled)
+            state = state.copy(canExplain = true)
+        }
+        awaitValue { view("study-explain").isEnabled }
+        scenario.onActivity {
+            assertTrue(view("study-explain").performClick())
+            assertEquals(1, explanationCalls)
+            assertTrue("Explanation must open after the polling menu closes", explanationWasDismissed)
+            assertFalse(helper.dialog.isShowing)
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun show(television: Boolean, smallLandscape: Boolean = false) {
         scenario.onActivity { activity ->
@@ -170,7 +187,8 @@ class LanguageStudyDialogTest {
                 onMarkEnd = { endCalls++; state = state.copy(canMarkEnd = false, repeatLabel = "A–B 반복") },
                 onClearRepeat = { state = state.copy(repeatLabel = "꺼짐", canMarkEnd = false) },
                 onSecondarySubtitles = { secondaryCalls++; secondaryWasDismissed = !helper.dialog.isShowing },
-                onSpeed = {})
+                onSpeed = {},
+                onExplain = { explanationCalls++; explanationWasDismissed = !helper.dialog.isShowing })
             helper.show()
         }
         idle()

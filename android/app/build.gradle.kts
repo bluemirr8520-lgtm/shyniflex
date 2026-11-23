@@ -38,8 +38,8 @@ android {
         manifestPlaceholders["shyniAppLabel"] = "@string/app_name"
         minSdk = 26
         targetSdk = 36
-        versionCode = 107
-        versionName = "1.0.106"
+        versionCode = 108
+        versionName = "1.0.107"
         buildConfigField("String", "OPENSUBTITLES_API_KEY", "\"$subtitleApplicationKey\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += targetAbi?.let { listOf(it) } ?: runtimeAbis }

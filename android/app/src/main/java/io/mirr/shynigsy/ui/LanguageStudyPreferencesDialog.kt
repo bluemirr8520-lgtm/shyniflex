@@ -50,7 +50,7 @@ internal fun LanguageStudyPreferencesDialog(onDismiss: () -> Unit) {
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = limit).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("문장·A–B 반복과 원문·번역 자막 선택은 영상 재생 중 재생 설정 → 어학 학습에서 사용할 수 있습니다.",
+                Text("문장·A–B 반복과 원문·번역 자막 선택은 영상 재생 중 재생 설정 → 어학 학습에서 사용할 수 있습니다. ‘어휘·문법’에서는 반복 구간이나 현재 문장의 영어 표현을 한국어로 설명합니다. 기기 내 기본 사전·문법 규칙을 사용하며 문맥에 따라 뜻이 다를 수 있습니다.",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 StudyPreferenceToggle("재생 시작 시 어학 메뉴 자동 열기", autoOpen, "study-preference-auto-open") {
                     autoOpen = it
