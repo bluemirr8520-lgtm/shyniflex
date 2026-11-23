@@ -85,8 +85,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.CancellationException
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -217,11 +215,6 @@ class NativePlayerActivity : AppCompatActivity() {
     private var studySentenceSourceKey: String? = null
     private var studySentenceOffsetMs = 0L
     private var studyDialog: LanguageStudyDialog? = null
-    private var studyExplanationDialog: StudyExplanationDialog? = null
-    private var studyExplanationJob: Job? = null
-    private val studyExplanationCache = object : LinkedHashMap<Pair<String, Boolean>, StudyExplanation>(16, .75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Boolean>, StudyExplanation>?) = size > 16
-    }
     private lateinit var studySecondaryOverlay: PlexSubtitleOverlayView
     private var studySecondaryOffsetMs = 0L
     private var studySecondaryAtTop = true
@@ -2403,7 +2396,6 @@ class NativePlayerActivity : AppCompatActivity() {
             studySecondaryAtTop = getSharedPreferences("gsy_settings", MODE_PRIVATE).getBoolean("study_secondary_top", true)
             applyStudySecondaryStyle()
             studyDialog?.dismiss(); studyDialog = null
-            dismissStudyExplanation(clearCache = true)
         }
         studySecondary.reset(localSubtitleOwner(client.server, client.token, spec))
     }
@@ -2468,7 +2460,7 @@ class NativePlayerActivity : AppCompatActivity() {
             },
             canMarkEnd = ready && studyRepeat.startMs?.let { position - it >= 500 } == true,
             secondaryLabel = if (studySecondary.loading) "번역 자막 불러오는 중" else studySecondary.label,
-            speedLabel = speedLabel(), canExplain = ready)
+            speedLabel = speedLabel())
     }
 
     private fun showLanguageStudy() {
@@ -2492,101 +2484,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 else toast("A보다 0.5초 이상 뒤에서 B를 지정해 주세요.")
             },
             onClearRepeat = { studyRepeat.clear() },
-            onSecondarySubtitles = ::showStudySubtitles, onSpeed = ::showSpeed,
-            onExplain = ::showStudyExplanation).also { it.show() }
-    }
-
-    /** Snapshot the selected passage once; playback and repeat polling never run the analyzer. */
-    private fun showStudyExplanation() {
-        if (!studyReady() || closeLockedSpoilerPlayback()) return
-        studyDialog?.dismiss(); studyDialog = null
-        dismissStudyExplanation()
-        val position = studyPosition()
-        val range = studyRepeat.range
-        val owner = localSubtitleOwnerKey ?: return
-        val account = client.token
-        val source = subtitlePlaybackContentKey(spec)
-        val embeddedOffset = subtitleOffsetMs
-        val label = if (range == null) "현재 문장" else
-            "반복 구간 · ${studyTime(range.startMs)} – ${studyTime(range.endMs)}"
-        val dialog = StudyExplanationDialog(this, label)
-        studyExplanationDialog = dialog
-        dialog.showLoading()
-        if (spec.sourceItem?.isSpoiler == true)
-            dialog.dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        dialog.onDismiss = {
-            if (studyExplanationDialog === dialog) {
-                studyExplanationDialog = null
-                studyExplanationJob?.cancel(); studyExplanationJob = null
-            }
-        }
-        fun current() = studyExplanationDialog === dialog && dialog.dialog.isShowing && visible &&
-            !exiting && !isDestroyed && source == subtitlePlaybackContentKey(spec) && localSubtitleCurrent(owner, account)
-        fun passage(timeline: SubtitleTimeline?, offset: Long): StudyExplanationInput? {
-            if (timeline == null) return null
-            return if (range != null) {
-                timeline.studyPassage(range.startMs, range.endMs, offset).let {
-                    StudyExplanationInput(it.text, it.truncated).takeIf { input -> input.text.isNotBlank() }
-                }
-            } else timeline.studyCueAt(position, offset)?.let { StudyExplanationInput(it.text) }
-        }
-        val (primary, offset) = studyTimeline()
-        val primaryInput = passage(primary, offset)
-        val secondaryInput = if (studySecondary.timeline !== primary)
-            passage(studySecondary.timeline, studySecondaryOffsetMs) else null
-        val parsed = selectStudyEnglishPassage(primaryInput, secondaryInput)
-        val embedded = if (subtitlesEnabled && localSubtitleActiveId == null && externalSubtitleId == null)
-            spec.subtitles.firstOrNull { it.id == embeddedServerSubtitleId && it.isEmbedded &&
-                !isMpvBitmapSubtitle(it.format ?: it.mimeType) } else null
-        // The live engine cue is safe for a single current sentence, but it cannot describe
-        // an entire A–B range. Range analysis needs a parsed, time-indexed text subtitle.
-        val liveText = if (range == null && subtitlesEnabled && localSubtitleActiveId == null && externalSubtitleId == null)
-            player?.currentCues?.cues?.mapNotNull { it.text?.toString() }?.joinToString("\n").orEmpty() else ""
-        studyExplanationJob = scope.launch {
-            try {
-                var input = parsed ?: selectStudyEnglishPassage(StudyExplanationInput(liveText))
-                if (input == null && embedded != null) {
-                    val cues = withTimeout(12_000) { subtitleLoader.load(embedded) }
-                    val timeline = withContext(Dispatchers.Default) { SubtitleTimeline(cues) }
-                    if (!current()) return@launch
-                    input = passage(timeline, embeddedOffset)
-                }
-                if (!current()) return@launch
-                if (input == null || input.text.isBlank()) {
-                    dialog.showMessage("이 구간에서 읽을 수 있는 영어 자막을 찾지 못했습니다. ‘원문·번역 자막’에서 영어 텍스트 자막을 선택하거나 자막 파일을 불러와 주세요. 이미지 자막의 글자는 분석하지 않습니다.")
-                    return@launch
-                }
-                if (selectStudyEnglishPassage(input) == null) {
-                    dialog.showMessage("선택한 구간에 영어 문장이 없습니다. 영어 원문 자막을 선택해 주세요.")
-                    return@launch
-                }
-                // Keep one extra character so the analyzer can detect a clipped word/surrogate.
-                val key = input.text.take(4_001) to (input.truncated || input.text.length > 4_000)
-                val result = studyExplanationCache[key] ?: withContext(Dispatchers.Default) {
-                    EnglishStudyAnalyzer.analyze(key.first, key.second)
-                }
-                if (current()) {
-                    studyExplanationCache[key] = result
-                    dialog.showResult(result)
-                }
-            } catch (cancel: CancellationException) {
-                if (cancel is kotlinx.coroutines.TimeoutCancellationException && current())
-                    dialog.showMessage("영어 자막을 불러오는 시간이 길어졌습니다. 잠시 후 다시 열거나 로컬 자막 파일을 선택해 주세요.")
-                else throw cancel
-            } catch (_: Exception) {
-                if (current()) dialog.showMessage("이 자막에서 설명을 불러오지 못했습니다. 영어 텍스트 자막을 선택하거나 로컬 자막 파일을 불러와 주세요.")
-            } finally {
-                if (studyExplanationDialog === dialog) studyExplanationJob = null
-            }
-        }
-    }
-
-    private fun dismissStudyExplanation(clearCache: Boolean = false) {
-        studyExplanationJob?.cancel(); studyExplanationJob = null
-        val dialog = studyExplanationDialog
-        studyExplanationDialog = null
-        dialog?.dismiss()
-        if (clearCache) studyExplanationCache.clear()
+            onSecondarySubtitles = ::showStudySubtitles, onSpeed = ::showSpeed).also { it.show() }
     }
 
     private fun seekStudySentence(next: Boolean) {
@@ -4257,7 +4155,6 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun releasePlayer() {
         studyDialog?.dismiss(); studyDialog = null
-        dismissStudyExplanation(clearCache = true)
         studyRepeat.resetPending()
         if (::studySecondaryOverlay.isInitialized) {
             studySecondaryOverlay.subtitleText = ""; studySecondaryOverlay.visibility = View.GONE
@@ -4341,7 +4238,6 @@ class NativePlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         studyDialog?.dismiss(); studyDialog = null
-        dismissStudyExplanation(clearCache = true)
         dismissPictureSettings()
         dismissTvSubtitlePosition()
         val interruptedSpoilerRotation = spoilerRecovery != null || spoilerRotationJob?.isActive == true
@@ -4378,7 +4274,6 @@ class NativePlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         studyDialog?.dismiss(); studyDialog = null
-        dismissStudyExplanation(clearCache = true)
         studyRepeat.resetPending()
         if (::studySecondaryOverlay.isInitialized) studySecondaryOverlay.visibility = View.GONE
         diagnosticDialog?.dismiss()
@@ -4430,7 +4325,6 @@ class NativePlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         studyDialog?.dismiss(); studyDialog = null
-        dismissStudyExplanation(clearCache = true)
         studySecondary.release()
         dismissPictureSettings()
         dismissContinuousLoading()
