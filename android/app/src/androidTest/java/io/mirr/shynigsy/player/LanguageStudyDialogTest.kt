@@ -73,7 +73,8 @@ class LanguageStudyDialogTest {
         scenario.onActivity {
             val scroll = view("study-dialog") as ScrollView
             val density = scroll.resources.displayMetrics.density
-            assertTrue("Short landscape viewport stays bounded", scroll.height <= (220 * density).toInt())
+            assertTrue("Short landscape viewport stays bounded: height=${scroll.height}, density=$density, " +
+                "resourceHeight=${scroll.resources.displayMetrics.heightPixels}", scroll.height <= (220 * density).toInt())
             assertTrue("The long menu must scroll instead of extending off screen", scroll.getChildAt(0).height > scroll.height)
             scroll.fullScroll(View.FOCUS_DOWN)
         }
