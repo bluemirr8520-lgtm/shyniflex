@@ -52,6 +52,10 @@ internal class LanguageStudyDialog(
     private val onSpeed: () -> Unit,
     private val onExplain: () -> Unit = {},
 ) {
+    // Window attachment can replace a wrapped Context's display metrics (notably on Samsung).
+    // Keep the viewport that opened this menu, while still respecting smaller parent measures.
+    private val contentHeightLimit = (context.resources.displayMetrics.heightPixels - dp(140)).coerceAtLeast(dp(100))
+    private val windowWidth = minOf(dp(360), (context.resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(1))
     private val television = (context.resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) ==
         Configuration.UI_MODE_TYPE_TELEVISION
     private val colors = CinemaAppearancePreferences(context).read().let {
@@ -69,10 +73,9 @@ internal class LanguageStudyDialog(
     }
     private val scroll = object : ScrollView(context) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val limit = (context.resources.displayMetrics.heightPixels - dp(140)).coerceAtLeast(dp(100))
             val offered = View.MeasureSpec.getSize(heightMeasureSpec)
-            val height = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) limit
-                else minOf(offered, limit)
+            val height = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) contentHeightLimit
+                else minOf(offered, contentHeightLimit)
             super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.AT_MOST))
         }
     }.apply {
@@ -145,8 +148,7 @@ internal class LanguageStudyDialog(
         shownAt = SystemClock.uptimeMillis()
         dialog.window?.apply {
             setGravity(if (television) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM)
-            setLayout(minOf(dp(360), (context.resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(1)),
-                WindowManager.LayoutParams.WRAP_CONTENT)
+            setLayout(windowWidth, WindowManager.LayoutParams.WRAP_CONTENT)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
         if (television) focusRows.firstOrNull { it.isEnabled }?.requestFocus()

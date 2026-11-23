@@ -62,6 +62,9 @@ class StudyExplanationDialogTest {
         idle()
         scenario.onActivity {
             val scroll = view("study-explanation-scroll") as ScrollView
+            val layout = view("study-explanation-dialog")
+            assertTrue("Explanation fits the original short viewport: height=${layout.height}",
+                layout.height <= (280 * layout.resources.displayMetrics.density).toInt())
             assertTrue("Long explanation scrolls inside the window", scroll.canScrollVertically(1))
             assertTrue("Result has a usable viewport", scroll.height >= (48 * scroll.resources.displayMetrics.density).toInt())
             assertCloseVisible()

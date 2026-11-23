@@ -23,6 +23,9 @@ import io.mirr.shynigsy.ui.cinemaColorScheme
 
 /** One view tree per analysis; playback polling never replaces its text, scroll, or focus. */
 internal class StudyExplanationDialog(private val context: Context, sourceLabel: String) {
+    // Capture the opening viewport before Android attaches the dialog's themed window.
+    private val windowWidth = minOf(dp(520), (context.resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(1))
+    private val windowHeight = minOf(dp(680), (context.resources.displayMetrics.heightPixels - dp(80)).coerceAtLeast(dp(160)))
     private val television = (context.resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) ==
         Configuration.UI_MODE_TYPE_TELEVISION
     private val colors = CinemaAppearancePreferences(context).read().let {
@@ -169,8 +172,7 @@ internal class StudyExplanationDialog(private val context: Context, sourceLabel:
         shownAt = SystemClock.uptimeMillis()
         dialog.window?.apply {
             setGravity(if (television) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.BOTTOM)
-            setLayout(minOf(dp(520), (context.resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(1)),
-                minOf(dp(680), (context.resources.displayMetrics.heightPixels - dp(80)).coerceAtLeast(dp(160))))
+            setLayout(windowWidth, windowHeight)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
         if (television) scroll.requestFocus()
