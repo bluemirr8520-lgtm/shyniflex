@@ -127,6 +127,37 @@ class AacConversionContextTest {
         assertNull(restored.selectedAudioCodec); assertFalse(restored.aacConversionContext)
     }
 
+    @Test fun authorizedConversionCanPlayAndRetryUnavailableSubtitleMetadataSeparately() = runBlocking {
+        val input = current(codec = "aac").copy(sourceItem = MediaItem(23, 8, "합성 작품", "movie", viewItemId = 501))
+        for (failTicket in listOf(true, false)) {
+            respond("""{"ticket":"video-only","library_view_id":8,"view_item_id":501}""")
+            if (failTicket) respond("{}", 503) else {
+                respond("""{"ticket":"subtitles"}""")
+                metadata.enqueueMetadata("/subtitles/90", MockResponse().setResponseCode(503).setBody("{}"))
+            }
+            val playback = client.convertPlayback(input, 480, 34_000)
+            assertEquals("video-only", playback.url.toHttpUrl().queryParameter("ticket"))
+            assertEquals(480, playback.conversionHeight)
+            assertEquals(34_000L, playback.streamStartPositionMs)
+            assertTrue(playback.subtitlesPending)
+            assertTrue(playback.subtitles.isEmpty())
+            respond("""{"ticket":"subtitles-renewed","library_view_id":8,"view_item_id":501}""")
+            metadata.enqueueMetadata("/subtitles/90", MockResponse().setBody("""[{"id":4,"source":"embedded","format":"ass","lang_code":"ko","stream_index":5,"playable":true}]"""))
+            val subtitle = client.playbackSubtitles(playback).single()
+            assertEquals("subtitles-renewed", subtitle.url.toHttpUrl().queryParameter("ticket"))
+        }
+    }
+
+    @Test fun supplementalMetadataFallbackRequiresMatchingGrantAndPreservesPermissionDenials() = runBlocking {
+        val input = current(codec = "aac").copy(sourceItem = MediaItem(23, 8, "합성 작품", "movie", viewItemId = 501))
+        for ((viewItem, status) in listOf(501 to 401, 501 to 403, 502 to 503)) {
+            respond("""{"ticket":"video","library_view_id":8,"view_item_id":$viewItem}""")
+            respond("{}", status)
+            val error = runCatching { client.convertPlayback(input, 480, 0) }.exceptionOrNull() as ApiException
+            assertEquals(status, error.status)
+        }
+    }
+
     @Test fun aMissingOldOrAudioOnlyProofCannotStartTheVideoStream() = runBlocking {
         val failures: List<(JSONObject) -> Unit> = listOf(
             { it.remove("playback_info") },

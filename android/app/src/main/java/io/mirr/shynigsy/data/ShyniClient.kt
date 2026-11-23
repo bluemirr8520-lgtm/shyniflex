@@ -2660,25 +2660,44 @@ class ShyniClient(
             if (current.durationMs > 0) it.coerceAtMost(current.durationMs) else it
         }
         val context = contextQuery(source.progressToken, source.libraryId, source.viewItemId)
-        val transcodeTicket = if (mode != null) {
+        val mediaGrant = if (mode != null) {
             request("/playback/transcode-ticket/${current.partId}?$context&mode=${encode(mode)}", JSONObject(), spoiler = current.sourceItem?.isSpoiler == true).objectValue()
-                .stringOrNull("ticket") ?: throw ApiException("변환 재생 티켓을 받지 못했습니다.")
         } else null
+        val transcodeTicket = mediaGrant?.let { it.stringOrNull("ticket") ?: throw ApiException("변환 재생 티켓을 받지 못했습니다.") }
+        val canDeferSubtitles = mode == "video" && mediaGrant != null && source.viewItemId != null &&
+            mediaGrant.exactPositiveInt("library_view_id") == source.libraryId &&
+            mediaGrant.exactPositiveInt("view_item_id") == source.viewItemId &&
+            (!mediaGrant.has("part_id") || mediaGrant.exactPositiveInt("part_id") == source.partId) &&
+            source.sourceItem?.let { it.id == source.itemId && it.libraryId == source.libraryId && it.viewItemId == source.viewItemId } == true
+        // A verified video ticket can start while a temporarily unavailable subtitle service recovers.
+        suspend fun <T> subtitleRequest(read: suspend () -> T): T? = try {
+            read()
+        } catch (error: ApiException) {
+            if (!canDeferSubtitles || (error.status !in setOf(408, 429) && error.status !in 500..599 &&
+                    !(error.status == 0 && error.cause is IOException))) throw error
+            currentCoroutineContext().ensureActive(); requireAuthorization()
+            null
+        }
         currentCoroutineContext().ensureActive(); requireAuthorization()
         // A transcode-only ticket cannot authorize original subtitle endpoints.
-        val original = if (originalStreamTicket != null && source === current) originalStreamTicket else
-            request("/stream-ticket/${current.partId}?$context", JSONObject(), spoiler = current.sourceItem?.isSpoiler == true).objectValue()
+        val original = if (originalStreamTicket != null && source === current) originalStreamTicket else subtitleRequest {
+            request("/stream-ticket/${current.partId}?$context", JSONObject(), spoiler = current.sourceItem?.isSpoiler == true,
+                singleAttempt = canDeferSubtitles).objectValue()
+        }
         currentCoroutineContext().ensureActive(); requireAuthorization()
-        val originalTicket = original.stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.")
-        val viewId = original.intOrNull("library_view_id") ?: current.libraryId
-        val viewItemId = original.intOrNull("view_item_id") ?: current.viewItemId
+        val originalTicket = original?.let { it.stringOrNull("ticket") ?: throw ApiException("재생 티켓을 받지 못했습니다.") }
+        val viewId = original?.intOrNull("library_view_id") ?: current.libraryId
+        val viewItemId = original?.intOrNull("view_item_id") ?: current.viewItemId
         if (source.aacConversionContext && mode == "video" && (viewId != source.libraryId || viewItemId != source.viewItemId)) {
             throw ApiException("AAC 변환의 라이브러리 항목이 변경되었습니다.", 403)
         }
         val refreshedContext = contextQuery(source.progressToken, viewId, viewItemId)
-        val subtitles = rows(request("/subtitles/${current.partId}?$refreshedContext", spoiler = current.sourceItem?.isSpoiler == true), "subtitles")
-            .mapNotNull { subtitleTrack(it, originalTicket, refreshedContext) }
-            .map { progressiveSubtitle(it, mode != null) }
+        val subtitles = originalTicket?.let { ticket -> subtitleRequest {
+            rows(request("/subtitles/${current.partId}?$refreshedContext", spoiler = current.sourceItem?.isSpoiler == true,
+                singleAttempt = canDeferSubtitles), "subtitles")
+                .mapNotNull { subtitleTrack(it, ticket, refreshedContext) }
+                .map { progressiveSubtitle(it, mode != null) }
+        } }
         currentCoroutineContext().ensureActive(); requireAuthorization()
         val streamUrl = if (transcodeTicket != null) {
             val parameters = mutableListOf("ticket=${encode(transcodeTicket)}", "mode=${encode(mode!!)}", "start_ms=$position")
@@ -2687,10 +2706,10 @@ class ShyniClient(
             selectedAudio?.let { parameters += "audio_stream_index=$it" }
             val path = if (mode == "music") "/transcode/music/${current.partId}" else "/transcode/${current.partId}"
             absoluteUrl("$path?${parameters.joinToString("&")}")
-        } else absoluteUrl("/stream/${current.partId}?ticket=${encode(originalTicket)}")
+        } else absoluteUrl("/stream/${current.partId}?ticket=${encode(requireNotNull(originalTicket))}")
         return source.copy(
             url = streamUrl, headers = emptyMap(), libraryId = viewId, viewItemId = viewItemId,
-            resumeMs = position, subtitles = subtitles, subtitlesPending = false,
+            resumeMs = position, subtitles = subtitles.orEmpty(), subtitlesPending = subtitles == null,
             sessionId = if (preserveSessionId || source !== current) source.sessionId else UUID.randomUUID().toString(),
             decision = when (mode) { "video" -> "video_transcode"; "audio", "music" -> "audio_transcode"; "remux" -> "direct_stream"; else -> "direct_play" },
             selectedAudioStreamIndex = selectedAudio,
