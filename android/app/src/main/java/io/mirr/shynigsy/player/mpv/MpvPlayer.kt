@@ -454,13 +454,16 @@ class MpvPlayer(
     }
 
     /** FFmpeg's original global stream index, never an audio-track ordinal. */
-    fun selectedAudioStreamIndex(): Int? {
+    fun selectedAudioStreamIndex(): Int? = selectedStreamIndex(C.TRACK_TYPE_AUDIO, "audio")
+    fun selectedSubtitleStreamIndex(): Int? = selectedStreamIndex(C.TRACK_TYPE_TEXT, "sub")
+
+    private fun selectedStreamIndex(trackType: Int, nativeType: String): Int? {
         if (!alive || !loaded) return null
-        if (C.TRACK_TYPE_AUDIO in selection.disabledTrackTypes) return null
-        val override = selection.overrides.values.firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.trackIndices.isNotEmpty() }
+        if (trackType in selection.disabledTrackTypes) return null
+        val override = selection.overrides.values.firstOrNull { it.type == trackType && it.trackIndices.isNotEmpty() }
         val selectedId = override?.let { it.mediaTrackGroup.getFormat(it.trackIndices[0]).id?.toIntOrNull() }
-        return (nativeTracks.firstOrNull { it.type == "audio" && it.id == selectedId }
-            ?: nativeTracks.firstOrNull { it.type == "audio" && it.selected })?.streamIndex
+        return (nativeTracks.firstOrNull { it.type == nativeType && it.id == selectedId }
+            ?: nativeTracks.firstOrNull { it.type == nativeType && it.selected })?.streamIndex
     }
 
     /** Shyni's embedded stream_index is FFmpeg's global stream index, not the subtitle ordinal. */

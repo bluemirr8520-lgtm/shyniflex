@@ -8,6 +8,7 @@ internal abstract class PlayerServer(val server: String, val token: String) {
     abstract fun headersFor(url: String): Map<String, String>
     open fun playbackUrl(spec: PlaybackSpec): String = spec.url
     abstract fun playbackHeaders(spec: PlaybackSpec): Map<String, String>
+    open fun onPlaybackSourceChanged(spec: PlaybackSpec?) = Unit
     abstract suspend fun playback(item: MediaItem): PlaybackSpec
     abstract suspend fun playbackNeighbors(spec: PlaybackSpec): PlaybackNeighbors
     abstract suspend fun renewPlayback(spec: PlaybackSpec, positionMs: Long, audioStreamIndex: Int?): PlaybackSpec
@@ -18,10 +19,8 @@ internal abstract class PlayerServer(val server: String, val token: String) {
     suspend fun playbackSubtitlesForEngine(spec: PlaybackSpec): PlaybackSubtitleInspection =
         shyni?.playbackSubtitlesForEngine(spec) ?: PlaybackSubtitleInspection(spec.subtitles, true)
 
-    suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
-        audioStreamIndex: Int? = spec.selectedAudioStreamIndex): PlaybackSpec =
-        shyni?.convertPlayback(spec, height, positionMs, audioStreamIndex)
-            ?: throw ApiException("이 서버는 원본 재생을 지원합니다.")
+    abstract suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
+        audioStreamIndex: Int? = spec.selectedAudioStreamIndex, subtitleStreamIndex: Int? = null): PlaybackSpec
 }
 
 internal class ShyniPlayerServer(server: String, token: String, deviceId: String) : PlayerServer(server, token) {
@@ -30,6 +29,8 @@ internal class ShyniPlayerServer(server: String, token: String, deviceId: String
     override fun playbackHeaders(spec: PlaybackSpec) = shyni.playbackHeaders(spec)
     override suspend fun playback(item: MediaItem) = shyni.playback(item, deferSubtitles = true)
     override suspend fun playbackNeighbors(spec: PlaybackSpec) = shyni.playbackNeighbors(spec)
+    override suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
+        audioStreamIndex: Int?, subtitleStreamIndex: Int?) = shyni.convertPlayback(spec, height, positionMs, audioStreamIndex)
     override suspend fun renewPlayback(spec: PlaybackSpec, positionMs: Long, audioStreamIndex: Int?) =
         shyni.renewPlayback(spec, positionMs, audioStreamIndex)
     override suspend fun saveProgress(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String,
@@ -41,6 +42,7 @@ internal class ShyniPlayerServer(server: String, token: String, deviceId: String
 internal class PlexPlayerServer(server: String, token: String, deviceId: String) : PlayerServer(server, token) {
     private val plex = PlexClient(server, token, deviceId)
     private val scrobbled = mutableSetOf<Pair<Int, String?>>()
+    private var activeTranscodeId: String? = null
 
     override fun headersFor(url: String) = plex.headersFor(url)
 
@@ -52,16 +54,20 @@ internal class PlexPlayerServer(server: String, token: String, deviceId: String)
         return spec.url.toHttpUrl().newBuilder().setQueryParameter("X-Plex-Token", token).build().toString()
     }
     override fun playbackHeaders(spec: PlaybackSpec): Map<String, String> = emptyMap()
+    override fun onPlaybackSourceChanged(spec: PlaybackSpec?) {
+        val previous = activeTranscodeId
+        val url = spec?.takeIf { it.isServerConversion }?.let { plex.resource(it.url) }
+        activeTranscodeId = url?.takeIf { it.encodedPath.endsWith("/video/:/transcode/universal/start.mkv") }
+            ?.queryParameter("transcodeSessionId")
+        if (previous != null && previous != activeTranscodeId) plex.stopTranscode(previous)
+    }
     override suspend fun playback(item: MediaItem) = plex.playback(item)
     override suspend fun playbackNeighbors(spec: PlaybackSpec) = plex.neighbors(spec)
-    override suspend fun renewPlayback(spec: PlaybackSpec, positionMs: Long, audioStreamIndex: Int?): PlaybackSpec {
-        val source = spec.sourceItem ?: throw ApiException("재생 중인 Plex 항목을 확인할 수 없습니다.")
-        val refreshed = plex.playback(source, selectedPartId = spec.partId)
-        if (refreshed.itemId != spec.itemId || refreshed.partId != spec.partId) {
-            throw ApiException("Plex 서버의 원본 파일이 변경되었습니다. 라이브러리에서 다시 열어 주세요.")
-        }
-        return refreshed.copy(resumeMs = positionMs, sessionId = spec.sessionId, selectedAudioStreamIndex = audioStreamIndex)
-    }
+    override suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
+        audioStreamIndex: Int?, subtitleStreamIndex: Int?) =
+        plex.convertPlayback(spec, height, positionMs, audioStreamIndex, subtitleStreamIndex)
+    override suspend fun renewPlayback(spec: PlaybackSpec, positionMs: Long, audioStreamIndex: Int?) =
+        convertPlayback(spec, spec.conversionHeight, positionMs, audioStreamIndex)
     override suspend fun saveProgress(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String,
         watchedMs: Long, completionEligible: Boolean) {
         val timelineState = when (state) {

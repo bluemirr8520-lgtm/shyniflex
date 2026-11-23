@@ -1,5 +1,6 @@
 package io.mirr.shynigsy.player.mpv
 
+import io.mirr.shynigsy.data.plexOffsetSeconds
 import java.net.URLDecoder
 
 /** Progressive conversion has a local zero clock and is reopened for each seek. */
@@ -36,12 +37,15 @@ internal class ServerConversionTimeline(sourceDurationMs: Long) {
             val queryIndex = resource.indexOf('?')
             val path = if (queryIndex >= 0) resource.substring(0, queryIndex) else resource
             val query = if (queryIndex >= 0) resource.substring(queryIndex + 1) else ""
+            val plex = path.endsWith("/video/:/transcode/universal/start.mkv")
+            val offsetKey = if (plex) "offset" else "start_ms"
+            val offset = if (plex) plexOffsetSeconds(positionMs) else positionMs.toString()
             val kept = query.split('&').filter { parameter ->
                 val key = parameter.substringBefore('=')
                 val decoded = runCatching { URLDecoder.decode(key, "UTF-8") }.getOrDefault(key)
-                parameter.isNotEmpty() && decoded != "start_ms"
+                parameter.isNotEmpty() && decoded != offsetKey
             }
-            return path + "?" + (kept + "start_ms=$positionMs").joinToString("&") + fragment
+            return path + "?" + (kept + "$offsetKey=$offset").joinToString("&") + fragment
         }
 
         private fun add(left: Long, right: Long): Long = if (Long.MAX_VALUE - left < right) Long.MAX_VALUE else left + right

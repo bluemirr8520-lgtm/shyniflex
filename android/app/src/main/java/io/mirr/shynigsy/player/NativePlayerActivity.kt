@@ -1300,6 +1300,7 @@ class NativePlayerActivity : AppCompatActivity() {
         exoValidated = created !is ExoPlayer
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
+        client.onPlaybackSourceChanged(spec)
         applyPictureToPlayer()
         chapterCreditsOwner = created.takeIf { created is ExoPlayer && chapterCarry != null &&
             chapterCarry.source == originalChapterSource(spec) }
@@ -1959,7 +1960,7 @@ class NativePlayerActivity : AppCompatActivity() {
                                 showResizeNotice()
                             }.setNegativeButton("닫기", null).show()
                     }
-                    if (client.shyni != null) addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
+                    addRow(conversionMenuTitle, conversionLabel()) { showConversion() }
                     addRow("오디오 트랙", selectedTrackLabel(C.TRACK_TYPE_AUDIO)) { showTracks(C.TRACK_TYPE_AUDIO) }
                     addRow("자막 선택", if (!subtitlesEnabled) "끔" else selectedTrackLabel(C.TRACK_TYPE_TEXT)) { showTracks(C.TRACK_TYPE_TEXT) }
                     addRow("자막 글꼴", PlexSubtitleFonts.options(this).firstOrNull { it.key == subtitleFont }?.label.orEmpty()) { showSubtitleFont() }
@@ -1976,7 +1977,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 }
                 1 -> {
                     addRow("영상 보정", pictureSettingsLabel()) { showPictureSettings() }
-                    if (client.shyni != null) addRow("변환 (데이터 절약)", conversionLabel()) { showConversion() }
+                    addRow(conversionMenuTitle, conversionLabel()) { showConversion() }
                     addRow("화면 크기", resizeLabel()) {
                         cycleResizeMode(); selectTab(1)
                     }
@@ -2648,6 +2649,8 @@ class NativePlayerActivity : AppCompatActivity() {
             .addOverride(TrackSelectionOverride(group.mediaTrackGroup, listOf(track))).build()
     }
 
+    private val conversionMenuTitle: String get() = if (BuildConfig.IS_PLEX) "해상도" else "변환 (데이터 절약)"
+
     private fun conversionLabel(): String = spec.conversionHeight?.let { "${it}p" }
         ?: if (spec.isServerConversion) "서버 자동" else "원본"
 
@@ -3100,8 +3103,8 @@ class NativePlayerActivity : AppCompatActivity() {
             text = speedLabel(); contentDescription = "배속 설정, $text"; tooltipText = contentDescription
         }
         playerView.findViewById<Button>(R.id.player_conversion).apply {
-            visibility = if (client.shyni != null) View.VISIBLE else View.GONE
-            text = playbackModeButtonLabel(spec); contentDescription = "변환 (데이터 절약), 현재 $mode"; tooltipText = contentDescription
+            text = if (BuildConfig.IS_PLEX) "해상도\n${conversionLabel()}" else playbackModeButtonLabel(spec)
+            contentDescription = "$conversionMenuTitle, 현재 $mode"; tooltipText = contentDescription
             isEnabled = !conversionLoading && !refreshing
         }
         updateNavigationButtons()
@@ -3132,7 +3135,7 @@ class NativePlayerActivity : AppCompatActivity() {
             else -> "480p"
         } }
         val selected = if (spec.isServerConversion && spec.conversionHeight == null) -1 else heights.indexOf(spec.conversionHeight)
-        val dialog = AlertDialog.Builder(this).setTitle("변환 (데이터 절약)")
+        val dialog = AlertDialog.Builder(this).setTitle(conversionMenuTitle)
             .setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, index ->
                 dialog.dismiss()
                 val height = heights[index]
@@ -3160,7 +3163,9 @@ class NativePlayerActivity : AppCompatActivity() {
         refreshing = true; conversionLoading = true
         conversionResumeWhenVisible = snapshot.playing; resumeWhenVisible = snapshot.playing
         active.pause(); playerView.hideController(); hideLockControl(); updatePlaybackButtons()
-        val loading = AlertDialog.Builder(this).setTitle("변환 (데이터 절약)")
+        val nativeSubtitleIndex = if (BuildConfig.IS_PLEX && snapshot.text != null && !snapshot.spec.isServerConversion)
+            (active as? MpvPlayer)?.selectedSubtitleStreamIndex() else null
+        val loading = AlertDialog.Builder(this).setTitle(conversionMenuTitle)
             .setMessage("현재 시청 위치에서 ${height?.let { "${it}p" } ?: "원본 재생"}을 준비하고 있습니다…")
             .setNegativeButton("취소") { _, _ -> conversionJob?.cancel() }.create()
         loading.setOnCancelListener { conversionJob?.cancel() }
@@ -3168,7 +3173,7 @@ class NativePlayerActivity : AppCompatActivity() {
         conversionJob = scope.launch {
             var replaced = false
             try {
-                val refreshed = client.convertPlayback(snapshot.spec, height, snapshot.position, snapshot.audioIndex)
+                val refreshed = client.convertPlayback(snapshot.spec, height, snapshot.position, snapshot.audioIndex, nativeSubtitleIndex)
                 if (exiting || isDestroyed) return@launch
                 conversionRestore = snapshot
                 replaced = true
@@ -3209,7 +3214,9 @@ class NativePlayerActivity : AppCompatActivity() {
         restoredLocalSubtitleId = previous.localSubtitle.takeIf { sameSource && subtitlesEnabled }
         clearExternalSubtitle(); externalSubtitleId = null
         deferredSubtitlePreference = previous.subtitle.takeIf { subtitlesEnabled && refreshed.subtitlesPending }
-        val nativeText = previous.text.takeIf { subtitlesEnabled && !refreshed.isServerConversion && restoredLocalSubtitleId == null }
+        val nativeText = previous.text.takeIf {
+            subtitlesEnabled && (!refreshed.isServerConversion || BuildConfig.IS_PLEX) && restoredLocalSubtitleId == null
+        }
         val preferredText = previous.subtitle ?: previous.text?.let { preference ->
             matchingPlaybackTrack(preference, refreshed.subtitles.map { PlaybackTrackPreference(it.language, it.title ?: it.label) })
                 ?.let(refreshed.subtitles::get)
@@ -4332,7 +4339,9 @@ class NativePlayerActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(null); scope.cancel()
         if (::spec.isInitialized) { settleWatchTime(false); if (!isChangingConfigurations) enqueueProgress(if (completed) "completed" else "stopped") }
         presenceLifecycle.close(endSession = !isChangingConfigurations)
-        releasePlayer(); updates.close(); super.onDestroy()
+        releasePlayer()
+        if (!isChangingConfigurations && ::client.isInitialized) client.onPlaybackSourceChanged(null)
+        updates.close(); super.onDestroy()
     }
 
     private fun showError(message: String) {

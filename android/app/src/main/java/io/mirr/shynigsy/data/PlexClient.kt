@@ -18,6 +18,9 @@ import kotlin.coroutines.resumeWithException
 
 internal const val PLEX_PRODUCT_NAME = "PLEXMINI"
 
+internal fun plexOffsetSeconds(positionMs: Long): String =
+    java.math.BigDecimal.valueOf(positionMs, 3).stripTrailingZeros().toPlainString()
+
 data class PlexLibraryPage(val items: List<MediaItem>, val total: Int, val nextOffset: Int)
 data class PlexItemInfo(val item: MediaItem, val versions: List<MediaVersion>, val cast: List<CastMember>, val files: List<MediaFileInfo>)
 
@@ -306,20 +309,27 @@ class PlexClient(server: String, token: String, deviceId: String) {
 
     suspend fun playback(item: MediaItem, selectedPartId: Int? = null): PlaybackSpec {
         val row = metadata(item.id)
-        val selected = mediaItem(row, item.libraryId)?.takeIf { it.playable }
-            ?: throw IOException("이 작품은 재생할 수 없습니다.")
-        val media = row.rows("Media").firstOrNull { version ->
+        return originalPlayback(row, item, selectVersion(row.rows("Media"), selectedPartId))
+    }
+
+    private fun selectVersion(versions: List<JSONObject>, selectedPartId: Int?): JSONObject =
+        versions.firstOrNull { version ->
             isPlayableVersion(version) && (selectedPartId == null || version.rows("Part").single().intOrNull("id") == selectedPartId)
         } ?: throw IOException(when {
             selectedPartId != null -> "선택한 원본 파일을 찾을 수 없습니다."
-            row.rows("Media").any { it.rows("Part").size > 1 } -> "여러 파일로 나뉜 작품은 직접 재생을 지원하지 않습니다."
+            versions.any { it.rows("Part").size > 1 } -> "여러 파일로 나뉜 작품은 직접 재생을 지원하지 않습니다."
             else -> "Plex 서버에 직접 재생할 수 있는 원본 파일이 없습니다."
         })
+
+    private fun originalPlayback(row: JSONObject, item: MediaItem, media: JSONObject, audioIndex: Int? = null): PlaybackSpec {
+        val selected = mediaItem(row, item.libraryId)?.takeIf { it.playable }
+            ?: throw IOException("이 작품은 재생할 수 없습니다.")
         val part = media.rows("Part").single()
         val partId = part.getInt("id")
         val streams = part.rows("Stream")
         val audio = streams.filter { it.optInt("streamType") == 2 }
-        val activeAudio = audio.firstOrNull { it.flag("selected") } ?: audio.firstOrNull()
+        val activeAudio = audioIndex?.let { index -> audio.firstOrNull { it.indexOrNull("index") == index } }
+            ?: audio.firstOrNull { it.flag("selected") } ?: audio.firstOrNull()
         val external = streams.filter { it.optInt("streamType") == 3 }.mapNotNull { stream ->
             val url = resource(stream.stringOrNull("key")) ?: return@mapNotNull null
             val codec = stream.optString("codec").lowercase()
@@ -351,6 +361,80 @@ class PlexClient(server: String, token: String, deviceId: String) {
             sourceVideoCodec = media.stringOrNull("videoCodec"), sourceContainer = part.stringOrNull("container") ?: media.stringOrNull("container"),
             selectedSubtitleId = selectedSubtitle?.takeIf { id -> external.any { it.id == id } },
         )
+    }
+
+    internal suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
+        audioIndex: Int?, subtitleIndex: Int?): PlaybackSpec {
+        val source = spec.sourceItem?.takeIf { it.id == spec.itemId }
+            ?: throw ApiException("재생 중인 Plex 항목을 확인할 수 없습니다.")
+        val profile = height?.let { plexResolution(it) }
+        val row = metadata(source.id)
+        val versions = row.rows("Media")
+        val media = selectVersion(versions, spec.partId)
+        val original = originalPlayback(row, source, media, audioIndex)
+        val position = positionMs.coerceIn(0, original.durationMs.takeIf { it > 0 } ?: Long.MAX_VALUE)
+        val current = original.copy(resumeMs = position, sessionId = spec.sessionId ?: original.sessionId)
+        if (profile == null) return current
+
+        val streams = media.rows("Part").single().rows("Stream")
+        val audio = streams.filter { it.optInt("streamType") == 2 }
+        val selectedAudio = current.selectedAudioStreamOrdinal?.let(audio::getOrNull)
+        val embedded = streams.filter { it.optInt("streamType") == 3 && it.stringOrNull("key") == null }
+        // A converted MKV renumbers tracks. On subsequent changes retain the source PMS ID.
+        val priorSubtitleId = if (spec.isServerConversion) resource(spec.url)?.queryParameter("subtitleStreamID")?.toIntOrNull() else null
+        val selectedSub = if (priorSubtitleId != null) embedded.firstOrNull { it.intOrNull("id") == priorSubtitleId }
+            else subtitleIndex?.let { index -> embedded.firstOrNull { it.indexOrNull("index") == index } }
+                ?: embedded.firstOrNull { it.flag("selected") }
+        val transcodeSession = UUID.randomUUID().toString()
+        val params = linkedMapOf(
+            "path" to "/library/metadata/${spec.itemId}", "mediaIndex" to versions.indexOf(media).toString(), "partIndex" to "0",
+            "protocol" to "http", "directPlay" to "0", "directStream" to "0", "directStreamAudio" to "0",
+            "videoResolution" to profile.first, "maxVideoBitrate" to profile.second.toString(), "videoBitrate" to profile.second.toString(),
+            "offset" to plexOffsetSeconds(position), "fastSeek" to "1",
+            "subtitles" to (if (selectedSub != null) "embedded" else "none"),
+            "subtitleStreamID" to (selectedSub?.intOrNull("id") ?: 0).toString(),
+            "advancedSubtitles" to "text", "transcodeSessionId" to transcodeSession, "session" to transcodeSession,
+            "X-Plex-Session-Identifier" to requireNotNull(current.sessionId),
+            "X-Plex-Client-Identifier" to headers.getValue("X-Plex-Client-Identifier"),
+            "X-Plex-Client-Profile-Name" to "Generic", "X-Plex-Platform" to "Android",
+            "X-Plex-Product" to PLEX_PRODUCT_NAME, "X-Plex-Version" to headers.getValue("X-Plex-Version"),
+            "X-Plex-Client-Profile-Extra" to
+                "add-transcode-target(type=videoProfile&context=streaming&protocol=http&container=mkv&videoCodec=h264&audioCodec=aac&subtitleCodec=srt,ass,pgs,vobsub&replace=true)",
+        )
+        selectedAudio?.intOrNull("id")?.let { params["audioStreamID"] = it.toString() }
+        val decision = try { request("/video/:/transcode/universal/decision", params) }
+            catch (error: PlexRequestException) { throw ApiException(error.message ?: "Plex 서버가 변환을 거부했습니다.", error.status) }
+        val general = decision.optInt("generalDecisionCode")
+        val transcode = decision.optInt("transcodeDecisionCode")
+        val mde = decision.optInt("mdeDecisionCode")
+        if (decision.optInt("terminationCode") > 0 || general >= 2000 || transcode >= 2000 || mde >= 2000 ||
+            (general != 1001 && transcode != 1001 && mde != 1001))
+            throw ApiException("Plex 서버에서 선택한 해상도로 변환할 수 없습니다.")
+        // Progressive MKV is one authenticated request. No credentials are passed to a global MPV header list.
+        val stream = requireNotNull(resource("/video/:/transcode/universal/start.mkv")).newBuilder().apply {
+            params.forEach { (name, value) -> addQueryParameter(name, value) }
+        }.build()
+        return current.copy(url = stream.toString(), conversionHeight = height, streamStartPositionMs = position, decision = "transcode")
+    }
+
+    /** The old HTTP stream is already closed. Release its encoder without delaying the new player. */
+    internal fun stopTranscode(session: String) {
+        val url = requireNotNull(resource("/video/:/transcode/universal/stop")).newBuilder()
+            .addQueryParameter("session", session).addQueryParameter("transcodeSessionId", session).build()
+        val request = Request.Builder().url(url).apply {
+            this@PlexClient.headers.forEach { (name, value) -> header(name, value) }
+        }.build()
+        http.newCall(request).enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) = response.close()
+            override fun onFailure(call: Call, e: IOException) = Unit
+        })
+    }
+
+    private fun plexResolution(height: Int): Pair<String, Int> = when (height) {
+        1080 -> "1920x1080" to 8000
+        720 -> "1280x720" to 4000
+        480 -> "854x480" to 1500
+        else -> throw ApiException("지원하지 않는 Plex 해상도입니다.")
     }
 
     suspend fun neighbors(spec: PlaybackSpec): PlaybackNeighbors {
