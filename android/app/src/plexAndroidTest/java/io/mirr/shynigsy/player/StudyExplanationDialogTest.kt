@@ -135,23 +135,26 @@ class StudyExplanationDialogTest {
     @Suppress("DEPRECATION")
     private fun show(television: Boolean, smallLandscape: Boolean = false) {
         scenario.onActivity { activity ->
-            val configuration = Configuration(activity.resources.configuration).apply {
-                uiMode = (uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or
-                    if (television) Configuration.UI_MODE_TYPE_TELEVISION else Configuration.UI_MODE_TYPE_NORMAL
-                if (smallLandscape) {
-                    orientation = Configuration.ORIENTATION_LANDSCAPE
-                    screenWidthDp = 640
-                    screenHeightDp = 360
-                }
+            val fixtureConfiguration = Configuration(activity.resources.configuration)
+            val fixtureMetrics = DisplayMetrics().apply { setTo(activity.resources.displayMetrics) }
+            val fixtureResources = object : Resources(activity.assets, fixtureMetrics, fixtureConfiguration) {
+                override fun getDisplayMetrics(): DisplayMetrics = fixtureMetrics
+                override fun getConfiguration(): Configuration = fixtureConfiguration
             }
-            val metrics = DisplayMetrics().apply {
-                setTo(activity.resources.displayMetrics)
-                if (smallLandscape) { widthPixels = (640 * density).toInt(); heightPixels = (360 * density).toInt() }
+            fixtureConfiguration.uiMode = (fixtureConfiguration.uiMode and Configuration.UI_MODE_TYPE_MASK.inv()) or
+                if (television) Configuration.UI_MODE_TYPE_TELEVISION else Configuration.UI_MODE_TYPE_NORMAL
+            if (smallLandscape) {
+                fixtureConfiguration.orientation = Configuration.ORIENTATION_LANDSCAPE
+                fixtureConfiguration.screenWidthDp = 640
+                fixtureConfiguration.screenHeightDp = 360
+                fixtureMetrics.widthPixels = (640 * fixtureMetrics.density).toInt()
+                fixtureMetrics.heightPixels = (360 * fixtureMetrics.density).toInt()
             }
-            val fixtureResources = Resources(activity.assets, metrics, configuration)
             val context = object : ContextThemeWrapper(activity, R.style.Theme_ShyniFlix) {
                 override fun getResources(): Resources = fixtureResources
             }
+            if (smallLandscape) assertEquals("The fixture must supply the short viewport before creating the dialog",
+                (360 * fixtureMetrics.density).toInt(), context.resources.displayMetrics.heightPixels)
             helper = StudyExplanationDialog(context, "A–B 반복 · 영어 원문")
             helper.showLoading()
         }
