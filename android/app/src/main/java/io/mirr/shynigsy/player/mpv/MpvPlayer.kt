@@ -96,6 +96,11 @@ class MpvPlayer(
     private var surfaceSize = Size.ZERO
     private var configuredVideoLayout: Triple<Boolean, Boolean, Float>? = null
     private var configuredPictureSettings = PictureSettings()
+    private val shaderPerformance = MpvShaderPerformance(Build.MANUFACTURER.equals("NVIDIA", true) &&
+        Build.MODEL.startsWith("SHIELD", true) && Build.HARDWARE in setOf("darcy", "foster", "mdarcy", "sif"))
+    var usesRealtimeShader: Boolean = false
+        private set
+    var onShaderPerformanceModeChanged: ((Boolean) -> Unit)? = null
     private val shaderChain = MpvShaderChain(
         directory = File(app.filesDir, "mpv-plezy-shaders"),
         lookup = { BundledShaderCatalog.from(app).find(it)?.assetPaths.orEmpty() },
@@ -103,7 +108,7 @@ class MpvPlayer(
         capabilities = { mpvShaderGpu },
         post = { action -> dispatch(action) },
         setPaths = ::setShaderPaths,
-        unavailable = { id -> onLibraryShaderUnavailable?.invoke(id) },
+        unavailable = ::handleUnavailableShader,
     )
     private val shaderLogObserver = object : MPVLib.LogObserver {
         override fun logMessage(prefix: String, level: Int, text: String) {
@@ -143,6 +148,7 @@ class MpvPlayer(
             // MPV's keep-open EOF flag is authoritative; position alone is not.
             if (reconcileNativeEof()) invalidateState()
             updateRebufferWait()
+            checkShaderPerformance()
             if (loaded && status != Player.STATE_ENDED) main.postDelayed(this, 1_000)
         }
     }
@@ -436,6 +442,7 @@ class MpvPlayer(
         if (released) return done()
         released = true
         shaderChain.close()
+        onShaderPerformanceModeChanged = null
         onLibraryShaderUnavailable = null
         onNativeHeadersReady = null
         loadGeneration++
@@ -613,7 +620,7 @@ class MpvPlayer(
             "track-list" -> { nativeTracks = emptyList(); tracks = Tracks.EMPTY }
             "video-params" -> if (loaded) {
                 updateVideoSize()
-                if (configuredPictureSettings.libraryShaderId == PLEZY_NVSCALER_ID || configuredPictureSettings.redTone != 0) applyLibraryShader()
+                if (configuredPictureSettings.libraryShaderId != null || configuredPictureSettings.redTone != 0) applyLibraryShader()
             }
             "sub-text" -> clearCues()
             "eof-reached" -> reconcileNativeEof()
@@ -768,6 +775,7 @@ class MpvPlayer(
         MPVLib.setPropertyBoolean("keepaspect", keepAspect)
         MPVLib.setPropertyDouble("panscan", if (crop) 1.0 else 0.0)
         MPVLib.setPropertyDouble("video-zoom", kotlin.math.ln(zoom.toDouble()) / kotlin.math.ln(2.0))
+        if (loaded && configuredPictureSettings.libraryShaderId != null) applyLibraryShader()
     }
 
     /** Native GPU color controls affect video pixels without CPU filters or source reloads. */
@@ -785,14 +793,42 @@ class MpvPlayer(
     }
 
     private fun applyLibraryShader() {
-        if (item?.localConfiguration?.drmConfiguration != null) {
-            shaderChain.select(null)
-            shaderChain.setRedTone(0)
+        val eligible = loaded && surfaceAttached && item?.localConfiguration?.drmConfiguration == null
+        val requested = configuredPictureSettings.libraryShaderId.takeIf { eligible }
+        val id = effectivePlezyShader(requested, MPVLib::getPropertyString)
+        val size = if (id == null) ShaderFrameSize(0, 0, 0, 0) else ShaderFrameSize(
+            MPVLib.getPropertyInt("video-params/w") ?: 0, MPVLib.getPropertyInt("video-params/h") ?: 0,
+            surfaceSize.width.takeIf { it > 0 } ?: MPVLib.getPropertyInt("osd-dimensions/w") ?: 0,
+            surfaceSize.height.takeIf { it > 0 } ?: MPVLib.getPropertyInt("osd-dimensions/h") ?: 0)
+        val zoomed = configuredVideoLayout?.let { it.second || it.third > 1f } == true
+        val effective = id?.takeIf { minOf(size.width, size.height, size.outputWidth, size.outputHeight) > 0 &&
+            !size.allPassesInactive(it, zoomed) }
+        val realtime = shaderPerformance.select(effective, size, SystemClock.elapsedRealtime())
+        if (usesRealtimeShader != realtime) {
+            usesRealtimeShader = realtime
+            onShaderPerformanceModeChanged?.invoke(realtime)
+        }
+        shaderChain.select(effective, realtime)
+        shaderChain.setRedTone(if (eligible) sdrRedTone(configuredPictureSettings.redTone, MPVLib::getPropertyString) else 0)
+    }
+
+    private fun checkShaderPerformance() {
+        if (!shaderPerformance.needsSamples) return
+        val now = SystemClock.elapsedRealtime()
+        if (!requestedPlay || nativePaused || !surfaceAttached || !readiness.ready) {
+            shaderPerformance.restartSample(now)
             return
         }
-        val requested = configuredPictureSettings.libraryShaderId
-        shaderChain.select(effectivePlezyShader(requested, MPVLib::getPropertyString))
-        shaderChain.setRedTone(if (loaded) sdrRedTone(configuredPictureSettings.redTone, MPVLib::getPropertyString) else 0)
+        val fps = (MPVLib.getPropertyDouble("container-fps")?.takeIf { it > 0 } ?:
+            MPVLib.getPropertyDouble("estimated-vf-fps") ?: 0.0) * playback.speed
+        if (shaderPerformance.observe(now, MPVLib.getPropertyInt("frame-drop-count"), fps)) applyLibraryShader()
+    }
+
+    private fun handleUnavailableShader(id: String) {
+        if (usesRealtimeShader) {
+            shaderPerformance.rejectRealtimePath()
+            applyLibraryShader()
+        } else onLibraryShaderUnavailable?.invoke(id)
     }
 
     private fun setShaderPaths(paths: List<File>) {
@@ -831,6 +867,7 @@ class MpvPlayer(
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (this.holder !== holder || !alive) return
         surfaceSize = Size(width, height); MPVLib.setPropertyString("android-surface-size", "${width}x$height"); invalidateState()
+        if (loaded && configuredPictureSettings.libraryShaderId != null) applyLibraryShader()
     }
     override fun surfaceDestroyed(holder: SurfaceHolder) { if (this.holder === holder) { detach(); surfaceSize = Size.ZERO; invalidateState() } }
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
@@ -838,6 +875,7 @@ class MpvPlayer(
     }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
         surfaceSize = Size(width, height); if (alive) MPVLib.setPropertyString("android-surface-size", "${width}x$height"); invalidateState()
+        if (alive && loaded && configuredPictureSettings.libraryShaderId != null) applyLibraryShader()
     }
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { detach(); surfaceSize = Size.ZERO; return true }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit

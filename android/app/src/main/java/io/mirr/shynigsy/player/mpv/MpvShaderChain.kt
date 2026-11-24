@@ -68,6 +68,7 @@ internal class MpvShaderChain(
     private var omitTone = false
     private var applied: List<File> = emptyList()
     private var requested: String? = null
+    private var realtime = false
     private var generation = 0L
     private var appliedRevision = 0L
     private val renderingGeneration = AtomicLong()
@@ -93,17 +94,21 @@ internal class MpvShaderChain(
         }
     }
 
-    fun select(id: String?) {
+    fun select(id: String?, useRealtime: Boolean = false) {
         if (closed) return
-        if (id != requested) {
+        if (id != requested || realtime != useRealtime) {
             requested = id
+            realtime = useRealtime
             omitTone = false
             val request = ++generation
             pending?.cancel(true)
             library = emptyList()
             if (id != null) pending = worker.submit {
                 val files = try {
-                    lookup(id).also { require(it.isNotEmpty()) }.map { path ->
+                    val original = lookup(id).also { require(it.isNotEmpty()) }
+                    if (useRealtime) listOf(extracted.getOrPut("realtime:$id") {
+                        store(realtimeShaderSource(id).toByteArray(Charsets.UTF_8))
+                    }) else original.map { path ->
                         if (Thread.currentThread().isInterrupted) throw InterruptedException()
                         extracted.getOrPut(path) { extract(path) }
                     }

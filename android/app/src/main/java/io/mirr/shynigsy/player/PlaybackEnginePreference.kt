@@ -14,8 +14,9 @@ internal enum class EngineStart { AUTO, MPV, MANUAL_EXO, SAFE_MPV }
 /** Explicit Exo still respects sources that require MPV's timebase or privacy handling. */
 internal fun engineStart(preference: PlaybackEnginePreference, forceMpv: Boolean,
     serverConversion: Boolean, privateMedia: Boolean, softwareOnly: Boolean,
-    nativeTextRestore: Boolean, sessionMissing: Boolean, nativeFormat: Boolean = false): EngineStart {
-    if (forceMpv) return EngineStart.MPV
+    nativeTextRestore: Boolean, sessionMissing: Boolean, nativeFormat: Boolean = false, libraryShaderSelected: Boolean = false): EngineStart {
+    // A saved MPV shader would otherwise send the next item through MPV → Exo → MPV.
+    if (forceMpv || (preference == PlaybackEnginePreference.AUTO && libraryShaderSelected)) return EngineStart.MPV
     if (preference == PlaybackEnginePreference.MPV) return EngineStart.MPV
     // Both engines support the saved fit/crop/stretch and zoom choices. A display
     // preference must not silently override the user's playback-engine choice.

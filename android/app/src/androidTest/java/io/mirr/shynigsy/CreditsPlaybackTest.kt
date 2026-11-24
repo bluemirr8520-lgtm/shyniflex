@@ -26,6 +26,10 @@ import io.mirr.shynigsy.data.PlaybackSpec
 import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.player.Media3GestureView
 import io.mirr.shynigsy.player.NativePlayerActivity
+import io.mirr.shynigsy.player.PictureSettings
+import io.mirr.shynigsy.player.encodePictureSettings
+import io.mirr.shynigsy.player.mpv.MpvPlayer
+import `is`.xyz.mpv.MPVLib
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -372,9 +376,24 @@ class CreditsPlaybackTest {
         }
 
     @Test fun continuousPlaybackStartsTheVerifiedNextEpisodeAtNaturalEndOnce() =
-        withFixture(continuous = true, nextDecisionDelayMs = 1_000) { fixture, scenario ->
+        assertContinuousHandoff(shaderId = null)
+
+    @Test fun continuousPlaybackKeepsTheSelectedShaderThroughTheNextFirstFrame() =
+        assertContinuousHandoff(shaderId = "plezy/nvscaler")
+
+    private fun assertContinuousHandoff(shaderId: String?) =
+        withFixture(continuous = true, nextDecisionDelayMs = 1_000, shaderId = shaderId) { fixture, scenario ->
             preparePaused(scenario)
+            if (shaderId != null) waitFor(scenario, "MPV must install the selected shader before EOF") {
+                player(it) is MpvPlayer && !MPVLib.getPropertyString("glsl-shaders").isNullOrBlank()
+            }
             seekPaused(scenario, 5_000)
+            if (shaderId != null) scenario.onActivity {
+                assertTrue(player(it) is MpvPlayer)
+                assertEquals(shaderId, field<PictureSettings>(it, "pictureSettings").libraryShaderId)
+                // Exercise the EOF-only API when an earlier toolbar lookup has not completed.
+                setField(it, "playbackNeighbors", null)
+            }
             scenario.onActivity { player(it).play() }
             waitUntil("Natural EOF must request the next episode", 12_000) { fixture.count("/playback/decision") == 1 }
             scenario.onActivity { activity ->
@@ -385,14 +404,21 @@ class CreditsPlaybackTest {
                     .apply { isAccessible = true }
                 repeat(2) { finish.invoke(activity) }
             }
-            waitFor(scenario, "The verified next episode must start at zero", 15_000) {
-                spec(it).partId == NEXT_PART && player(it).playbackState == Player.STATE_READY && player(it).isPlaying
+            waitFor(scenario, "The verified next episode must render its first frame", 15_000) {
+                spec(it).partId == NEXT_PART && field<Boolean>(it, "playbackFirstFrameReported") &&
+                    player(it).playbackState == Player.STATE_READY && player(it).isPlaying &&
+                    (shaderId == null || !MPVLib.getPropertyString("glsl-shaders").isNullOrBlank())
             }
             scenario.onActivity {
                 assertEquals(0L, spec(it).resumeMs)
                 assertTrue(player(it).currentPosition < 3_000)
                 assertNull(it.window.decorView.findViewWithTag<View>("continuous_loading"))
+                if (shaderId != null) {
+                    assertTrue(player(it) is MpvPlayer)
+                    assertEquals(shaderId, field<PictureSettings>(it, "pictureSettings").libraryShaderId)
+                }
             }
+            assertTrue(fixture.requests().any { it.path == "/stream/$NEXT_PART" })
             assertEquals(1, fixture.count("/playback/decision"))
             waitUntil("The previous episode must be recorded as completed") {
                 fixture.requests().any { it.path == "/playback/progress" &&
@@ -506,7 +532,7 @@ class CreditsPlaybackTest {
         }
 
     private fun withFixture(includeNextEpisode: Boolean = true, denyNextDecision: Boolean = false,
-        continuous: Boolean = false, nextDecisionDelayMs: Long = 0,
+        continuous: Boolean = false, nextDecisionDelayMs: Long = 0, shaderId: String? = null,
         test: (Fixture, ActivityScenario<NativePlayerActivity>) -> Unit) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -519,12 +545,19 @@ class CreditsPlaybackTest {
         val oldSpeed = settings.getFloat("playback_speed", 1f)
         val hadContinuous = settings.contains("continuous_playback")
         val oldContinuous = settings.getBoolean("continuous_playback", false)
+        val oldPicture = settings.getString("picture_settings_v1", null)
+        val oldEngine = settings.getString("playback_engine", null)
         val store = SessionStore(context)
         val clip = instrumentation.context.assets.open("media3/gesture-av.mp4").use { it.readBytes() }
         Fixture(clip, includeNextEpisode, denyNextDecision, nextDecisionDelayMs).use { fixture ->
             try {
                 settings.edit().putString("device_id", DEVICE).putFloat("playback_speed", 1f)
-                    .putBoolean("continuous_playback", continuous).commit()
+                    .putBoolean("continuous_playback", continuous).apply {
+                        if (shaderId != null) {
+                            putString("playback_engine", "auto")
+                            putString("picture_settings_v1", encodePictureSettings(PictureSettings(libraryShaderId = shaderId)))
+                        }
+                    }.commit()
                 store.save(fixture.origin, SESSION, "합성 크레딧 검사")
                 val item = MediaItem(ITEM, VIEW, "합성 현재 회차", "episode", durationMs = 6_000,
                     seasonNumber = 1, episodeNumber = 1, viewItemId = VIEW_ITEM, showId = SHOW,
@@ -542,6 +575,10 @@ class CreditsPlaybackTest {
                     if (oldDevice == null) remove("device_id") else putString("device_id", oldDevice)
                     putFloat("playback_speed", oldSpeed)
                     if (hadContinuous) putBoolean("continuous_playback", oldContinuous) else remove("continuous_playback")
+                    if (shaderId != null) {
+                        putString("picture_settings_v1", oldPicture)
+                        putString("playback_engine", oldEngine)
+                    }
                 }.commit()
             }
         }
@@ -675,6 +712,7 @@ class CreditsPlaybackTest {
         private fun handle(socket: Socket) {
             var streaming = false
             var decisionRequest = false
+            var cancellableMetadataResponse = false
             try {
                 socket.use { connection ->
                     connection.soTimeout = 3_000
@@ -706,6 +744,10 @@ class CreditsPlaybackTest {
                     }
                     check(headers["authorization"] == "Bearer $SESSION")
                     check(headers["x-device-id"] == DEVICE)
+                    // Handoff cancels in-flight read-only metadata for the episode being replaced.
+                    cancellableMetadataResponse = request.method == "GET" && request.path in setOf(
+                        "/libraries/$VIEW/media_info/$PART", "/libraries/$VIEW/media_info/item/$ITEM",
+                        "/libraries/$VIEW/shows/$SHOW", "/libraries/$VIEW/shows/$SHOW/episodes", "/subtitles/$PART")
                     when (request.path) {
                         "/libraries/$VIEW/media_info/$PART", "/libraries/$VIEW/media_info/item/$ITEM" ->
                             json(connection, info(ITEM, PART, true).put("markers", JSONArray().put(JSONObject()
@@ -716,6 +758,8 @@ class CreditsPlaybackTest {
                         "/libraries/$VIEW/shows/$SHOW/episodes" -> json(connection, JSONArray().put(episode(ITEM, 1)).apply {
                             if (includeNext) put(episode(NEXT_ITEM, 2))
                         })
+                        "/libraries/$VIEW/shows/$SHOW" -> json(connection, JSONObject().put("id", SHOW)
+                            .put("type", "show").put("library_view_id", VIEW).put("view_item_id", VIEW_ITEM))
                         "/playback/decision" -> {
                             decisionRequest = true
                             check(includeNext)
@@ -733,18 +777,18 @@ class CreditsPlaybackTest {
                             json(connection, JSONObject().put("ticket", NEXT_TICKET).put("library_view_id", VIEW)
                                 .put("view_item_id", VIEW_ITEM).put("part_id", NEXT_PART))
                         }
-                        "/subtitles/$NEXT_PART" -> json(connection, JSONObject().put("subtitles", JSONArray()))
+                        "/subtitles/$PART", "/subtitles/$NEXT_PART" -> json(connection, JSONObject().put("subtitles", JSONArray()))
                         "/continue-watching/$ITEM/watch-state", "/continue-watching/$NEXT_ITEM/watch-state" -> {
                             check(request.method == "PUT" && request.body.optBoolean("watched"))
                             json(connection, JSONObject().put("ok", true).put("watched", true))
                         }
                         "/playback/progress" -> json(connection, if (request.method == "GET")
                             JSONObject().put("items", JSONArray()) else JSONObject().put("ok", true))
-                        else -> error("Unexpected synthetic endpoint")
+                        else -> error("Unexpected synthetic request ${request.method} ${request.path}")
                     }
                 }
             } catch (error: SocketException) {
-                if (!streaming && !server.isClosed && !(decisionRequest && decisionCancellationExpected))
+                if (!streaming && !cancellableMetadataResponse && !server.isClosed && !(decisionRequest && decisionCancellationExpected))
                     failure.compareAndSet(null, error)
             } catch (error: Throwable) {
                 if (!server.isClosed) failure.compareAndSet(null, error)
@@ -761,7 +805,7 @@ class CreditsPlaybackTest {
             })
 
         private fun physical(item: Int, part: Int, order: Int) = JSONObject().put("id", part)
-            .put("metadata_item_id", item).put("part_index", order).put("file_path", "/synthetic/credits-series/$part.mp4")
+            .put("metadata_item_id", item).put("part_index", order).put("file_path", "/synthetic/credits-series/$item/$part.mp4")
 
         private fun line(input: BufferedInputStream): String? {
             val bytes = ByteArrayOutputStream()

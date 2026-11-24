@@ -8,14 +8,16 @@ import org.junit.Test
 class PlaybackEnginePreferenceTest {
     private fun start(preference: PlaybackEnginePreference, forced: Boolean = false,
         converted: Boolean = false, spoiler: Boolean = false, software: Boolean = false,
-        textRestore: Boolean = false, noSession: Boolean = false) =
-        engineStart(preference, forced, converted, spoiler, software, textRestore, noSession)
+        textRestore: Boolean = false, noSession: Boolean = false, shader: Boolean = false) =
+        engineStart(preference, forced, converted, spoiler, software, textRestore, noSession, libraryShaderSelected = shader)
 
     @Test fun choiceDefaultsAndUnsafeSourcesPreserveMpv() {
         assertEquals(PlaybackEnginePreference.AUTO, PlaybackEnginePreference.fromKey(null))
         assertEquals(PlaybackEnginePreference.AUTO, PlaybackEnginePreference.fromKey("invalid"))
         assertEquals(PlaybackEnginePreference.EXO, PlaybackEnginePreference.fromKey("exo"))
         assertEquals(EngineStart.AUTO, start(PlaybackEnginePreference.AUTO))
+        assertEquals(EngineStart.MPV, start(PlaybackEnginePreference.AUTO, shader = true))
+        assertEquals(EngineStart.MANUAL_EXO, start(PlaybackEnginePreference.EXO, shader = true))
         assertEquals(EngineStart.MPV, start(PlaybackEnginePreference.MPV))
         assertEquals(EngineStart.MANUAL_EXO, start(PlaybackEnginePreference.EXO))
         assertEquals(EngineStart.MPV, start(PlaybackEnginePreference.EXO, forced = true))

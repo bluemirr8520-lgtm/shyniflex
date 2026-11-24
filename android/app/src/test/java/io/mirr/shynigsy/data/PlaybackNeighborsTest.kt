@@ -1,5 +1,6 @@
 package io.mirr.shynigsy.data
 
+import io.mirr.shynigsy.player.continuousPlaybackTarget
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -55,23 +56,50 @@ class PlaybackNeighborsTest {
         assertFalse(adjacent.next!!.toJson().contains("/media/pack"))
     }
 
-    @Test fun unavailablePhysicalPathDisablesBothWithoutGuessingFromSeasonOrTitle() = runBlocking {
+    @Test fun verifiedEpisodeAdvancesAcrossSeasonsWithoutExposingEitherFilePath() = runBlocking {
         responses["/libraries/9/media_info/90"] = """{"item":{"id":23},"parts":[{"id":90,"metadata_item_id":23}]}"""
+        responses["/libraries/9/shows/5/episodes"] = """[{"id":23,"season_number":1,"episode_number":2},{"id":24,"season_number":2,"episode_number":1}]"""
+        responses["/libraries/9/media_info/item/24"] = """{"item":{"id":24},"parts":[{"id":91,"metadata_item_id":24}]}"""
         val current = MediaItem(23, 9, "같은 제목", "episode", showId = 5, seasonNumber = 1, episodeNumber = 2, viewItemId = 601)
-        assertEquals(PlaybackNeighbors(), client.playbackNeighbors(spec(current)))
-        assertEquals(1, server.requestCount)
+        val adjacent = client.playbackNeighbors(spec(current))
+        assertNull(adjacent.previous)
+        assertNull(adjacent.next)
+        val target = continuousPlaybackTarget(true, spec(current), adjacent)
+        assertEquals(24, target?.id)
+        assertEquals(91, target?.navigationPartId)
+        assertNull(target?.folderKey)
+        assertEquals(3, server.requestCount)
     }
 
     @Test fun matchingSeasonNumbersNeverProveASharedPhysicalFolder() = runBlocking {
         responses["/libraries/9/media_info/90"] = info(23, 90, "/actual-a/current.mp4")
         responses["/libraries/9/shows/5/episodes"] = """[{"id":22,"season_number":1,"episode_number":1},{"id":23,"season_number":1,"episode_number":2},{"id":24,"season_number":1,"episode_number":3}]"""
         responses["/libraries/9/media_info/item/22"] = info(22, 89, "/actual-b/previous.mp4")
-        responses["/libraries/9/media_info/item/24"] = """{"item":{"id":24},"parts":[{"id":91,"metadata_item_id":24}]}"""
+        responses["/libraries/9/media_info/item/24"] = info(24, 91, "/actual-c/next.mp4")
         val current = MediaItem(23, 9, "현재", "episode", showId = 5, seasonNumber = 1, episodeNumber = 2, viewItemId = 601)
-        assertEquals(PlaybackNeighbors(), client.playbackNeighbors(spec(current)))
+        val adjacent = client.playbackNeighbors(spec(current))
+        assertNull(adjacent.previous)
+        assertNull(adjacent.next)
+        assertEquals(91, adjacent.nextEpisode?.navigationPartId)
     }
 
-    @Test fun differentSeasonMetadataIsAllowedOnlyWhenTheActualFolderMatches() = runBlocking {
+    @Test fun eofLookupOnlyRequestsTheCurrentPartSeriesAndNextEligiblePart() = runBlocking {
+        responses["/libraries/9/media_info/90"] = info(23, 90, "/season1/finale.mp4")
+        responses["/libraries/9/shows/5/episodes"] = """[
+            {"id":22,"season_number":1,"episode_number":1},{"id":23,"season_number":1,"episode_number":2},
+            {"id":24,"season_number":2,"episode_number":1},{"id":25,"season_number":2,"episode_number":2}]"""
+        responses["/libraries/9/media_info/item/24"] = info(24, 91, "/season2/premiere.mp4")
+        val current = spec(episode(number = 2))
+        val adjacent = client.continuousPlaybackNeighbors(current)
+        assertNull(adjacent.previous)
+        assertNull(adjacent.next)
+        assertEquals(91, continuousPlaybackTarget(true, current, adjacent)?.navigationPartId)
+        assertEquals(3, server.requestCount)
+        assertEquals(listOf("/libraries/9/media_info/90", "/libraries/9/shows/5/episodes",
+            "/libraries/9/media_info/item/24"), List(3) { server.takeRequest().requestUrl!!.encodedPath })
+    }
+
+    @Test fun nextFileMayCrossSeasonsWithinTheSameFolder() = runBlocking {
         responses["/libraries/9/media_info/90"] = info(23, 90, "/all-episodes/current.mp4")
         responses["/libraries/9/shows/5/episodes"] = """[{"id":23,"season_number":1,"episode_number":2},{"id":24,"season_number":2,"episode_number":1}]"""
         responses["/libraries/9/media_info/item/24"] = info(24, 91, "/all-episodes/next.mp4")
@@ -139,8 +167,8 @@ class PlaybackNeighborsTest {
         assertEquals(3, server.requestCount)
     }
 
-    @Test fun nextEpisodeNeedsTheSameShowViewFolderAndExactCandidateOwnership() = runBlocking {
-        for (invalid in listOf("folder", "owner", "show", "view", "private", "source-position")) {
+    @Test fun nextEpisodeNeedsTheSameShowViewAndExactCandidateOwnership() = runBlocking {
+        for (invalid in listOf("owner", "show", "view", "private", "source-position")) {
             client = ShyniClient(server.url("/").toString(), "account", deviceId = "device")
             responses.clear()
             responses["/libraries/9/media_info/90"] = splitEpisodeInfo()
@@ -154,11 +182,7 @@ class PlaybackNeighborsTest {
             responses["/libraries/9/shows/5/episodes"] = """[
                 {"id":23,"season_number":$sourceSeason,"episode_number":1},
                 {"id":25,"season_number":1,"episode_number":2$extra}]"""
-            responses["/libraries/9/media_info/item/25"] = when (invalid) {
-                "folder" -> info(25, 95, "/fixture/another-series/next.mp4")
-                "owner" -> info(99, 95, "/fixture/series/next.mp4")
-                else -> info(25, 95, "/fixture/series/next.mp4")
-            }
+            responses["/libraries/9/media_info/item/25"] = info(if (invalid == "owner") 99 else 25, 95, "/fixture/series/next.mp4")
             val adjacent = client.playbackNeighbors(spec(episode()))
             assertEquals(invalid, 89, adjacent.previous!!.navigationPartId)
             assertEquals(invalid, 91, adjacent.next!!.navigationPartId)
@@ -233,12 +257,12 @@ class PlaybackNeighborsTest {
         assertEquals(2, server.requestCount)
     }
 
-    @Test fun nextEpisodeMetadataChecksAreBoundedEvenWhenEveryLaterFolderDiffers() = runBlocking {
+    @Test fun nextEpisodeMetadataChecksAreBoundedEvenWhenNoPartBelongsToItsEpisode() = runBlocking {
         responses["/libraries/9/media_info/90"] = splitEpisodeInfo()
         responses["/libraries/9/shows/5/episodes"] = (23..43).joinToString(prefix = "[", postfix = "]") {
             """{"id":$it,"season_number":1,"episode_number":${it - 22}}"""
         }
-        (24..43).forEach { responses["/libraries/9/media_info/item/$it"] = info(it, it + 100, "/fixture/other/$it.mp4") }
+        (24..43).forEach { responses["/libraries/9/media_info/item/$it"] = info(99, it + 100, "/fixture/other/$it.mp4") }
         val adjacent = client.playbackNeighbors(spec(episode()))
         assertEquals(91, adjacent.next!!.navigationPartId)
         assertNull(adjacent.nextEpisode)
