@@ -21,8 +21,10 @@ class ContinuousPlaybackTest {
         assertNull(continuousPlaybackTarget(true, spec, null))
     }
 
-    @Test fun nextMustRetainVerifiedFolderViewAndPartEvidence() {
-        for (bad in listOf(next.copy(folderKey = null), next.copy(viewItemId = 602),
+    @Test fun nextMustRetainVerifiedViewAndPartEvidenceEvenWhenTheServerHidesFilePaths() {
+        val hiddenPath = next.copy(folderKey = null)
+        assertEquals(hiddenPath, continuousPlaybackTarget(true, spec, PlaybackNeighbors(nextEpisode = hiddenPath)))
+        for (bad in listOf(next.copy(navigationPartId = null), next.copy(viewItemId = 602),
             next.copy(showId = 6), next.copy(navigationPartId = 90), next.copy(isSpoiler = true))) {
             assertNull(continuousPlaybackTarget(true, spec, PlaybackNeighbors(nextEpisode = bad)))
         }

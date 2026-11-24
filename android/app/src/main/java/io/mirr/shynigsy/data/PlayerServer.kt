@@ -11,6 +11,7 @@ internal abstract class PlayerServer(val server: String, val token: String) {
     open fun onPlaybackSourceChanged(spec: PlaybackSpec?) = Unit
     abstract suspend fun playback(item: MediaItem): PlaybackSpec
     abstract suspend fun playbackNeighbors(spec: PlaybackSpec): PlaybackNeighbors
+    open suspend fun continuousPlaybackNeighbors(spec: PlaybackSpec): PlaybackNeighbors = playbackNeighbors(spec)
     abstract suspend fun renewPlayback(spec: PlaybackSpec, positionMs: Long, audioStreamIndex: Int?): PlaybackSpec
     abstract suspend fun saveProgress(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String,
         watchedMs: Long, completionEligible: Boolean)
@@ -29,6 +30,7 @@ internal class ShyniPlayerServer(server: String, token: String, deviceId: String
     override fun playbackHeaders(spec: PlaybackSpec) = shyni.playbackHeaders(spec)
     override suspend fun playback(item: MediaItem) = shyni.playback(item, deferSubtitles = true)
     override suspend fun playbackNeighbors(spec: PlaybackSpec) = shyni.playbackNeighbors(spec)
+    override suspend fun continuousPlaybackNeighbors(spec: PlaybackSpec) = shyni.continuousPlaybackNeighbors(spec)
     override suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
         audioStreamIndex: Int?, subtitleStreamIndex: Int?) = shyni.convertPlayback(spec, height, positionMs, audioStreamIndex)
     override suspend fun renewPlayback(spec: PlaybackSpec, positionMs: Long, audioStreamIndex: Int?) =
@@ -63,6 +65,7 @@ internal class PlexPlayerServer(server: String, token: String, deviceId: String)
     }
     override suspend fun playback(item: MediaItem) = plex.playback(item)
     override suspend fun playbackNeighbors(spec: PlaybackSpec) = plex.neighbors(spec)
+    override suspend fun continuousPlaybackNeighbors(spec: PlaybackSpec) = plex.neighbors(spec, includePrevious = false)
     override suspend fun convertPlayback(spec: PlaybackSpec, height: Int?, positionMs: Long,
         audioStreamIndex: Int?, subtitleStreamIndex: Int?) =
         plex.convertPlayback(spec, height, positionMs, audioStreamIndex, subtitleStreamIndex)

@@ -84,6 +84,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.UUID
@@ -1137,7 +1139,8 @@ class NativePlayerActivity : AppCompatActivity() {
         val start = engineStart(preference, forceMpvSession == key,
             current.isServerConversion, current.sourceItem?.isSpoiler != false, current.preferSoftwareDecode,
             pendingTextPreference != null, current.sessionId.isNullOrBlank(),
-            nativeFormat = sourceNeedsNativeEngine(current.sourceContainer, current.sourceVideoCodec, current.selectedAudioCodec))
+            nativeFormat = sourceNeedsNativeEngine(current.sourceContainer, current.sourceVideoCodec, current.selectedAudioCodec),
+            libraryShaderSelected = pictureSettings.libraryShaderId != null)
         if (start == EngineStart.MPV || start == EngineStart.SAFE_MPV ||
             (start == EngineStart.AUTO && client.shyni == null)) {
             if (start == EngineStart.SAFE_MPV) toast("이 재생에는 MPV가 필요해 MPV로 재생합니다.")
@@ -1304,6 +1307,9 @@ class NativePlayerActivity : AppCompatActivity() {
         gestures.seekTimeoutMs = if (spec.isServerConversion) 30_000 else 8_000
         player = created
         if (created is MpvPlayer) {
+            created.onShaderPerformanceModeChanged = { lightweight ->
+                if (player === created) pictureDialog?.setRealtimeShader(lightweight)
+            }
             created.onLibraryShaderUnavailable = { id ->
                 if (player === created && pictureSettings.libraryShaderId == id) {
                     pictureSettings = pictureSettings.copy(libraryShaderId = null)
@@ -3341,7 +3347,10 @@ class NativePlayerActivity : AppCompatActivity() {
                     pictureStore.writeCurrent(pictureSettings)
                     applyPictureToPlayer()
                 }
-            }, supportNote = ::pictureSupportNote).also { it.show() }
+            }, supportNote = ::pictureSupportNote).also {
+                it.setRealtimeShader((player as? MpvPlayer)?.usesRealtimeShader == true)
+                it.show()
+            }
     }
 
     private fun dismissPictureSettings() {
@@ -4091,19 +4100,19 @@ class NativePlayerActivity : AppCompatActivity() {
             var replaced = false
             try {
                 val target = continuousPlaybackTarget(true, previous.spec, currentNeighbors)
-                    ?: withTimeoutOrNull(8_000) {
-                        continuousPlaybackTarget(true, previous.spec, client.playbackNeighbors(previous.spec))
+                    ?: withTimeout(8_000) {
+                        continuousPlaybackTarget(true, previous.spec, client.continuousPlaybackNeighbors(previous.spec))
                     }
                 if (target == null) return@launch
                 if (exiting || isDestroyed || !visible || !activityStarted || player !== active || client.token != account ||
                     !playbackAuthentication.isCurrent(epoch) || !samePlaybackPresenceSource(previous.spec, spec) ||
                     closeLockedSpoilerPlayback()) return@launch
-                val next = withTimeoutOrNull(20_000) {
+                val next = withTimeout(20_000) {
                     var preparedNext = client.playback(target)
                         .copy(resumeMs = 0, navigationQuery = previous.spec.navigationQuery)
                     previous.spec.conversionHeight?.let { height -> preparedNext = client.convertPlayback(preparedNext, height, 0) }
                     preparedNext
-                } ?: return@launch
+                }
                 if (exiting || isDestroyed || !visible || !activityStarted || player !== active || client.token != account ||
                     !playbackAuthentication.isCurrent(epoch) || !samePlaybackPresenceSource(previous.spec, spec) ||
                     closeLockedSpoilerPlayback() ||
@@ -4112,6 +4121,8 @@ class NativePlayerActivity : AppCompatActivity() {
                 replaced = true
                 applyConversionPlayback(next, previous.copy(position = 0, playing = true))
                 handler.postDelayed(conversionTimeout, 45_000)
+            } catch (_: TimeoutCancellationException) {
+                if (!exiting && !isDestroyed) toast("서버 응답 시간이 초과되어 다음 회차를 재생하지 못했습니다.")
             } catch (_: kotlinx.coroutines.CancellationException) {
                 // Leaving or rotating the player invalidates this handoff.
             } catch (_: Exception) {

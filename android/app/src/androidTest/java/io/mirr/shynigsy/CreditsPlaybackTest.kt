@@ -385,8 +385,9 @@ class CreditsPlaybackTest {
                     .apply { isAccessible = true }
                 repeat(2) { finish.invoke(activity) }
             }
-            waitFor(scenario, "The verified next episode must start at zero", 15_000) {
-                spec(it).partId == NEXT_PART && player(it).playbackState == Player.STATE_READY && player(it).isPlaying
+            waitFor(scenario, "The verified next episode must render its first frame", 15_000) {
+                spec(it).partId == NEXT_PART && field<Boolean>(it, "playbackFirstFrameReported") &&
+                    player(it).playbackState == Player.STATE_READY && player(it).isPlaying
             }
             scenario.onActivity {
                 assertEquals(0L, spec(it).resumeMs)
@@ -761,7 +762,7 @@ class CreditsPlaybackTest {
             })
 
         private fun physical(item: Int, part: Int, order: Int) = JSONObject().put("id", part)
-            .put("metadata_item_id", item).put("part_index", order).put("file_path", "/synthetic/credits-series/$part.mp4")
+            .put("metadata_item_id", item).put("part_index", order).put("file_path", "/synthetic/credits-series/$item/$part.mp4")
 
         private fun line(input: BufferedInputStream): String? {
             val bytes = ByteArrayOutputStream()

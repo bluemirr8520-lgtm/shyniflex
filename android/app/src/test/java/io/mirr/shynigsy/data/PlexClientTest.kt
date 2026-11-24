@@ -1,6 +1,7 @@
 package io.mirr.shynigsy.data
 
 import io.mirr.shynigsy.player.verifiedCreditsNextEpisode
+import io.mirr.shynigsy.player.continuousPlaybackTarget
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -214,6 +215,45 @@ class PlexClientTest {
         val neighbors = client.neighbors(spec)
         assertEquals(79, neighbors.previous?.id)
         assertEquals(85, verifiedCreditsNextEpisode(spec, neighbors)?.id)
+    }
+
+    @Test fun autoNextUsesKnownSeasonAndKeepsIdentityWhenPlexOmitsRepeatedParentFields() = runBlocking {
+        val first = episode(84, 2, 1).apply { remove("parentIndex") }
+        container("Metadata", first)
+        val original = client.playback(MediaItem(84, 9, "First", "episode"))
+        val seasonOne = JSONObject("""{"ratingKey":501,"type":"season","title":"S1","index":1}""")
+        val seasonTwo = JSONObject("""{"ratingKey":502,"type":"season","title":"S2","index":2}""")
+        container("Metadata", seasonOne, seasonTwo)
+        val next = episode(85, 2, 2).apply {
+            remove("parentRatingKey"); remove("grandparentRatingKey"); remove("parentIndex")
+        }
+        container("Metadata", first, next)
+        val neighbors = client.neighbors(original, includePrevious = false)
+        val target = requireNotNull(continuousPlaybackTarget(true, original, neighbors))
+        assertEquals(85, target.id)
+        assertNull(neighbors.previous)
+        assertEquals(3, server.requestCount)
+        assertEquals("/plex/library/metadata/84", server.takeRequest().requestUrl!!.encodedPath)
+        assertEquals("/plex/library/metadata/500/children", server.takeRequest().requestUrl!!.encodedPath)
+        assertEquals("/plex/library/metadata/502/children", server.takeRequest().requestUrl!!.encodedPath)
+        container("Metadata", next)
+        val nextPlayback = client.playback(target)
+        assertEquals(500, nextPlayback.viewItemId)
+        assertEquals(2, nextPlayback.sourceItem?.seasonNumber)
+        assertEquals(server.url("/plex/library/parts/1085/video.mkv").toString(), nextPlayback.url)
+    }
+
+    @Test fun autoNextCrossesAnEmptySeasonWithoutServingAnotherShowsEpisode() = runBlocking {
+        val first = episode(80, 1, 9)
+        container("Metadata", first)
+        val spec = client.playback(MediaItem(80, 9, "Finale", "episode"))
+        container("Metadata", *(1..3).map {
+            JSONObject().put("ratingKey", 500 + it).put("type", "season").put("title", "S$it").put("index", it)
+        }.toTypedArray())
+        container("Metadata", first)
+        container("Metadata", episode(98, 2, 1).put("grandparentRatingKey", 999))
+        container("Metadata", episode(90, 3, 1))
+        assertEquals(90, continuousPlaybackTarget(true, spec, client.neighbors(spec, includePrevious = false))?.id)
     }
 
     @Test fun rejectsRedirectsAndInvalidMultipartWithoutPlayingOnlyFirstFile() = runBlocking {

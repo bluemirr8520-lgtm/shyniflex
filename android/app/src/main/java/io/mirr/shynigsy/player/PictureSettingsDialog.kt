@@ -47,6 +47,8 @@ internal class PictureSettingsDialog(
     private var dismissed = false
     private var libraryBack: (() -> Unit)? = null
     private val shaderCatalog by lazy { BundledShaderCatalog.from(context) }
+    private var realtimeShader = false
+    private var realtimeLabel: TextView? = null
     private var supportLabel: TextView? = null
     private var selectedPresetLabel: TextView? = null
     private val focusRows = mutableListOf<View>()
@@ -115,6 +117,7 @@ internal class PictureSettingsDialog(
         content.removeAllViews()
         focusRows.clear()
         supportLabel = null
+        realtimeLabel = null
         selectedPresetLabel = null
         scroll.scrollTo(0, 0)
         title?.let { content.addView(text(it, 16f).apply {
@@ -135,6 +138,7 @@ internal class PictureSettingsDialog(
             content.addView(this, matchWrap())
         }
         refreshSupportNote()
+        addRealtimeLabel()
         selectedPresetLabel = text("", 12f, secondary = true).apply {
             tag = "picture-selected-preset"; setPadding(dp(4), 0, dp(4), dp(8))
             content.addView(this, matchWrap())
@@ -161,6 +165,7 @@ internal class PictureSettingsDialog(
 
     private fun showShaderLibrary() {
         beginPage("셰이더", "재생 중 하나를 선택해 적용합니다. NVScaler는 SDR 영상 업스케일에 적용됩니다.")
+        addRealtimeLabel()
         libraryBack = { showControls("picture-library") }
         action(if (value.libraryShaderId == null) "✓ 끔" else "끔", "shader-off") {
             apply(value.copy(libraryShaderId = null), store.currentPreset(value)?.id)
@@ -347,6 +352,20 @@ internal class PictureSettingsDialog(
 
     private fun refreshSelectedPreset() {
         selectedPresetLabel?.text = "현재 프리셋 · ${store.currentPreset(value)?.name ?: "사용자 조절"}"
+    }
+
+    fun setRealtimeShader(enabled: Boolean) {
+        realtimeShader = enabled
+        realtimeLabel?.visibility = if (enabled) View.VISIBLE else View.GONE
+    }
+
+    private fun addRealtimeLabel() {
+        realtimeLabel = text("현재 영상은 끊김을 줄이기 위해 경량 셰이더로 재생 중입니다.", 12f, secondary = true).apply {
+            tag = "picture-realtime-shader"
+            setPadding(dp(4), 0, dp(4), dp(8))
+            visibility = if (realtimeShader) View.VISIBLE else View.GONE
+            content.addView(this, matchWrap())
+        }
     }
 
     private fun refreshSupportNote() {

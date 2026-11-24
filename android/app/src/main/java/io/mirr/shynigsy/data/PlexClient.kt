@@ -179,7 +179,18 @@ class PlexClient(server: String, token: String, deviceId: String) {
         return result.values.toList()
     }
 
-    suspend fun children(item: MediaItem): List<MediaItem> = allChildren(item.id, item.libraryId)
+    suspend fun children(item: MediaItem): List<MediaItem> = allChildren(item.id, item.libraryId).map { child ->
+        // A season's children endpoint identifies the parent even when Plex omits the
+        // repeated parent fields from each row. Explicit row values remain authoritative.
+        if (item.type == "show" && child.type == "season" && child.showId == null) {
+            child.copy(showId = item.id, viewItemId = item.id)
+        } else if (item.type == "season" && child.type == "episode") {
+            val show = child.showId ?: item.showId
+            child.copy(showId = show, viewItemId = show ?: child.viewItemId,
+                seasonNumber = child.seasonNumber ?: item.seasonNumber,
+                folderKey = child.folderKey ?: "/library/metadata/${item.id}/children")
+        } else child
+    }
 
     suspend fun continueWatching(): List<MediaItem> {
         val container = try {
@@ -228,7 +239,17 @@ class PlexClient(server: String, token: String, deviceId: String) {
     }
 
     suspend fun detail(item: MediaItem): MediaItem =
-        mediaItem(metadata(item.id), item.libraryId) ?: throw IOException("작품 정보를 읽지 못했습니다.")
+        mediaItem(metadata(item.id), item.libraryId)?.withListedEpisodeContext(item)
+            ?: throw IOException("작품 정보를 읽지 못했습니다.")
+
+    private fun MediaItem.withListedEpisodeContext(listed: MediaItem): MediaItem {
+        if (type != "episode" || listed.type != type || id != listed.id || libraryId != listed.libraryId ||
+            (showId != null && listed.showId != null && showId != listed.showId) ||
+            (folderKey != null && listed.folderKey != null && folderKey != listed.folderKey)) return this
+        val show = showId ?: listed.showId
+        return copy(showId = show, viewItemId = show ?: viewItemId, folderKey = folderKey ?: listed.folderKey,
+            seasonNumber = seasonNumber ?: listed.seasonNumber, episodeNumber = episodeNumber ?: listed.episodeNumber)
+    }
 
     suspend fun itemInfo(item: MediaItem): PlexItemInfo {
         val row = metadata(item.id)
@@ -322,7 +343,7 @@ class PlexClient(server: String, token: String, deviceId: String) {
         })
 
     private fun originalPlayback(row: JSONObject, item: MediaItem, media: JSONObject, audioIndex: Int? = null): PlaybackSpec {
-        val selected = mediaItem(row, item.libraryId)?.takeIf { it.playable }
+        val selected = mediaItem(row, item.libraryId)?.withListedEpisodeContext(item)?.takeIf { it.playable }
             ?: throw IOException("이 작품은 재생할 수 없습니다.")
         val part = media.rows("Part").single()
         val partId = part.getInt("id")
@@ -437,22 +458,38 @@ class PlexClient(server: String, token: String, deviceId: String) {
         else -> throw ApiException("지원하지 않는 Plex 해상도입니다.")
     }
 
-    suspend fun neighbors(spec: PlaybackSpec): PlaybackNeighbors {
+    suspend fun neighbors(spec: PlaybackSpec, includePrevious: Boolean = true): PlaybackNeighbors {
         val item = spec.sourceItem?.takeIf { it.type == "episode" } ?: return PlaybackNeighbors()
         val show = item.showId ?: return PlaybackNeighbors(currentEpisode = item)
         val seasons = allChildren(show, item.libraryId).filter { it.type == "season" }.sortedBy { it.seasonNumber }
-        val season = seasons.indexOfFirst { it.seasonNumber == item.seasonNumber }
+        val season = if (item.folderKey != null) seasons.indexOfFirst { item.folderKey == "/library/metadata/${it.id}/children" }
+            else seasons.indexOfFirst { item.seasonNumber != null && it.seasonNumber == item.seasonNumber }
         if (season < 0) return PlaybackNeighbors(currentEpisode = item)
-        suspend fun seasonEpisodes(index: Int): List<MediaItem> = seasons.getOrNull(index)?.let { children(it) }
-            .orEmpty().filter { it.type == "episode" }.sortedBy { it.episodeNumber }
+        suspend fun seasonEpisodes(index: Int): List<MediaItem> {
+            val parent = seasons[index]
+            return children(parent.copy(showId = parent.showId ?: show)).filter {
+                it.type == "episode" && it.showId == show && it.libraryId == item.libraryId &&
+                    it.folderKey == "/library/metadata/${parent.id}/children"
+            }.map { if (it.episodeNumber == null) detail(it) else it }
+                .filter { it.episodeNumber != null }.sortedBy { it.episodeNumber }
+        }
+        suspend fun adjacentSeason(step: Int): MediaItem? {
+            var cursor = season + step
+            while (cursor in seasons.indices) {
+                val rows = seasonEpisodes(cursor)
+                (if (step > 0) rows.firstOrNull() else rows.lastOrNull())?.let { return it }
+                cursor += step
+            }
+            return null
+        }
         val episodes = seasonEpisodes(season)
         val index = episodes.indexOfFirst { it.id == item.id }
         if (index < 0) return PlaybackNeighbors(currentEpisode = item)
-        val previous = episodes.getOrNull(index - 1) ?: seasonEpisodes(season - 1).lastOrNull()
-        val next = (episodes.getOrNull(index + 1) ?: seasonEpisodes(season + 1).firstOrNull())?.let {
+        val previous = if (includePrevious) episodes.getOrNull(index - 1) ?: adjacentSeason(-1) else null
+        val next = (episodes.getOrNull(index + 1) ?: adjacentSeason(1))?.let {
             if (it.navigationPartId == null) detail(it) else it
         }
-        return PlaybackNeighbors(previous, next, next, item)
+        return PlaybackNeighbors(previous, next, next, episodes[index])
     }
 
     suspend fun timeline(spec: PlaybackSpec, positionMs: Long, durationMs: Long, state: String) {

@@ -23,6 +23,65 @@ class MpvShaderChainTest {
         { posted.add(it) }, { applied.add(it) }, { failed.add(it) })
     private fun next() = requireNotNull(posted.poll(5, TimeUnit.SECONDS))
 
+    @Test fun realtimeProfileKeepsTheRequestedIdAndCanReturnToTheExactOriginalChain() {
+        val chain = newChain()
+        try {
+            chain.setRedTone(-8); next().invoke()
+            val color = applied.last().single()
+            chain.select("chain"); next().invoke()
+            val original = applied.last()
+            chain.select("chain", useRealtime = true); next().invoke()
+            assertEquals(2, applied.last().size)
+            assertTrue(applied.last().first().readText().contains("Android realtime luminance detail"))
+            assertEquals(color, applied.last().last())
+            chain.select("chain"); next().invoke()
+            assertEquals(original, applied.last())
+            assertTrue(failed.isEmpty())
+        } finally { chain.close() }
+    }
+
+    @Test fun measuredShieldPolicyMatchesTheActualUpscalerConditionsAndAcceptsCroppedFhd() {
+        val flow = MpvShaderPerformance(shieldTegra = true)
+        val native = ShaderFrameSize(1920, 1080, 1920, 1080)
+        val up = native.copy(outputWidth = 3840, outputHeight = 2160)
+        assertTrue(native.allPassesInactive("plezy/artcnn_c4f32_dn", mayCropOrZoom = false))
+        assertFalse(native.allPassesInactive("plezy/artcnn_c4f32_dn", mayCropOrZoom = true))
+        assertFalse(native.allPassesInactive("plezy/anime4k_fast_modeC", mayCropOrZoom = false))
+        assertFalse(up.allPassesInactive("plezy/nvscaler", mayCropOrZoom = false))
+        val upscale = listOf("plezy/nvscaler", "plezy/artcnn_c4f32_ds", "plezy/anime4k_hq_modeC")
+        for (id in upscale) {
+            assertFalse(flow.select(id, native, 0))
+            assertTrue(flow.select(id, up, 0))
+        }
+        assertTrue(flow.select("plezy/anime4k_fast_modeAA", native.copy(height=800), 0))
+        assertFalse(flow.select("plezy/anime4k_fast_modeAA", ShaderFrameSize(640,480,1280,720), 0))
+        assertFalse(flow.select(null, up, 0))
+        assertFalse(flow.needsSamples)
+    }
+
+    @Test fun otherGpusKeepTheFullPresetUntilTwoPlayingWindowsDropFrames() {
+        val flow = MpvShaderPerformance(shieldTegra = false)
+        val id = "plezy/anime4k_hq_modeA"
+        val native = ShaderFrameSize(1920, 1080, 1920, 1080)
+        assertFalse(flow.select(id, native, 0))
+        assertTrue(flow.needsSamples)
+        assertFalse(flow.observe(2000, 10, 30.0)) // ignore compile/startup
+        assertFalse(flow.observe(4000, 45, 30.0))
+        flow.restartSample(4500) // seek/rebuffer
+        assertFalse(flow.observe(6500, 60, 30.0))
+        assertFalse(flow.observe(8500, 75, 30.0))
+        assertFalse(flow.observe(10500, 77, 30.0)) // recovered in the next window
+        assertFalse(flow.observe(12500, 89, 30.0))
+        assertTrue(flow.observe(14500, 103, 30.0))
+        assertTrue(flow.select(id, native, 15000))
+        assertFalse(flow.needsSamples)
+        assertFalse(flow.select(id, native.copy(outputWidth=1280), 16000))
+        assertTrue(flow.select(id, native, 17000))
+        flow.rejectRealtimePath()
+        assertFalse(flow.select(id, native, 18000))
+        assertFalse(flow.needsSamples)
+    }
+
     @Test fun redBalanceChangesOnlyKnownSdrAndResumesWhenTheStreamChangesBack() {
         val props = mutableMapOf<String, String>()
         fun tone() = sdrRedTone(-8, props::get)

@@ -1,6 +1,7 @@
 package io.mirr.shynigsy.plex
 
 import android.content.Intent
+import android.content.Context
 import android.os.SystemClock
 import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
@@ -24,16 +25,95 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okio.Buffer
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.net.InetAddress
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
 @RunWith(AndroidJUnit4::class)
 class PlexResolutionPlaybackTest {
+    @Test fun naturalEofStartsTheNextPlexFileWithContinuousPlaybackEnabled() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        check(context.packageName.endsWith(".debug"))
+        val sessions = SessionStore(context)
+        assertNull("Use an isolated application with no signed-in account", sessions.loadLast())
+        val prefs = context.getSharedPreferences("gsy_settings", Context.MODE_PRIVATE)
+        val savedContinuous = prefs.all["continuous_playback"] as? Boolean
+        val savedEngine = prefs.getString("playback_engine", null)
+        val clip = instrumentation.context.assets.open("media3/gesture-av.mp4").use { it.readBytes() }
+        val nextFileOpened = AtomicBoolean(false)
+        val token = "fixture-continuation-token"
+        fun episode(id: Int): JSONObject {
+            val part = JSONObject().put("id", 80 + id).put("key", "/library/parts/${80 + id}/clip.mp4")
+            val media = JSONObject().put("container", "mp4").put("videoCodec", "h264").put("Part", JSONArray().put(part))
+            return JSONObject().put("type", "episode").put("ratingKey", id).put("librarySectionID", 1)
+                .put("index", id - 10).put("title", "Episode ${id - 10}").put("duration", 6000)
+                .put("Media", JSONArray().put(media))
+        }
+        val first = episode(11).put("parentRatingKey", 20).put("grandparentRatingKey", 10)
+        val second = episode(12)
+        val season = JSONObject().put("type", "season").put("ratingKey", 20).put("index", 1).put("title", "Season 1")
+        fun listing(vararg rows: JSONObject) = MockResponse().setBody(JSONObject().put("MediaContainer",
+            JSONObject().put("Metadata", JSONArray(rows.toList())).put("size", rows.size)).toString())
+        MockWebServer().use { pms ->
+            pms.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val url = requireNotNull(request.requestUrl)
+                    if (request.getHeader("X-Plex-Token") != token && url.queryParameter("X-Plex-Token") != token)
+                        return MockResponse().setResponseCode(401)
+                    return when (url.encodedPath) {
+                        "/library/metadata/11" -> listing(first)
+                        "/library/metadata/12" -> listing(second)
+                        "/library/metadata/10/children" -> listing(season)
+                        "/library/metadata/20/children" -> listing(first, second)
+                        "/library/parts/91/clip.mp4" -> mediaResponse(clip, "video/mp4", request)
+                        "/library/parts/92/clip.mp4" -> {
+                            nextFileOpened.set(true)
+                            mediaResponse(clip, "video/mp4", request)
+                        }
+                        else -> listing()
+                    }
+                }
+            }
+            pms.start(InetAddress.getByName("127.0.0.1"), 0)
+            val server = pms.url("/").toString().trimEnd('/')
+            val spec = runBlocking { PlexClient(server, token, "fixture-device").playback(MediaItem(11, 1, "First", "episode")) }
+            try {
+                sessions.save(server, token, "fixture")
+                prefs.edit().putBoolean("continuous_playback", true).putString("playback_engine", "auto").commit()
+                val intent = Intent(context, NativePlayerActivity::class.java).putExtra("server", server)
+                    .putExtra("spec", spec.toJson()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ActivityScenario.launch<NativePlayerActivity>(intent).use { scenario ->
+                    var originalPlayer: Player? = null
+                    waitForPlayer(scenario, "First Plex episode playing") { player ->
+                        player.volume = 0f
+                        (player.isPlaying && player.videoSize.width > 0 && player.currentPosition > 150).also {
+                            if (it) originalPlayer = player
+                        }
+                    }
+                    waitForPlayer(scenario, "Next Plex episode plays without a seek or button press") { player ->
+                        player.volume = 0f
+                        nextFileOpened.get() && player !== originalPlayer && player.isPlaying &&
+                            player.videoSize.width > 0 && player.currentPosition > 150
+                    }
+                }
+            } finally {
+                sessions.clear(server)
+                prefs.edit().apply {
+                    if (savedContinuous == null) remove("continuous_playback") else putBoolean("continuous_playback", savedContinuous)
+                    if (savedEngine == null) remove("playback_engine") else putString("playback_engine", savedEngine)
+                }.commit()
+            }
+        }
+    }
+
     @Test fun playerSelects720pSeeksAndReturnsToOriginalAtSamePosition() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext

@@ -32,7 +32,7 @@ internal fun verifiedCreditsNextEpisode(spec: PlaybackSpec, neighbors: PlaybackN
             (current.showId == null || it.showId == current.showId) &&
             season >= 0 && episode >= 0 && targetSeason >= 0 && targetEpisode >= 0 &&
             (targetSeason > season || targetSeason == season && targetEpisode > episode) &&
-            !it.folderKey.isNullOrBlank() && (it.navigationPartId ?: 0) > 0 &&
+            (it.navigationPartId ?: 0) > 0 &&
             it.playbackPartId == it.navigationPartId && it.navigationPartId != spec.partId
     }
 }

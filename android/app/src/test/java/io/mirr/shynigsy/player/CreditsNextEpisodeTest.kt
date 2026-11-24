@@ -37,7 +37,7 @@ class CreditsNextEpisodeTest {
 
     @Test fun targetMustMatchViewShowAndVerifiedPartAndMoveForward() {
         val invalid = listOf(next.copy(viewItemId = 602), next.copy(showId = 6), next.copy(isSpoiler = true),
-            next.copy(episodeNumber = 5), next.copy(folderKey = null), next.copy(navigationPartId = 90),
+            next.copy(episodeNumber = 5), next.copy(playbackPartId = null), next.copy(navigationPartId = 90),
             next.copy(playbackPartId = 92))
         invalid.forEach { target -> assertNull(verifiedCreditsNextEpisode(spec, PlaybackNeighbors(nextEpisode = target))) }
     }

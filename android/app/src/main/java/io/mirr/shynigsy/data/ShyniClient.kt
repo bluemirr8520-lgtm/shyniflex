@@ -520,28 +520,35 @@ class ShyniClient(
         }
     }
 
-    /** Icons only target files whose actual immediate filesystem parent matches the current file. */
-    suspend fun playbackNeighbors(spec: PlaybackSpec): PlaybackNeighbors {
+    /** File navigation stays in one physical folder. Series navigation follows verified episode order. */
+    suspend fun playbackNeighbors(spec: PlaybackSpec): PlaybackNeighbors = playbackNeighbors(spec, episodeOnly = false)
+
+    /** The EOF handoff has a deadline and does not need to resolve toolbar file navigation. */
+    suspend fun continuousPlaybackNeighbors(spec: PlaybackSpec): PlaybackNeighbors = playbackNeighbors(spec, episodeOnly = true)
+
+    private suspend fun playbackNeighbors(spec: PlaybackSpec, episodeOnly: Boolean): PlaybackNeighbors {
         val authorization = playbackTransportAuthorization(spec)
         return withContext(Dispatchers.Default) {
         currentCoroutineContext().ensureActive(); authorization()
         val current = spec.sourceItem?.takeIf { it.playable && it.libraryId == spec.libraryId }
             ?: return@withContext PlaybackNeighbors()
+        if (episodeOnly && current.type != "episode") return@withContext PlaybackNeighbors()
         val libraryId = spec.libraryId
         val privateCatalog = current.isSpoiler
         val currentInfo = partMediaInfo(spec)
         val parts = physicalParts(currentInfo)
         val active = parts.singleOrNull { it.partId == spec.partId } ?: return@withContext PlaybackNeighbors()
-        val folder = active.folderKey ?: return@withContext PlaybackNeighbors()
+        val folder = active.folderKey
+        val canFindNextEpisode = current.type == "episode" && current.id == spec.itemId &&
+            active.metadataId == current.id && current.viewItemId != null && current.viewItemId == spec.viewItemId
+        if ((episodeOnly || folder == null) && !canFindNextEpisode) return@withContext PlaybackNeighbors()
         fun navigationItem(item: MediaItem, file: PhysicalPart): MediaItem = item.copy(id = file.metadataId,
-            folderKey = folder, navigationPartId = file.partId, playbackPartId = file.partId, markers = emptyList())
-        val sameItemParts = parts.filter { it.folderKey == folder }
+            folderKey = file.folderKey, navigationPartId = file.partId, playbackPartId = file.partId, markers = emptyList())
+        val sameItemParts = parts.filter { !episodeOnly && folder != null && it.folderKey == folder }
             .sortedWith(compareBy<PhysicalPart> { it.partIndex ?: Int.MAX_VALUE }.thenBy { it.fileName }.thenBy { it.partId })
         val partIndex = sameItemParts.indexOfFirst { it.partId == spec.partId }
         val previousPart = sameItemParts.getOrNull(partIndex - 1)?.let { navigationItem(current, it) }
         val nextPart = sameItemParts.getOrNull(partIndex + 1)?.let { navigationItem(current, it) }
-        val canFindNextEpisode = current.type == "episode" && current.id == spec.itemId &&
-            active.metadataId == current.id && current.viewItemId != null && current.viewItemId == spec.viewItemId
         if (previousPart != null && nextPart != null && !canFindNextEpisode)
             return@withContext PlaybackNeighbors(previousPart, nextPart)
         var episodeEntries = emptyList<MediaItem>()
@@ -620,8 +627,8 @@ class ShyniClient(
             else current.seasonNumber != null && current.episodeNumber != null &&
                 it.seasonNumber == current.seasonNumber && it.episodeNumber == current.episodeNumber
         }
-        if (index < 0) return@withContext PlaybackNeighbors(previousPart, nextPart)
         suspend fun verified(candidates: List<MediaItem>): MediaItem? {
+            if (folder == null) return null
             for (candidate in candidates.take(8)) {
                 val info = try {
                     mediaInfo("$libraryId:item:${candidate.id}",
@@ -661,13 +668,17 @@ class ShyniClient(
                     continue
                 } catch (_: Exception) { continue }
                 if (info.optJSONObject("item")?.intOrNull("id") != candidate.id) continue
-                val matching = physicalParts(info).filter { it.metadataId == candidate.id && it.folderKey == folder &&
-                    it.partId != spec.partId }
+                val matching = physicalParts(info).filter { it.metadataId == candidate.id && it.partId != spec.partId }
                     .sortedWith(compareBy<PhysicalPart> { it.partIndex ?: Int.MAX_VALUE }.thenBy { it.fileName }.thenBy { it.partId })
                 matching.firstOrNull()?.let { return anchor to navigationItem(candidate, it) }
             }
             return null
         }
+        if (episodeOnly) {
+            val verifiedEpisode = verifiedNextEpisode()
+            return@withContext PlaybackNeighbors(nextEpisode = verifiedEpisode?.second, currentEpisode = verifiedEpisode?.first)
+        }
+        if (index < 0) return@withContext PlaybackNeighbors(previousPart, nextPart)
         coroutineScope {
             val previous = async { previousPart ?: verified(entries.take(index).asReversed()) }
             val next = async { nextPart ?: verified(entries.drop(index + 1)) }
@@ -2329,7 +2340,7 @@ class ShyniClient(
                 ?: throw ApiException(response.stringOrNull("reason_text") ?: "재생할 수 있는 파일이 없습니다.")
             val sourcePart = source.intOrNull("part_id") ?: throw ApiException("재생 파일 정보를 받지 못했습니다.")
             if (partId == null && item.navigationPartId != null && sourcePart != item.navigationPartId) {
-                throw ApiException("같은 폴더에서 확인한 재생 파일이 변경되었습니다. 목록을 다시 불러오세요.")
+                throw ApiException("선택한 재생 파일이 변경되었습니다. 목록을 다시 불러오세요.")
             }
             Triple(response, source, sourcePart)
         }
