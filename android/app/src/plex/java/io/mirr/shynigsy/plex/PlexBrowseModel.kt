@@ -45,9 +45,9 @@ internal sealed interface PlexPage {
         val nextOffset: Int = 0, val hasMore: Boolean = false, val total: Int = 0,
         val contentType: LibraryContentType = LibraryContentType.defaultFor(library),
         val sort: LibrarySort = LibrarySort.defaultFor(contentType), val watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL,
-        val query: String = "", val needsRefresh: Boolean = false) : PlexPage
+        val query: String = "", val needsRefresh: Boolean = false, val personSearchIncomplete: Boolean = false) : PlexPage
     data class Search(val query: String = "", val items: List<MediaItem> = emptyList(),
-        val finished: Boolean = false) : PlexPage
+        val finished: Boolean = false, val failedLibraryCount: Int = 0) : PlexPage
     data class Detail(val item: MediaItem, val children: List<MediaItem> = emptyList(),
         val seasons: List<MediaItem> = emptyList(), val selectedSeasonId: Int? = null,
         val versions: List<MediaVersion> = emptyList(), val selectedPartId: Int? = null,
@@ -232,7 +232,8 @@ internal class PlexBrowseModel(application: Application) : AndroidViewModel(appl
         val query = text.trim().takeIf { it.isNotEmpty() } ?: return
         page = PlexPage.Search(query)
         runRequest {
-            page = PlexPage.Search(query, active.search(query), finished = true)
+            val result = active.searchWithStatus(query, libraries)
+            page = PlexPage.Search(query, result.items, finished = true, failedLibraryCount = result.failedLibraryCount)
         }
     }
 
@@ -434,11 +435,15 @@ internal class PlexBrowseModel(application: Application) : AndroidViewModel(appl
     private suspend fun readShelf(active: PlexClient, shelf: PlexPage.Shelf, append: Boolean): PlexPage.Shelf {
         val offset = if (append) shelf.nextOffset else 0
         val batch = active.page(shelf.library, offset, contentType = shelf.contentType, sort = shelf.sort,
-            watchFilter = shelf.watchFilter, title = shelf.query)
+            watchFilter = shelf.watchFilter, title = shelf.query, searchPeople = true)
+        // A failed lookup may fall back to title-only results. Do not append a different
+        // query's page or skip its earlier people results on the next pagination request.
+        if (append && batch.personSearchIncomplete) return shelf.copy(hasMore = false, personSearchIncomplete = true)
         val next = batch.nextOffset
         val items = if (append) (shelf.items + batch.items).distinctBy { it.id } else batch.items
-        return shelf.copy(items = items, nextOffset = next, hasMore = next > offset && next < batch.total,
-            total = batch.total, needsRefresh = false)
+        return shelf.copy(items = items, nextOffset = next,
+            hasMore = !batch.personSearchIncomplete && next > offset && next < batch.total,
+            total = batch.total, needsRefresh = false, personSearchIncomplete = batch.personSearchIncomplete)
     }
 
     fun retryContinue() = refreshOngoing()

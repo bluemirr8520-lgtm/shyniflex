@@ -77,6 +77,12 @@ internal fun PlexCatalog(shelf: PlexPage.Shelf, model: PlexBrowseModel, onWatch:
                 }
             }
             item(span = { GridItemSpan(maxLineSpan) }) { Text("${shelf.total}개", style = MaterialTheme.typography.titleMedium) }
+            if (shelf.personSearchIncomplete) item(span = { GridItemSpan(maxLineSpan) }) {
+                Column {
+                    Text("인물 검색을 완료하지 못했습니다. 확인된 결과를 표시합니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TvAction("다시 시도", enabled = !model.busy, onClick = model::reload)
+                }
+            }
             model.error?.let { error -> item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(error, color = MaterialTheme.colorScheme.error)
                 TvAction("다시 시도", onClick = if (shelf.hasMore) model::loadMore else model::reload)
@@ -102,14 +108,16 @@ private fun CatalogFilters(shelf: PlexPage.Shelf, model: PlexBrowseModel) {
     var searching by rememberSaveable { mutableStateOf(shelf.query.isNotBlank()) }
     var query by rememberSaveable { mutableStateOf(shelf.query) }
     val keyboard = LocalSoftwareKeyboardController.current
+    val searchLabel = if (shelf.contentType in setOf(LibraryContentType.MOVIES, LibraryContentType.SHOWS))
+        "제목·인물 이름 검색" else "제목 검색"
     val submit = { keyboard?.hide(); model.setLibraryOptions(query = query.trim()) }
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         TvAction("시청 상태 · ${shelf.watchFilter.label} ▾", enabled = !model.busy) { selectingWatch = true }
-        TvAction("제목 검색", enabled = !model.busy) { searching = !searching }
+        TvAction(searchLabel, enabled = !model.busy) { searching = !searching }
         if (shelf.query.isNotBlank()) TvAction("검색 지우기") { model.setLibraryOptions(query = "") }
     }
     if (searching) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        OutlinedTextField(query, { query = it }, Modifier.weight(1f).tvOnlyFocus(), label = { Text("라이브러리에서 검색") },
+        OutlinedTextField(query, { query = it }, Modifier.weight(1f).tvOnlyFocus(), label = { Text(searchLabel) },
             singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { submit() }))
         TvAction("검색", enabled = !model.busy, onClick = submit)

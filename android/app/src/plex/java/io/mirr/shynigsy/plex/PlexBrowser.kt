@@ -122,9 +122,10 @@ private fun PlexSessionBrowser(appName: String, model: PlexBrowseModel, play: (M
                             onAppearance = { menu = BrowserMenu.APPEARANCE }, onWatch = { watchItem = it })
                         is PlexPage.Shelf -> PlexCatalog(page, model) { watchItem = it }
                         is PlexPage.Search -> GlobalSearchContent(page.query, page.items, libraries,
-                            model.busy, model.error, 0, false, model::search, model::openItem, { watchItem = it },
+                            model.busy, model.error, page.failedLibraryCount, false, model::search, model::openItem, { watchItem = it },
                             artwork = { item, modifier -> PlexMediaArtwork(item, model, modifier) },
-                            allowUnscopedResults = true)
+                            allowUnscopedResults = true, searchLabel = "제목·인물 이름 검색",
+                            searchPrompt = "제목이나 배우·감독 이름을 입력해 검색하세요")
                         is PlexPage.Detail -> PlexDetails(page, model, play) { watchItem = it }
                         PlexPage.Login -> Unit
                     }

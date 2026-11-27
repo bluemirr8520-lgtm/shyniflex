@@ -21,10 +21,11 @@ internal const val PLEX_PRODUCT_NAME = "PLEXMINI"
 internal fun plexOffsetSeconds(positionMs: Long): String =
     java.math.BigDecimal.valueOf(positionMs, 3).stripTrailingZeros().toPlainString()
 
-data class PlexLibraryPage(val items: List<MediaItem>, val total: Int, val nextOffset: Int)
+data class PlexLibraryPage(val items: List<MediaItem>, val total: Int, val nextOffset: Int,
+    val personSearchIncomplete: Boolean = false)
 data class PlexItemInfo(val item: MediaItem, val versions: List<MediaVersion>, val cast: List<CastMember>, val files: List<MediaFileInfo>)
 
-private class PlexRequestException(val status: Int, message: String) : IOException(message)
+internal class PlexRequestException(val status: Int, message: String) : IOException(message)
 
 /** Plex local library IDs (ratingKey, section ID and part ID) are distinct namespaces. */
 class PlexClient(server: String, token: String, deviceId: String) {
@@ -33,6 +34,7 @@ class PlexClient(server: String, token: String, deviceId: String) {
     }?.let { it.newBuilder().encodedPath(it.encodedPath.trimEnd('/') + "/").build() }
         ?: throw IllegalArgumentException("http:// 또는 https://로 시작하는 Plex 서버 주소를 입력해 주세요.")
     val server: String = base.toString().trimEnd('/')
+    internal val personSearchCache = PlexPersonSearchCache()
 
     val headers: Map<String, String> = mapOf(
         "X-Plex-Token" to token.trim().also { value ->
@@ -120,7 +122,8 @@ class PlexClient(server: String, token: String, deviceId: String) {
     suspend fun page(library: Library, offset: Int = 0, limit: Int = 60,
         contentType: LibraryContentType = LibraryContentType.defaultFor(library),
         sort: LibrarySort = LibrarySort.defaultFor(contentType),
-        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, title: String = ""): PlexLibraryPage {
+        watchFilter: LibraryWatchFilter = LibraryWatchFilter.ALL, title: String = "",
+        searchPeople: Boolean = false): PlexLibraryPage {
         require(offset >= 0 && limit > 0)
         require(contentType in LibraryContentType.availableFor(library))
         val type = when (contentType) {
@@ -152,13 +155,17 @@ class PlexClient(server: String, token: String, deviceId: String) {
                 LibraryWatchFilter.ALL -> Unit
             }
         }
-        val container = request("/library/sections/${library.id}/all", query)
+        val personSearch = if (searchPeople && title.isNotBlank() &&
+            contentType in setOf(LibraryContentType.MOVIES, LibraryContentType.SHOWS)) libraryPersonSearchPath(library, title.trim()) else null
+        val personPath = personSearch?.path
+        if (personPath != null) query.remove("title")
+        val container = request(personPath ?: "/library/sections/${library.id}/all", query)
         val rows = container.rows("Metadata")
         val items = rows.mapNotNull { mediaItem(it, library.id) }
         val count = container.optInt("size", rows.size)
         val end = offset + count
         val total = container.optInt("totalSize", if (count == limit && container.has("offset")) end + 1 else end)
-        return PlexLibraryPage(items, total, end)
+        return PlexLibraryPage(items, total, end, personSearchIncomplete = personSearch?.incomplete == true)
     }
 
     private suspend fun allChildren(id: Int, libraryId: Int): List<MediaItem> {
@@ -208,25 +215,18 @@ class PlexClient(server: String, token: String, deviceId: String) {
             .filter { it.playable }.distinctBy { it.id }
     }
 
-    suspend fun search(query: String): List<MediaItem> {
-        val term = query.trim().takeIf { it.isNotEmpty() } ?: return emptyList()
+    suspend fun search(query: String, libraries: List<Library>? = null): List<MediaItem> =
+        searchWithStatus(query, libraries).items
+
+    suspend fun searchWithStatus(query: String, libraries: List<Library>? = null): LibrarySearchResult {
+        val term = query.trim().takeIf { it.isNotEmpty() } ?: return LibrarySearchResult(emptyList())
         val container = try {
             request("/hubs/search", mapOf("query" to term, "limit" to "40"))
         } catch (e: PlexRequestException) {
-            if (e.status == 404) return emptyList()
+            if (e.status == 404) return LibrarySearchResult(emptyList())
             throw e
         }
-        val localMetadata = base.encodedPath + "library/metadata/"
-        val result = linkedMapOf<Int, MediaItem>()
-        for (hub in container.rows("Hub").ifEmpty { listOf(container) }) {
-            for (row in hub.rows("Metadata") + hub.rows("Directory") + hub.rows("Video")) {
-                val key = row.stringOrNull("key")
-                if (key != null && resource(key)?.encodedPath?.startsWith(localMetadata) != true) continue
-                val item = mediaItem(row, hub.optInt("librarySectionID")) ?: continue
-                if (item.playable || item.type == "show") result.putIfAbsent(item.id, item)
-            }
-        }
-        return result.values.toList()
+        return searchResults(container, term, libraries)
     }
 
     private suspend fun metadata(id: Int): JSONObject {

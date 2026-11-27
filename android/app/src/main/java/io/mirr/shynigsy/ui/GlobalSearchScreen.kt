@@ -81,6 +81,8 @@ internal fun GlobalSearchContent(
     modifier: Modifier = Modifier,
     searchHydrating: Boolean = false,
     allowUnscopedResults: Boolean = false,
+    searchLabel: String = "제목 검색",
+    searchPrompt: String = "제목을 입력해 검색하세요",
 ) {
     var text by rememberSaveable(query) { mutableStateOf(query) }
     val knownLibraries = remember(libraries, spoilerUnlocked) {
@@ -128,7 +130,7 @@ internal fun GlobalSearchContent(
         item(span = { GridItemSpan(maxLineSpan) }, key = "search-input") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(text, { text = it }, label = { Text("제목 검색") }, singleLine = true,
+                OutlinedTextField(text, { text = it }, label = { Text(searchLabel) }, singleLine = true,
                     shape = RectangleShape, modifier = Modifier.weight(1f).focusRequester(inputFocus)
                         .tvOnlyFocus().testTag("global-search-input"),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -146,7 +148,7 @@ internal fun GlobalSearchContent(
                     }
                     error != null -> Text(error, Modifier.testTag("global-search-error"),
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    query.isBlank() -> Text("제목을 입력해 검색하세요", Modifier.testTag("global-search-status"),
+                    query.isBlank() -> Text(searchPrompt, Modifier.testTag("global-search-status"),
                         style = MaterialTheme.typography.bodySmall)
                     visibleItems.isEmpty() && failureCount > 0 -> Text("검색을 완료하지 못했습니다", Modifier.testTag("global-search-status"),
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
