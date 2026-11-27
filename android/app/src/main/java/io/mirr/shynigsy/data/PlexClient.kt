@@ -35,6 +35,9 @@ class PlexClient(server: String, token: String, deviceId: String) {
         ?: throw IllegalArgumentException("http:// 또는 https://로 시작하는 Plex 서버 주소를 입력해 주세요.")
     val server: String = base.toString().trimEnd('/')
     internal val personSearchCache = PlexPersonSearchCache()
+    internal val actorChoiceCache = PlexActorChoiceCache()
+    @Volatile internal var excludedSearchSections: Set<Int> = emptySet()
+        private set
 
     val headers: Map<String, String> = mapOf(
         "X-Plex-Token" to token.trim().also { value ->
@@ -74,6 +77,7 @@ class PlexClient(server: String, token: String, deviceId: String) {
         path: String,
         query: Map<String, String> = emptyMap(),
         expectContainer: Boolean = true,
+        maximumResponseBytes: Long? = null,
     ): JSONObject {
         val url = requireNotNull(resource(path)).newBuilder().apply {
             query.forEach { (key, value) -> addQueryParameter(key, value) }
@@ -98,7 +102,14 @@ class PlexClient(server: String, token: String, deviceId: String) {
                                 else -> "Plex 서버 요청이 실패했습니다 (HTTP ${it.code})."
                             })
                             if (!expectContainer) return@use JSONObject()
-                            JSONObject(it.body?.string().orEmpty()).getJSONObject("MediaContainer").apply {
+                            val body = it.body
+                            val text = if (maximumResponseBytes == null) body?.string().orEmpty() else {
+                                val source = body?.source() ?: throw IOException("Plex 응답을 읽지 못했습니다.")
+                                if (body.contentLength() > maximumResponseBytes || source.request(maximumResponseBytes + 1))
+                                    throw IOException("Plex 배우 목록이 응답 제한을 초과했습니다.")
+                                source.readUtf8()
+                            }
+                            JSONObject(text).getJSONObject("MediaContainer").apply {
                                 if (!has("totalSize")) it.header("X-Plex-Container-Total-Size")?.toIntOrNull()?.let { n -> put("totalSize", n) }
                                 if (!has("offset")) it.header("X-Plex-Container-Start")?.toIntOrNull()?.let { n -> put("offset", n) }
                             }
@@ -114,9 +125,18 @@ class PlexClient(server: String, token: String, deviceId: String) {
         }
     }
 
-    suspend fun libraries(): List<Library> = request("/library/sections").rows("Directory").mapNotNull { row ->
-        val type = when (row.optString("type")) { "show" -> "tv"; "movie" -> "movie"; else -> return@mapNotNull null }
-        Library(row.intOrNull("key") ?: return@mapNotNull null, row.getString("title"), type)
+    suspend fun libraries(): List<Library> {
+        val rows = request("/library/sections").rows("Directory")
+        val libraries = rows.mapNotNull { row ->
+            val type = when (row.optString("type")) { "show" -> "tv"; "movie" -> "movie"; else -> return@mapNotNull null }
+            Library(row.plexSearchId("key") ?: return@mapNotNull null, row.getString("title"), type)
+        }
+        val allowed = libraries.mapTo(HashSet()) { it.id }
+        // PMS hidden=2 means excluded from Home/global search, not denied access.
+        // Only sections actually returned for this token may receive a scoped fallback.
+        excludedSearchSections = rows.filter { it.opt("hidden") in setOf(2, "2") }
+            .mapNotNull { it.plexSearchId("key") }.filterTo(HashSet()) { it in allowed }
+        return libraries
     }
 
     suspend fun page(library: Library, offset: Int = 0, limit: Int = 60,
@@ -218,15 +238,15 @@ class PlexClient(server: String, token: String, deviceId: String) {
     suspend fun search(query: String, libraries: List<Library>? = null): List<MediaItem> =
         searchWithStatus(query, libraries).items
 
-    suspend fun searchWithStatus(query: String, libraries: List<Library>? = null): LibrarySearchResult {
+    suspend fun searchWithStatus(query: String, libraries: List<Library>? = null,
+        onCatalogReady: suspend (List<MediaItem>) -> Unit = {}): LibrarySearchResult {
         val term = query.trim().takeIf { it.isNotEmpty() } ?: return LibrarySearchResult(emptyList())
         val container = try {
             request("/hubs/search", mapOf("query" to term, "limit" to "40"))
         } catch (e: PlexRequestException) {
-            if (e.status == 404) return LibrarySearchResult(emptyList())
-            throw e
+            if (e.status == 404) JSONObject() else throw e
         }
-        return searchResults(container, term, libraries)
+        return searchResults(container, term, libraries, onCatalogReady)
     }
 
     private suspend fun metadata(id: Int): JSONObject {

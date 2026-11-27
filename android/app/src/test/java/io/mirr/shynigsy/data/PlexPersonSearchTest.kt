@@ -234,17 +234,19 @@ class PlexPersonSearchTest {
 
     @Test fun shelfWithoutPersonHitsKeepsLiteralTitleQueryAndCachesTheMiss() = runBlocking {
         response("Hub", hub("movie", movie(1, "인턴")))
+        response("Directory")
         response("Metadata", movie(1, "인턴"))
         response("Metadata")
         client.page(libraries.first(), title = "인턴", searchPeople = true)
         server.takeRequest()
+        assertEquals("/plex/library/sections/4/actor", server.takeRequest().requestUrl!!.encodedPath)
         val url = server.takeRequest().requestUrl!!
         assertEquals("인턴", url.queryParameter("title"))
         assertNull(url.queryParameter("push"))
         assertNull(url.queryParameter("actor"))
         client.page(libraries.first(), 60, title = "인턴", searchPeople = true)
         assertEquals("/plex/library/sections/4/all", server.takeRequest().requestUrl!!.encodedPath)
-        assertEquals(3, server.requestCount)
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun seasonAndEpisodeShelfKeepTheirExistingTitleSearchWithoutPersonRequests() = runBlocking {
@@ -270,6 +272,7 @@ class PlexPersonSearchTest {
 
     @Test fun shelfLookupFailurePreservesTitleResultsReportsPartialAndDoesNotCacheFailure() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(500))
+        response("Directory")
         response("Metadata", movie(1, "리오"))
         response("Hub", hub("actor", person(19, "리오")))
         response("Metadata", movie(2))
@@ -279,6 +282,6 @@ class PlexPersonSearchTest {
         val retry = client.page(libraries.first(), title = "리오", searchPeople = true)
         assertEquals(listOf(2), retry.items.map { it.id })
         assertFalse(retry.personSearchIncomplete)
-        assertEquals(4, server.requestCount)
+        assertEquals(5, server.requestCount)
     }
 }

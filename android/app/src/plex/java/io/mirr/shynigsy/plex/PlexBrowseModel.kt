@@ -24,6 +24,8 @@ import io.mirr.shynigsy.data.SessionStore
 import io.mirr.shynigsy.player.PlaybackCompletionSignals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
@@ -232,8 +234,14 @@ internal class PlexBrowseModel(application: Application) : AndroidViewModel(appl
         val query = text.trim().takeIf { it.isNotEmpty() } ?: return
         page = PlexPage.Search(query)
         runRequest {
-            val result = active.searchWithStatus(query, libraries)
-            page = PlexPage.Search(query, result.items, finished = true, failedLibraryCount = result.failedLibraryCount)
+            val result = active.searchWithStatus(query, libraries) { initial ->
+                currentCoroutineContext().ensureActive()
+                if (active === client && (page as? PlexPage.Search)?.query == query)
+                    page = PlexPage.Search(query, initial)
+            }
+            currentCoroutineContext().ensureActive()
+            if (active === client && (page as? PlexPage.Search)?.query == query)
+                page = PlexPage.Search(query, result.items, finished = true, failedLibraryCount = result.failedLibraryCount)
         }
     }
 
